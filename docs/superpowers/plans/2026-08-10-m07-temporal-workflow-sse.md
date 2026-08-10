@@ -1861,6 +1861,7 @@ git commit -m "feat(api): add replayable task event stream
 - Create: `frontend/src/features/tasks/useTaskEvents.ts`
 - Create: `frontend/src/features/tasks/commands.api.ts`
 - Modify: `frontend/src/app/overlay/drawers/TaskStatusDrawer.vue`
+- Modify: `frontend/src/features/tasks/TaskShell.vue`（`openStatusDrawer` 的 payload 改为只传 `{ taskId }`——Drawer 现在自行 Query 其余数据）
 - Test: `frontend/src/features/tasks/taskEvents.test.ts`
 - Test: `frontend/src/app/overlay/drawers/TaskStatusDrawer.test.ts`
 
@@ -1980,29 +1981,37 @@ export interface TaskCommandResponse {
   version: number
 }
 
-export function pauseTask(taskId: string | number, idempotencyKey?: string): Promise<TaskCommandResponse> {
+export interface TaskCommandInput {
+  expectedVersion: number
+  idempotencyKey?: string
+}
+
+export function pauseTask(taskId: string | number, input: TaskCommandInput): Promise<TaskCommandResponse> {
   return apiClient.post<TaskCommandResponse>(`/tasks/${taskId}/commands/pause`, {
-    expected_version: 0,
-    idempotency_key: idempotencyKey,
+    expected_version: input.expectedVersion,
+    idempotency_key: input.idempotencyKey,
   })
 }
 
-export function resumeTask(taskId: string | number, idempotencyKey?: string): Promise<TaskCommandResponse> {
+export function resumeTask(taskId: string | number, input: TaskCommandInput): Promise<TaskCommandResponse> {
   return apiClient.post<TaskCommandResponse>(`/tasks/${taskId}/commands/resume`, {
-    expected_version: 0,
-    idempotency_key: idempotencyKey,
+    expected_version: input.expectedVersion,
+    idempotency_key: input.idempotencyKey,
   })
 }
 
-export function cancelTask(taskId: string | number, idempotencyKey?: string): Promise<TaskCommandResponse> {
+export function cancelTask(taskId: string | number, input: TaskCommandInput): Promise<TaskCommandResponse> {
   return apiClient.post<TaskCommandResponse>(`/tasks/${taskId}/commands/cancel`, {
-    expected_version: 0,
-    idempotency_key: idempotencyKey,
+    expected_version: input.expectedVersion,
+    idempotency_key: input.idempotencyKey,
   })
 }
 ```
 
-> 说明：`expected_version` 由前端从最近一次 Task Query 传入（真实乐观锁）。实施时在 Drawer 内把 `summary.version` 传入命令 API，不要写死 0。
+> **`expected_version` 必须由前端从最近一次 Task Query 传入（真实乐观锁）。** 后端
+> `TaskCommandDto.expected_version` 是必填，必须等于 Task 当前 `version`，否则 409
+> STALE_VERSION。Drawer 调用命令时传入 `summary.value.version`（见 Step 4 的
+> `runCommand`）。**禁止写死 0。**
 
 - [ ] **Step 4: 重写 TaskStatusDrawer 接真实数据**
 
@@ -2041,11 +2050,13 @@ const connectionLabel = computed(() => {
 
 async function runCommand(cmd: 'pause' | 'resume' | 'cancel'): Promise<void> {
   if (!can(cmd) || busy.value) return
+  const version = summary.value?.version
+  if (version === undefined) return
   busy.value = true
   notice.value = ''
   try {
     const fn = { pause: pauseTask, resume: resumeTask, cancel: cancelTask }[cmd]
-    await fn(taskId.value)
+    await fn(taskId.value, { expectedVersion: version })
     await load() // 立即拉取真实状态（PAUSING/CANCELLING 中间态来自后端事实）
   } catch (err) {
     notice.value = err instanceof Error ? err.message : String(err)
@@ -2107,7 +2118,108 @@ describe('openTaskEventStream', () => {
 })
 ```
 
-`frontend/src/app/overlay/drawers/TaskStatusDrawer.test.ts`：mock `tasks.api.getTask` 返回 `PAUSING` state + `allowed_actions: ['resume','cancel']`，断言暂停按钮禁用、恢复/取消可点；mock 命令 API，点击恢复后 `load()` 再次拉取 `PAUSED→RUNNING` 断言 UI 显示 RUNNING（不出现乐观假状态）。
+`frontend/src/app/overlay/drawers/TaskStatusDrawer.test.ts`：
+
+```ts
+import { flushPromises, mount } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { ApiError } from '@/app/error/ApiError'
+
+// EventSource 在 jsdom 不存在；stub 以便 useTaskEvents 可被驱动。
+class FakeEventSource {
+  onopen: (() => void) | null = null
+  onmessage: ((msg: MessageEvent) => void) | null = null
+  onerror: (() => void) | null = null
+  close = vi.fn()
+  // open/close 由测试直接触发
+  triggerOpen(): void { this.onopen?.() }
+  triggerMessage(eventType: string): void {
+    this.onmessage?.({ data: JSON.stringify({ event_id: 9, event_type: eventType, task_id: 1, run_id: null, occurred_at: '2026-08-10T00:00:00Z', payload: {} }) }) as unknown as void
+  }
+  triggerError(): void { this.onerror?.() }
+}
+
+vi.mock('@/features/tasks/tasks.api', () => ({
+  getTask: vi.fn(),
+}))
+
+vi.mock('@/features/tasks/commands.api', () => ({
+  pauseTask: vi.fn(),
+  resumeTask: vi.fn(),
+  cancelTask: vi.fn(),
+}))
+
+import * as tasksApi from '@/features/tasks/tasks.api'
+import * as commandsApi from '@/features/tasks/commands.api'
+import TaskStatusDrawer from '@/app/overlay/drawers/TaskStatusDrawer.vue'
+
+function pausingTask() {
+  return {
+    task_id: 1, title: '采集', state: 'PAUSING', version: 2, task_type: null,
+    current_spec_version: 1, current_plan_version: null,
+    allowed_actions: ['resume', 'cancel'],
+    created_at: '2026-08-10T00:00:00Z', updated_at: '2026-08-10T00:00:00Z',
+  }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.stubGlobal('EventSource', vi.fn().mockImplementation(() => new FakeEventSource()))
+})
+
+describe('TaskStatusDrawer', () => {
+  it('renders backend state and gates commands by allowed_actions', async () => {
+    vi.mocked(tasksApi.getTask).mockResolvedValue(pausingTask())
+    const wrapper = mount(TaskStatusDrawer, { props: { payload: { taskId: 1 } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('PAUSING')           // 真实中间态，非乐观 PAUSED
+    const buttons = wrapper.findAll('button')
+    const labels = buttons.map((b) => b.text()).join('|')
+    expect(labels).toContain('暂停')                        // 渲染了按钮（disabled 时不可点）
+    const pauseBtn = buttons.find((b) => b.text() === '暂停')!
+    expect(pauseBtn.attributes('disabled')).toBeDefined()  // PAUSING 不允许 pause
+    const resumeBtn = buttons.find((b) => b.text() === '恢复')!
+    expect(resumeBtn.attributes('disabled')).toBeUndefined()
+    const cancelBtn = buttons.find((b) => b.text() === '取消')!
+    expect(cancelBtn.attributes('disabled')).toBeUndefined()
+  })
+
+  it('resume calls the real command then re-queries truth (no optimistic state)', async () => {
+    vi.mocked(tasksApi.getTask).mockResolvedValueOnce(pausingTask())
+      .mockResolvedValueOnce({ ...pausingTask(), state: 'RUNNING', allowed_actions: ['pause', 'cancel'] })
+    vi.mocked(commandsApi.resumeTask).mockResolvedValue({ command: 'resume', state: 'RUNNING', version: 3 })
+    const wrapper = mount(TaskStatusDrawer, { props: { payload: { taskId: 1 } } })
+    await flushPromises()
+
+    const resumeBtn = wrapper.findAll('button').find((b) => b.text() === '恢复')!
+    await resumeBtn.trigger('click')
+    await flushPromises()
+
+    // 传入真实 expectedVersion（来自 summary.version=2），不写死 0
+    expect(commandsApi.resumeTask).toHaveBeenCalledWith(1, { expectedVersion: 2 })
+    expect(tasksApi.getTask).toHaveBeenCalledTimes(2)      // load() 重新拉取真实状态
+    expect(wrapper.text()).toContain('RUNNING')            // UI 以后端事实为准
+  })
+
+  it('surfaces command errors without fabricating state', async () => {
+    vi.mocked(tasksApi.getTask).mockResolvedValue(pausingTask())
+    vi.mocked(commandsApi.cancelTask).mockRejectedValue(new ApiError(409, '当前状态不允许取消', 'ILLEGAL_TRANSITION'))
+    const wrapper = mount(TaskStatusDrawer, { props: { payload: { taskId: 1 } } })
+    await flushPromises()
+
+    const cancelBtn = wrapper.findAll('button').find((b) => b.text() === '取消')!
+    await cancelBtn.trigger('click')
+    await flushPromises()
+
+    expect(commandsApi.cancelTask).toHaveBeenCalledWith(1, { expectedVersion: 2 })
+    expect(wrapper.text()).toContain('当前状态不允许取消')
+  })
+})
+```
+
+> 注：`FakeEventSource.triggerMessage` 的返回类型转换按实际 TS 需要微调（`onmessage` 接收 `MessageEvent`）。`EventSource` stub 置于 `beforeEach`，用 `vi.stubGlobal` 替换；测试结束 `vi.unstubAllGlobals()`。
 
 - [ ] **Step 6: 前端门禁**
 
