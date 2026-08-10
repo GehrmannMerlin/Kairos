@@ -11,7 +11,6 @@ import contextlib
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DbSession
-from temporalio.client import Client
 
 from app.agents.deps import get_goal_understanding_service
 from app.agents.service import GoalUnderstandingService
@@ -270,13 +269,14 @@ async def task_command(
     user: User = Depends(require_user),
     db: DbSession = Depends(get_db),
     service: TaskCommandService = Depends(get_task_command_service),
-    client: Client = Depends(get_temporal_client),
 ) -> TaskCommandResponse:
     """Pause / resume / cancel a task (M-07).
 
     Route 保持薄层：auth/DTO → TaskCommandService（幂等 + M-04 状态机事务 +
     outbox 入队，一次提交）→ 分发本 task 的 task.* outbox 为 Temporal Signal。
-    Signal 失败不改变 HTTP 结果：DB 命令已生效，outbox 保留 pending 待有界重试补发。
+
+    Temporal client 在路由体内懒创建（不放进 Depends）：Temporal 不可用时，命令
+    已在 DB 生效，Signal 分发失败被吞掉，不阻塞响应；outbox 保留 pending 待补发。
     """
     if command not in _TASK_COMMANDS:
         raise HTTPException(status_code=404, detail="未知命令")
@@ -289,9 +289,10 @@ async def task_command(
         reason=cmd.reason,
     )
     # DB 事务（state+event+outbox）已提交；现在把本 task 的 task.* outbox 分发为
-    # Temporal Signal。失败标记 outbox failed（attempts+1），由未来 worker 轮询补发
-    # （有界重试）；不阻塞响应——命令已在 DB 生效。分发失败不改变 HTTP 结果。
+    # Temporal Signal。client 懒创建：连接失败也被 suppress 吞掉——命令已在 DB 生效，
+    # 失败标记 outbox failed（attempts+1），由未来 worker 轮询补发（有界重试）。
     with contextlib.suppress(Exception):
+        client = await get_temporal_client()
         await OutboxTemporalDispatcher(client).dispatch_pending_for(
             db, user_id=user.id, task_id=task_id
         )
