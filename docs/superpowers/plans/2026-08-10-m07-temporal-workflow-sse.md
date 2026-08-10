@@ -770,7 +770,8 @@ class TaskWorkflowStarter:
         self._settings = settings or get_settings()
 
     async def start(
-        self, *, user_id: int, task_id: int, spec_version: int, plan_version: int = 0
+        self, *, user_id: int, task_id: int, spec_version: int, plan_version: int = 0,
+        task_queue: str | None = None,
     ) -> RunStartedResult:
         session = get_session_factory()()
         try:
@@ -795,7 +796,7 @@ class TaskWorkflowStarter:
             "task_workflow",
             arg=inp,
             id=workflow_id,
-            task_queue=self._settings.temporal_task_queue,
+            task_queue=task_queue or self._settings.temporal_task_queue,
         )
         return RunStartedResult(run_id=run.id, workflow_id=workflow_id)
 
@@ -1318,10 +1319,12 @@ M-04 commit_checkpoint 提供（同 batch + 同 fingerprint 返回既有行）�
 ## Task 4: Worker crash/restart 恢复 + 幂等重试（Temporal 集成）
 
 **Files:**
+- Create: `backend/tests/fixtures/__init__.py`
 - Create: `backend/tests/fixtures/execution_adapter.py`（fixture 执行单元 Activity，仅测试 worker 注册）
 - Create: `backend/tests/integration/fixture_worker.py`（独立 worker 入口，供 crash/restart 子进程运行）
 - Create: `backend/tests/integration/test_worker_crash_restart.py`
-- Modify: `backend/tests/integration/conftest.py`（追加 `fixture_task_queue` / `start_fixture_workflow` helper）
+  - 注：测试用内联 `_spawn_worker`/`_wait_checkpoint` helper，无需改 conftest（`confirmed_task` fixture 已由 Task 1 提供）。
+  - 关键：`starter.start(..., task_queue=queue)` 必须把 workflow 启动到测试专用 queue（与 fixture worker 同一 queue），否则 workflow 任务永远不会被测试 worker 消费、测试会挂起。
 
 **Interfaces:**
 - Consumes: Task 1 `TaskWorkflow`/`TaskWorkflowStarter`/lifecycle Activity；Task 3 `heartbeat_progress`。
@@ -1505,6 +1508,7 @@ async def test_worker_crash_restart_no_duplicate_batch(confirmed_task) -> None:
         user_id=confirmed_task["user_id"],
         task_id=confirmed_task["task_id"],
         spec_version=confirmed_task["spec_version"],
+        task_queue=queue,  # 启动到测试专用 queue，fixture worker 监听同一 queue
     )
 
     proc = _spawn_worker(queue)
@@ -1544,7 +1548,7 @@ Expected: PASS（本地栈 + Temporal 运行中）。
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/tests/fixtures/execution_adapter.py backend/tests/integration/fixture_worker.py backend/tests/integration/test_worker_crash_restart.py backend/tests/integration/conftest.py
+git add backend/tests/fixtures/__init__.py backend/tests/fixtures/execution_adapter.py backend/tests/integration/fixture_worker.py backend/tests/integration/test_worker_crash_restart.py
 git commit -m "test(workflow): cover worker crash restart recovery
 
 真实子进程 kill + 重启：unit-1 commit+checkpoint 后崩溃，重启后 batch1 不重复、
