@@ -1,12 +1,12 @@
 # DEPLOY-GATE-1 执行记录：真实服务器 Staging 上线
 
-状态：IN_PROGRESS
+状态：PASS
 负责人/Agent：Claude Code — 2026-08-10
 Deploy Branch：`ci/deploy-gate-1-staging`
 Baseline M-04 SHA：`cb4823117652450c822ef6834847ed3e6d93c5dc`
 目标环境：staging
 
-> 说明：本记录随 DEPLOY-GATE-1 执行逐步回填证据。真实服务器审计、DNS 现状与共享 nginx 拓扑已在 Task 1 固化。最终状态在全部 Smoke 完成后更新为 PASS / BLOCKED。
+> 说明：本记录随 DEPLOY-GATE-1 执行逐步回填证据。真实服务器审计、DNS 现状与共享 nginx 拓扑在 Task 1 固化；DNS 由用户在 Alibaba DNS Zone 添加 `staging A 47.238.145.24` 后，HTTPS 证书签发 + 共享 nginx vhost 激活完成，全量 Gate Smoke 通过，最终状态 PASS。
 
 ## 1. 目标
 
@@ -88,9 +88,14 @@ Baseline M-04 SHA：`cb4823117652450c822ef6834847ed3e6d93c5dc`
 
 ### DNS + HTTPS（Task 7）
 
-- DNS：BLOCKED_DNS_AUTH — `staging.kairos.ac.cn` 仍无 A 记录；zone 在 Alibaba Cloud DNS（hichina NS），本机/服务器均无 aliyun CLI、无凭据、无 browser automation 授权。唯一所需动作：在 kairos.ac.cn DNS Zone 创建 `staging A 47.238.145.24`
-- HTTPS：BLOCKED（依赖 DNS）— 共享 nginx vhost `zz-kairos-staging-tls.conf` 已备好并同步到 `/srv/kairos/deploy/nginx/conf.d/`，待 DNS 生效 + certbot 签发后激活
-- 共享 nginx 现状：`lumina-prod-nginx-1` 手动管理（无 compose labels），kairos vhost 以只读 bind-mount 注入；如需 recreate 必须保留 aurora/stellaris/kairos 全部挂载（见 compose.staging.override.yml 注释）
+- DNS：PASS — 用户已在 Alibaba DNS Zone 添加 `staging A 47.238.145.24`；公网 resolver（223.5.5.5 / 8.8.8.8）与权威 NS（dns.alidns.com cd=1）均返回 `47.238.145.24`
+- HTTPS 证书：PASS — certbot webroot 签发 `staging.kairos.ac.cn`（Let's Encrypt，CN=staging.kairos.ac.cn，有效期 2026-08-10 → 2026-11-08，自动续期已配置）
+- 共享 nginx vhost：PASS — 采用两阶段激活（共享 nginx 手动管理，无 compose labels，以 `docker cp` + `nginx -t` + reload 非破坏性注入，不影响 lumina/stellaris/aurora）：
+  1. 先注入 HTTP-only ACME 块（default_server 对未匹配 Host 返回 444，必须先建挑战块）→ 签发证书
+  2. 再注入完整 TLS vhost `zz-kairos-staging-tls.conf`，移除 HTTP-only 块 → `nginx -t` PASS → reload
+- 既有 vhost 复验：lumina.ac.cn / stellaris.ac.cn 均 200（未受影响）
+- HTTPS 验证：`https://staging.kairos.ac.cn/` 200（Kairos SPA，title=Kairos）；`/api/health/live` 200；`/api/health/ready` 200；HTTP→HTTPS 301；TLS 默认 CA 链可信（非 self-signed）
+- 共享 nginx 注入说明：`docker cp` 方式为容器重建后需重新注入；`infra/compose/compose.staging.override.yml` 记录了 recreate 时保留 aurora/stellaris/kairos 全部挂载的约束
 
 ### Restart / Rollback（Task 8）
 
@@ -100,12 +105,12 @@ Baseline M-04 SHA：`cb4823117652450c822ef6834847ed3e6d93c5dc`
 - release manifest：PASS — `/srv/kairos/releases/manifest-0b8a42c31f8d.json`（Git SHA / image tags+digests / migration / deploy time / domain；无 Secrets）
 - secret scan：PASS — GATE_TEST_SECRET 在 api/worker/temporal/postgres 日志、DB 可见字段、/srv/kairos 均无匹配
 - 脚本修复：rollback-staging.sh 改为按创建时间解析最新不可变镜像（SHA 字典序无意义）；deploy-staging.sh 注入 image tag + otel 配置路径；smoke-staging.sh 修正 auth(confirm_password+Secure cookie)/ownership(get_owned)/credential(vault)/M-04 checkpoint 签名
-- 测试数据清理：PASS — 删除全部 `@kairos.test` Gate 测试用户及其 domain/credential/session 行（FK 顺序），保留 smoke_probe×3 作为持久化证据；清理后栈仍 healthy
-- 最终 DNS 复核：`staging.kairos.ac.cn` 权威查询仍 NXDOMAIN（SOA serial 2026081017，无 A 记录）；无 aliyun CLI → 确认 BLOCKED_DNS_AUTH
+- 测试数据清理：PASS — 删除全部 `@kairos.test` Gate 测试用户及其 domain/credential/session 行（FK 顺序），保留 smoke_probe 作为持久化证据；清理后栈仍 healthy
+- 公网 HTTPS Auth Smoke：PASS — register 201 / login 200 / me 200 / logout 204 / me-after-logout 401（Secure+HttpOnly cookie 经真实 HTTPS 正常流转）
+- 最终 HTTPS 复核：web `/` 200（Kairos SPA）、`/api/health/live` 200、`/api/health/ready` 200、lumina/stellaris 200；测试用户已清理
 
 ## 5. Final Status
 
-- DEPLOY-GATE-1：**BLOCKED_DNS_AUTH**（唯一阻塞 = DNS A 记录；其余全部服务器工作 PASS）
+- DEPLOY-GATE-1：**PASS**（DNS 已解析 / HTTPS 真实可信 / 全量 Gate Smoke 通过）
 - M-04：**DEPLOYED**（staging 已部署并验证：migration 0004 / state machine / event+outbox / checkpoint replay / owner isolation / persistence / restart / rollback 恢复）
-- M-05：**UNBLOCKED**（但本轮不开始）
-- 唯一用户动作：在 `kairos.ac.cn` DNS Zone 创建 `staging A 47.238.145.24` → 之后执行 certbot 签发 + 激活共享 nginx vhost 即可完成 HTTPS，无需其它阻塞项
+- M-05：**UNBLOCKED**（但本轮不开始，等待下一步指令）
