@@ -36,3 +36,28 @@ async def create_smoke_worker(client: Client, settings: Settings) -> Worker:
         activities=[write_smoke_record],
         interceptors=_interceptors(),
     )
+
+
+async def create_task_worker(client: Client, settings: Settings) -> Worker:
+    from app.activities.task_execution import (
+        commit_checkpoint,
+        complete_run,
+        ensure_run_started,
+        mark_cancelled,
+        mark_paused,
+    )
+    from app.workflows.task_workflow import TaskWorkflow
+
+    return Worker(
+        client,
+        task_queue=settings.temporal_task_queue,
+        workflows=[TaskWorkflow],
+        activities=[
+            ensure_run_started,
+            mark_paused,
+            mark_cancelled,
+            complete_run,
+            commit_checkpoint,
+        ],
+        interceptors=_interceptors(),
+    )

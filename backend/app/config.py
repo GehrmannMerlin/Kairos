@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     temporal_namespace: str = "default"
     temporal_smoke_task_queue: str = "kairos-smoke"
 
+    # --- Temporal task execution (M-07) ---
+    temporal_task_queue: str = "kairos-task"
+    task_pause_timeout_seconds: int = 300
+    task_cancel_timeout_seconds: int = 300
+
     # --- Object storage (S3-compatible) ---
     s3_endpoint: str = "localhost:9000"
     s3_access_key: str = "kairos_minio"
