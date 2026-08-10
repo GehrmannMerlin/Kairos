@@ -9,18 +9,22 @@ import ChatComposer from '@/features/tasks/ChatComposer.vue'
 import ChatMessageList from '@/features/tasks/ChatMessageList.vue'
 import {
   addSeedUrl,
+  confirmSpec,
   getChat,
   getSpecDraft,
   runUnderstanding,
   sendMessage,
   type ChatMessageDto,
-  type SpecDraftResponse,
 } from '@/features/tasks/chat.api'
+import { asSpecDraftPayload, type SpecDraftPayload } from '@/features/tasks/spec.types'
+import { getTask } from '@/features/tasks/tasks.api'
+import SpecSummaryCard from '@/features/tasks/SpecSummaryCard.vue'
 
 // Agent 对话工作区（D-031/D-033）。一个 Task = 一个持续 Agent 对话。
 // M-06 使用普通 HTTP request/response，不 SSE、不 token 流式。
 // Model Required：真正调用 Agent 时才检查模型（D-066），Draft 与输入已持久化，
 // 返回 /models 后再回到同一 Task 继续。
+// Spec Summary Card（D-035）：draft 存在时展示；「确认并执行」→ confirm（冻结版本）。
 const route = useRoute()
 const taskId = computed(() => (typeof route.params.taskId === 'string' ? route.params.taskId : ''))
 
@@ -28,8 +32,11 @@ const messages = ref<ChatMessageDto[]>([])
 const loading = ref(false)
 const sending = ref(false)
 const understanding = ref(false)
+const confirming = ref(false)
 const urlInput = ref('')
-const draft = ref<SpecDraftResponse['payload']>(null)
+const draft = ref<SpecDraftPayload | null>(null)
+const taskVersion = ref<number | null>(null)
+const currentSpecVersion = ref<number | null>(null)
 const errorMsg = ref<string | null>(null)
 
 function hasUserMessage(): boolean {
@@ -46,12 +53,26 @@ function openModelRequired(): void {
   openModal('MODEL_REQUIRED', { returnTo: `/tasks/${taskId.value}/chat` })
 }
 
+async function refreshTaskMeta(): Promise<void> {
+  try {
+    const shell = await getTask(taskId.value)
+    taskVersion.value = shell.version
+    currentSpecVersion.value = shell.current_spec_version
+  } catch {
+    /* keep last known values */
+  }
+}
+
+async function reloadAll(): Promise<void> {
+  await Promise.all([loadChat(), refreshTaskMeta()])
+}
+
 async function loadChat(): Promise<void> {
   loading.value = true
   try {
     messages.value = (await getChat(taskId.value)).messages
     try {
-      draft.value = (await getSpecDraft(taskId.value)).payload
+      draft.value = asSpecDraftPayload((await getSpecDraft(taskId.value)).payload)
     } catch {
       draft.value = null
     }
@@ -74,8 +95,9 @@ async function runUnderstand(): Promise<void> {
   errorMsg.value = null
   try {
     const data = await runUnderstanding(taskId.value)
-    draft.value = data.spec_draft
+    draft.value = asSpecDraftPayload(data.spec_draft)
     messages.value = (await getChat(taskId.value)).messages
+    void refreshTaskMeta()
   } catch (err) {
     if (err instanceof ApiError && mapApiError(err).kind === 'model_not_configured') {
       openModelRequired()
@@ -111,19 +133,59 @@ async function onAddUrl(): Promise<void> {
   if (!url) return
   try {
     const resp = await addSeedUrl(taskId.value, url)
-    draft.value = resp.payload
+    draft.value = asSpecDraftPayload(resp.payload)
     urlInput.value = ''
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   }
 }
 
-watch(taskId, () => void loadChat(), { immediate: true })
+function openSpecEditor(): void {
+  openModal('COLLECTION_SPEC_EDITOR', {
+    taskId: taskId.value,
+    expectedVersion: taskVersion.value ?? 0,
+    payload: draft.value,
+    onChanged: () => void reloadAll(),
+  })
+}
+
+async function onConfirmSpec(): Promise<void> {
+  if (!draft.value) return
+  confirming.value = true
+  errorMsg.value = null
+  try {
+    const result = await confirmSpec(taskId.value, taskVersion.value ?? 0, { ...draft.value })
+    currentSpecVersion.value = result.spec_version
+    await refreshTaskMeta()
+    void loadChat()
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    confirming.value = false
+  }
+}
+
+watch(
+  taskId,
+  () => {
+    void refreshTaskMeta()
+    void loadChat()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <section class="chat">
     <div class="chat__body">
+      <SpecSummaryCard
+        v-if="draft"
+        :payload="draft"
+        :confirmed-version="currentSpecVersion"
+        :confirming="confirming"
+        @open-editor="openSpecEditor"
+        @confirm="onConfirmSpec"
+      />
       <ChatMessageList :messages="messages" :loading="loading" />
       <p v-if="errorMsg" class="chat__error">{{ errorMsg }}</p>
     </div>
@@ -163,6 +225,9 @@ watch(taskId, () => void loadChat(), { immediate: true })
 }
 .chat__body {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 .chat__error {
   color: #c62828;

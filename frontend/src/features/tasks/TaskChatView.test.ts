@@ -13,6 +13,22 @@ vi.mock('@/features/tasks/chat.api', () => ({
   runUnderstanding: vi.fn(),
   sendMessage: vi.fn(),
   addSeedUrl: vi.fn(),
+  confirmSpec: vi.fn(),
+}))
+
+vi.mock('@/features/tasks/tasks.api', () => ({
+  getTask: vi.fn().mockResolvedValue({
+    task_id: 1,
+    title: '采集',
+    state: 'DRAFT',
+    version: 1,
+    task_type: null,
+    current_spec_version: null,
+    current_plan_version: null,
+    allowed_actions: ['submit', 'delete'],
+    created_at: '2026-08-10T00:00:00Z',
+    updated_at: '2026-08-10T00:00:00Z',
+  }),
 }))
 
 import type { ChatMessageDto } from '@/features/tasks/chat.api'
