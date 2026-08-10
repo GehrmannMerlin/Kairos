@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import app.activities.task_execution as task_execution
 import pytest
-from app.activities.task_execution import FailRunInput, fail_run
+from app.activities.task_execution import (
+    CommitCheckpointInput,
+    FailRunInput,
+    commit_checkpoint,
+    fail_run,
+)
 from app.auth.models import User
-from app.domain.models import Run, Task
+from app.domain.errors import DomainError
+from app.domain.models import Checkpoint, Run, Task
 from app.domain.repository import RunRepository, TaskRepository
 from app.infra.db import Base
 from sqlalchemy import create_engine
@@ -52,3 +58,85 @@ async def test_fail_run_marks_task_and_run_failed(monkeypatch, tmp_path) -> None
         assert run.finished_at is not None
     finally:
         session.close()
+
+
+def _commit_input(*, user_id: int, task_id: int, batch: str, fp: str) -> CommitCheckpointInput:
+    return CommitCheckpointInput(
+        task_id=task_id,
+        user_id=user_id,
+        run_id=1,
+        spec_version=1,
+        plan_version=0,
+        batch_identity=batch,
+        node_run_id=None,
+        input_fingerprint=fp,
+        committed_refs={"n": 1},
+        content_hash=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_commit_checkpoint_reuses_same_batch_activity(monkeypatch, tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'activities.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(task_execution, "get_session_factory", lambda: factory)
+
+    session = factory()
+    try:
+        user = User(email="cp@kairos.test", password_hash="hash")
+        session.add(user)
+        session.commit()
+        task = TaskRepository(session).create(user_id=user.id, title="cp reuse", task_type=None)
+        task_id = task.id
+        user_id = user.id
+    finally:
+        session.close()
+
+    inp = _commit_input(user_id=user_id, task_id=task_id, batch="unit-1", fp="fp-1")
+    first = await commit_checkpoint(inp)
+    second = await commit_checkpoint(inp)
+
+    assert first.reused is False
+    assert second.checkpoint_id == first.checkpoint_id
+    assert second.reused is True
+
+    session = factory()
+    try:
+        rows = session.query(Checkpoint).filter_by(run_id=1).all()
+        assert len(rows) == 1
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_commit_checkpoint_same_batch_different_fingerprint_raises(
+    monkeypatch, tmp_path
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'activities.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(task_execution, "get_session_factory", lambda: factory)
+
+    session = factory()
+    try:
+        user = User(email="cp-conflict@kairos.test", password_hash="hash")
+        session.add(user)
+        session.commit()
+        task = TaskRepository(session).create(user_id=user.id, title="cp conflict", task_type=None)
+        task_id = task.id
+        user_id = user.id
+    finally:
+        session.close()
+
+    await commit_checkpoint(
+        _commit_input(user_id=user_id, task_id=task_id, batch="unit-1", fp="fp-1")
+    )
+    with pytest.raises(DomainError):
+        await commit_checkpoint(
+            _commit_input(user_id=user_id, task_id=task_id, batch="unit-1", fp="fp-DIFFERENT")
+        )
