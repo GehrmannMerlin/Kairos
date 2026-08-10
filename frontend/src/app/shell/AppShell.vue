@@ -2,6 +2,10 @@
 import { computed, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
+import DrawerHost from '@/app/overlay/DrawerHost.vue'
+import ModalHost from '@/app/overlay/ModalHost.vue'
+import SheetHost from '@/app/overlay/SheetHost.vue'
+import { appNotices, dismissNotice } from '@/app/error/useAppNotice'
 import { authStore } from '@/features/auth/useAuth'
 
 const SIDEBAR_KEY = 'kairos.sidebarCollapsed'
@@ -86,6 +90,22 @@ async function onLogout(): Promise<void> {
       <main class="shell__main">
         <slot />
       </main>
+
+      <div v-if="appNotices.length" class="shell__notices" aria-live="polite">
+        <div
+          v-for="notice in appNotices"
+          :key="notice.id"
+          class="shell__notice"
+          :class="`shell__notice--${notice.kind}`"
+        >
+          <span>{{ notice.message }}</span>
+          <button type="button" aria-label="关闭" @click="dismissNotice(notice.id)">×</button>
+        </div>
+      </div>
+
+      <DrawerHost />
+      <ModalHost />
+      <SheetHost />
     </div>
   </div>
 </template>
@@ -236,5 +256,36 @@ async function onLogout(): Promise<void> {
 .shell__menu a:hover,
 .shell__menu button:hover {
   background: var(--color-border);
+}
+.shell__notices {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(360px, 90vw);
+}
+.shell__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.08);
+  font-size: 0.9rem;
+}
+.shell__notice--error {
+  border-color: var(--color-danger);
+}
+.shell__notice button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--color-text-secondary);
 }
 </style>
