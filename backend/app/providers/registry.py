@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from app.providers import errors
 from app.providers.adapters.anthropic import AnthropicModelProvider
+from app.providers.adapters.custom_compatible_search import CustomCompatibleSearchProvider
 from app.providers.adapters.gemini import GeminiModelProvider
 from app.providers.adapters.ollama import OllamaModelProvider
 from app.providers.adapters.openai_compatible import OpenAICompatibleModelProvider
 from app.providers.protocol import ModelProvider, ProviderDefinition
+from app.providers.search_protocol import SearchProvider
 from app.providers.transport import HttpClient
 
 _OPENAI_COMPATIBLE_DEFS: list[ProviderDefinition] = [
@@ -85,4 +87,24 @@ def build_model_provider(provider_type: str, http: HttpClient | None = None) -> 
         definition = next(d for d in _OPENAI_COMPATIBLE_DEFS if d.provider_type == provider_type)
         return OpenAICompatibleModelProvider(definition, http)
     builder = _MODEL_PROVIDER_BUILDERS[provider_type]
+    return builder(http)
+
+
+_SEARCH_PROVIDER_BUILDERS: dict[str, type] = {
+    "custom_compatible_search": CustomCompatibleSearchProvider,
+}
+
+
+def list_search_provider_definitions() -> list[ProviderDefinition]:
+    return [CustomCompatibleSearchProvider.definition]
+
+
+def validate_search_provider_type(provider_type: str) -> None:
+    if provider_type not in _SEARCH_PROVIDER_BUILDERS:
+        raise errors.ProviderValidationError(f"不支持的搜索 Provider: {provider_type}")
+
+
+def build_search_provider(provider_type: str, http: HttpClient | None = None) -> SearchProvider:
+    validate_search_provider_type(provider_type)
+    builder = _SEARCH_PROVIDER_BUILDERS[provider_type]
     return builder(http)
