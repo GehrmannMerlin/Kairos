@@ -4,11 +4,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/app/error/ApiError'
 
 // EventSource 在 jsdom 不存在；stub 以便 useTaskEvents 可被驱动。
+// 后端 SSE 发命名事件，useTaskEvents 用 addEventListener(type, cb) 订阅。
 class FakeEventSource {
   onopen: (() => void) | null = null
   onmessage: ((msg: MessageEvent) => void) | null = null
   onerror: (() => void) | null = null
   close = vi.fn()
+  private listeners = new Map<string, ((msg: MessageEvent) => void)[]>()
+
+  addEventListener(type: string, cb: (msg: MessageEvent) => void): void {
+    const list = this.listeners.get(type) ?? []
+    list.push(cb)
+    this.listeners.set(type, list)
+  }
   // open/close 由测试直接触发
   triggerOpen(): void {
     this.onopen?.()
@@ -22,7 +30,8 @@ class FakeEventSource {
       occurred_at: '2026-08-10T00:00:00Z',
       payload: {},
     })
-    this.onmessage?.({ data } as MessageEvent)
+    const cbs = this.listeners.get(eventType) ?? []
+    for (const cb of cbs) cb({ data } as MessageEvent)
   }
   triggerError(): void {
     this.onerror?.()
