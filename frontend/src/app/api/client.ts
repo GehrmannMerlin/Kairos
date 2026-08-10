@@ -73,7 +73,7 @@ export class ApiClient {
       if (error instanceof ApiError) {
         throw error
       }
-      throw new ApiError(0, '网络请求失败或超时', error)
+      throw new ApiError(0, '网络请求失败或超时', '', error)
     } finally {
       clearTimeout(timer)
       externalSignal?.removeEventListener('abort', abortFromOutside)
@@ -82,19 +82,25 @@ export class ApiClient {
 
   private async toApiError(response: Response): Promise<ApiError> {
     let detail: string = `请求失败 (${response.status})`
+    let code = ''
     try {
       const body = (await response.json()) as ApiErrorBody
-      if (typeof body.detail === 'string' && body.detail.length > 0) {
+      if (isRecord(body.detail)) {
+        if (typeof body.detail.code === 'string') {
+          code = body.detail.code
+        }
+        if (typeof body.detail.message === 'string' && body.detail.message.length > 0) {
+          detail = body.detail.message
+        }
+      } else if (typeof body.detail === 'string' && body.detail.length > 0) {
         detail = body.detail
       } else if (Array.isArray(body.detail)) {
         detail = body.detail.map((d) => String(d)).join('; ')
-      } else if (isRecord(body.detail) && typeof body.detail.message === 'string') {
-        detail = body.detail.message
       }
     } catch {
       // non-JSON error body; keep the generic message
     }
-    return new ApiError(response.status, detail)
+    return new ApiError(response.status, detail, code)
   }
 }
 
