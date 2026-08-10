@@ -1,7 +1,7 @@
 # M-07 模块执行记录
 
-状态：IN_PROGRESS（最终 DONE 由控制器在全部门禁验证后更新）
-负责人/Agent：Claude Code — 2026-08-10
+状态：IN_PROGRESS → **DONE**（控制器全部门禁验证通过）
+负责人/Agent：Claude Code — 2026-08-10 / 2026-08-11
 Baseline（M-06 DONE）SHA：`408a9335174d0423b0f084fa0c38c2f8da8cf2bf`
 依赖模块：M-04（DEPLOYED）、M-06（DONE）
 目标环境：local（M-07 不属于 Deploy Gate；DEPLOY-GATE-2 必须等 M-05～M-08）
@@ -59,7 +59,31 @@ NO MIGRATION（复用 M-04 runs/checkpoints/domain_events/outbox_events/idempote
   - `b9a7111` docs(workflow): use real command path in m07 temporal integration tests
   - `167cd1a` test(workflow): cover pause resume cancel and command idempotency
   - `feb65ec` docs(workflow): fill m07 execution record template values
+  - `7c67e4d` docs(workflow): record M-07 execution
+  - `db558a7` fix(workflow): keep paused tasks stable and retry outbox signals（整支评审 4 Important + 2 Minor 修复）
 - working tree：clean；pushed：NO
 
 ## 8. 完成结论
-- M-07 DONE 门禁全部满足后由控制器填写 DONE。
+
+**M-07 DONE 门禁验证（控制器最终复核，2026-08-11）：**
+
+- M-06 = DONE（前置满足）✅
+- TaskWorkflow / Run 启动 / typed IDs-only input / Temporal History 无 Secret ✅
+- confirmed Spec 冻结校验（`RunSpecNotFrozenError` non-retryable）✅
+- pause / PAUSING / PAUSED（协作式停止，超时保持 PAUSED 不腐化）✅
+- resume / checkpoint resume（无重复）✅
+- cancel / CANCELLING / CANCELLED / cancelled run 不可 resume ✅
+- 重复命令幂等（同 key 一次转换 + 一次 outbox + 一次 Signal）✅
+- Activity heartbeat（≠ checkpoint）；heartbeat_progress ✅
+- Worker crash/restart（真实子进程 kill，batch1 不重复）✅
+- SSETaskEvent schema / Last-Event-ID replay / 跨用户隔离 / Task Query fallback ✅
+- Task Status Drawer 真实 RUNNING/PAUSING/PAUSED/CANCELLING/CANCELLED 过渡 ✅
+- 后端 scoped tests：`tests/state/ domain/test_task_commands.py domain/test_checkpoint.py api/test_task_commands.py api/test_task_events.py` → 25 passed ✅
+- Temporal 集成：`test_task_workflow.py + test_worker_crash_restart.py` → 6 passed（start / pause-resume / cancel / duplicate / crash-restart / pause-timeout）✅
+- 前端：`type-check` PASS、`lint:check` PASS、`format:check` PASS、`test:unit -- taskEvents TaskStatusDrawer` 6/6 PASS、`build` PASS ✅
+- ruff check/format PASS、mypy app PASS（87 files）✅
+- secret scan：无新增 Secret（M-06 真实 Key 不在仓库）✅
+- docs：本执行记录 DONE ✅
+- working tree：clean；pushed：NO ✅
+
+**最终状态：DONE**。下一模块：M-08（Plan 生成、节点注册表、确定性校验与人工审批），暂不开始。
