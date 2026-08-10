@@ -99,7 +99,9 @@ Baseline M-04 SHA：`cb4823117652450c822ef6834847ed3e6d93c5dc`
 - rollback readiness：PASS — FIRST_STAGING_RELEASE；`down --remove-orphans`（无 -v，保留 named volumes）→ `up -d --wait` 以当前不可变镜像恢复，数据仍在（smoke_probe=1, users=11, tasks=4, alembic=0004）
 - release manifest：PASS — `/srv/kairos/releases/manifest-0b8a42c31f8d.json`（Git SHA / image tags+digests / migration / deploy time / domain；无 Secrets）
 - secret scan：PASS — GATE_TEST_SECRET 在 api/worker/temporal/postgres 日志、DB 可见字段、/srv/kairos 均无匹配
-- 脚本修复：rollback-staging.sh 改为按创建时间解析最新不可变镜像（SHA 字典序无意义）；deploy-staging.sh 注入 image tag + otel 配置路径
+- 脚本修复：rollback-staging.sh 改为按创建时间解析最新不可变镜像（SHA 字典序无意义）；deploy-staging.sh 注入 image tag + otel 配置路径；smoke-staging.sh 修正 auth(confirm_password+Secure cookie)/ownership(get_owned)/credential(vault)/M-04 checkpoint 签名
+- 测试数据清理：PASS — 删除全部 `@kairos.test` Gate 测试用户及其 domain/credential/session 行（FK 顺序），保留 smoke_probe×3 作为持久化证据；清理后栈仍 healthy
+- 最终 DNS 复核：`staging.kairos.ac.cn` 权威查询仍 NXDOMAIN（SOA serial 2026081017，无 A 记录）；无 aliyun CLI → 确认 BLOCKED_DNS_AUTH
 
 ## 5. Final Status
 
