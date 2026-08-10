@@ -10,6 +10,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session as DbSession
 
+from app.agents.deps import get_goal_understanding_service
+from app.agents.service import GoalUnderstandingService
 from app.api.schemas import (
     AddSeedUrlCommand,
     ChatListResponse,
@@ -21,6 +23,7 @@ from app.api.schemas import (
     SpecDraftResponse,
     TaskShellDto,
     TaskShellListResponse,
+    UnderstandResponse,
     UpdateSpecDraftCommand,
 )
 from app.auth.deps import require_user
@@ -159,3 +162,19 @@ def add_seed_url(
 ) -> SpecDraftResponse:
     payload = service.add_seed_url(user_id=user.id, task_id=task_id, url=cmd.url)
     return SpecDraftResponse(task_id=task_id, payload=payload)
+
+
+@router.post("/{task_id}/understand", response_model=UnderstandResponse)
+async def understand_task(
+    task_id: int,
+    user: User = Depends(require_user),
+    service: GoalUnderstandingService = Depends(get_goal_understanding_service),
+) -> UnderstandResponse:
+    """Run Goal Understanding once. Errors keep the Draft + user message (D-066)."""
+    outcome = await service.understand_for_task(user=user, task_id=task_id)
+    return UnderstandResponse(
+        task_id=task_id,
+        message=_chat_dto(outcome.message),
+        result=outcome.result.model_dump(mode="json"),
+        spec_draft=outcome.spec_draft,
+    )

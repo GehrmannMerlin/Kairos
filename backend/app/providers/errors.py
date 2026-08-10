@@ -28,3 +28,30 @@ class ModelNotConfiguredError(ProviderError):
 class SearchProviderNotConfiguredError(ProviderError):
     code = "SEARCH_PROVIDER_NOT_CONFIGURED"
     status_code = 409
+
+
+class ProviderAuthFailedError(ProviderError):
+    code = "AUTH_FAILED"
+    status_code = 401
+
+
+class ProviderModelNotFoundError(ProviderError):
+    code = "MODEL_NOT_FOUND"
+    status_code = 404
+
+
+class ProviderRateLimitedError(ProviderError):
+    code = "RATE_LIMITED"
+    status_code = 429
+
+
+class ProviderNetworkError(ProviderError):
+    code = "NETWORK_ERROR"
+    status_code = 503
+
+
+class ProviderInferenceError(ProviderError):
+    """A provider call succeeded transport-wise but produced no usable output."""
+
+    code = "PROVIDER_INFERENCE_ERROR"
+    status_code = 502

@@ -76,3 +76,10 @@ class UpdateSpecDraftCommand(BaseModel):
 
 class AddSeedUrlCommand(BaseModel):
     url: str
+
+
+class UnderstandResponse(BaseModel):
+    task_id: int
+    message: ChatMessageDto
+    result: dict
+    spec_draft: dict
