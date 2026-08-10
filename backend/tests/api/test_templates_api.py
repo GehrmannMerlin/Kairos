@@ -92,7 +92,9 @@ def test_cross_user_template_404(client: dict) -> None:
 
     assert c.get(f"/api/templates/{tpl['template_id']}").status_code == 404
     assert (
-        c.post(f"/api/templates/{tpl['template_id']}/use", json={"variables": {"city": "X"}}).status_code
+        c.post(
+            f"/api/templates/{tpl['template_id']}/use", json={"variables": {"city": "X"}}
+        ).status_code
         == 404
     )
     assert c.patch(f"/api/templates/{tpl['template_id']}", json=_template_body()).status_code == 404
@@ -106,7 +108,8 @@ def test_update_creates_new_version(client: dict) -> None:
     tpl = c.post("/api/templates", json=_template_body()).json()
 
     updated = c.patch(
-        f"/api/templates/{tpl['template_id']}", json=_template_body(goal_template="帮我搜集{city}的 B")
+        f"/api/templates/{tpl['template_id']}",
+        json=_template_body(goal_template="帮我搜集{city}的 B"),
     )
     assert updated.status_code == 200
     assert updated.json()["version"] == 2
@@ -129,7 +132,9 @@ def test_duplicate_and_favorite(client: dict) -> None:
 def test_create_template_from_task(client: dict) -> None:
     c = client["client"]
     _register(c, "alice@example.com")
-    task_id = c.post("/api/tasks", json={"content": "帮我搜集深圳的工业自动化设备供应商"}).json()["task_id"]
+    task_id = c.post("/api/tasks", json={"content": "帮我搜集深圳的工业自动化设备供应商"}).json()[
+        "task_id"
+    ]
 
     payload = {
         "schema_version": "m06.1",
