@@ -96,3 +96,38 @@ class ConfirmSpecResponse(BaseModel):
     task_id: int
     spec_version: int
     state: str
+
+
+class TemplateDto(BaseModel):
+    template_id: str
+    version: int
+    name: str
+    task_type: str
+    goal_template: str
+    variables: list
+    field_schema: list
+    completion_conditions: list
+    advanced_settings: dict
+    field_expansion: dict
+    is_favorite: bool
+    created_at: datetime
+
+
+class TemplateListResponse(BaseModel):
+    templates: list[TemplateDto]
+
+
+class TemplateFavoriteCommand(BaseModel):
+    favorite: bool
+
+
+class UseTemplateCommand(BaseModel):
+    variables: dict[str, str] = {}
+
+
+class UseTemplateResponse(BaseModel):
+    task_id: int
+
+
+class CreateTemplateFromTaskCommand(BaseModel):
+    task_id: int

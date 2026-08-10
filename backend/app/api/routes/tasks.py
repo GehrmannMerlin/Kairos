@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.agents.deps import get_goal_understanding_service
 from app.agents.service import GoalUnderstandingService
+from app.api.routes.templates import get_template_service
 from app.api.schemas import (
     AddSeedUrlCommand,
     ChatListResponse,
@@ -25,6 +26,7 @@ from app.api.schemas import (
     SpecDraftResponse,
     TaskShellDto,
     TaskShellListResponse,
+    TemplateDto,
     UnderstandResponse,
     UpdateSpecDraftCommand,
 )
@@ -35,6 +37,7 @@ from app.domain.models import ChatMessage, Task
 from app.domain.repository import TaskRepository
 from app.domain.service import DomainService
 from app.domain.task_draft import TaskDraftService
+from app.domain.template_service import TemplateService
 from app.infra.deps import get_db
 from app.state.states import TaskState, allowed_task_actions
 
@@ -174,6 +177,30 @@ def add_seed_url(
 ) -> SpecDraftResponse:
     payload = service.add_seed_url(user_id=user.id, task_id=task_id, url=cmd.url)
     return SpecDraftResponse(task_id=task_id, payload=payload)
+
+
+@router.post("/{task_id}/template", response_model=TemplateDto)
+def create_template_from_task(
+    task_id: int,
+    user: User = Depends(require_user),
+    service: TemplateService = Depends(get_template_service),
+) -> TemplateDto:
+    """D-047: save a confirmed Spec as a template (owner-safe)."""
+    row = service.create_from_task(user_id=user.id, task_id=task_id)
+    return TemplateDto(
+        template_id=row.template_id,
+        version=row.version,
+        name=row.name,
+        task_type=row.task_type,
+        goal_template=row.goal_template,
+        variables=row.variables,
+        field_schema=row.field_schema,
+        completion_conditions=row.completion_conditions,
+        advanced_settings=row.advanced_settings,
+        field_expansion=row.field_expansion,
+        is_favorite=row.is_favorite,
+        created_at=row.created_at,
+    )
 
 
 @router.post("/{task_id}/understand", response_model=UnderstandResponse)

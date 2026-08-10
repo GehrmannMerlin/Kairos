@@ -38,6 +38,7 @@ def result_to_spec_payload(result: GoalUnderstandingResult) -> dict:
         completion_conditions=result.completion_conditions,
         advanced_settings=result.advanced_runtime_limits,
         field_expansion={},
+        template_variables=result.template_variables or [],
     ).model_dump(mode="json")
 
 

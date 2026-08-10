@@ -31,6 +31,10 @@ vi.mock('@/features/tasks/tasks.api', () => ({
   }),
 }))
 
+vi.mock('@/features/templates/templates.api', () => ({
+  createTemplateFromTask: vi.fn().mockResolvedValue({ template_id: 't1', version: 1 }),
+}))
+
 import type { ChatMessageDto } from '@/features/tasks/chat.api'
 import * as chatApi from '@/features/tasks/chat.api'
 import * as modalStore from '@/app/overlay/modal.store'

@@ -12,7 +12,7 @@ const props = defineProps<{
   confirming?: boolean
 }>()
 
-const emit = defineEmits<{ 'open-editor': []; confirm: [] }>()
+const emit = defineEmits<{ 'open-editor': []; confirm: []; 'save-template': [] }>()
 
 const taskTypeLabel = computed(() =>
   props.payload.task_type
@@ -63,6 +63,9 @@ const taskTypeLabel = computed(() =>
 
     <footer class="spec-card__actions">
       <button type="button" class="ghost" @click="emit('open-editor')">查看 / 修改采集方案</button>
+      <button v-if="confirmedVersion" type="button" class="ghost" @click="emit('save-template')">
+        保存为模板
+      </button>
       <button
         v-if="!confirmedVersion"
         type="button"

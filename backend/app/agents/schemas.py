@@ -12,19 +12,10 @@ from app.domain.spec import (
     FieldSpec,
     RuntimeLimits,
     SourceScope,
+    TemplateVariableSuggestion,
 )
 from app.domain.task_types import TaskType
 from pydantic import BaseModel, Field
-
-
-class TemplateVariableSuggestion(BaseModel):
-    """D-047: a single-use value (e.g. 深圳) the agent suggests turning into a
-    template variable ``{city}`` when saving a spec as a template.
-    """
-
-    name: str
-    label: str
-    value: str
 
 
 class GoalUnderstandingResult(BaseModel):

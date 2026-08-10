@@ -18,6 +18,7 @@ import {
 } from '@/features/tasks/chat.api'
 import { asSpecDraftPayload, type SpecDraftPayload } from '@/features/tasks/spec.types'
 import { getTask } from '@/features/tasks/tasks.api'
+import { createTemplateFromTask } from '@/features/templates/templates.api'
 import SpecSummaryCard from '@/features/tasks/SpecSummaryCard.vue'
 
 // Agent 对话工作区（D-031/D-033）。一个 Task = 一个持续 Agent 对话。
@@ -38,6 +39,7 @@ const draft = ref<SpecDraftPayload | null>(null)
 const taskVersion = ref<number | null>(null)
 const currentSpecVersion = ref<number | null>(null)
 const errorMsg = ref<string | null>(null)
+const noticeMsg = ref<string | null>(null)
 
 function hasUserMessage(): boolean {
   return messages.value.some((m) => m.role === 'user')
@@ -149,6 +151,17 @@ function openSpecEditor(): void {
   })
 }
 
+async function onSaveAsTemplate(): Promise<void> {
+  noticeMsg.value = null
+  errorMsg.value = null
+  try {
+    await createTemplateFromTask(taskId.value)
+    noticeMsg.value = '已保存为模板，可在「模板」页查看。'
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 async function onConfirmSpec(): Promise<void> {
   if (!draft.value) return
   confirming.value = true
@@ -185,9 +198,11 @@ watch(
         :confirming="confirming"
         @open-editor="openSpecEditor"
         @confirm="onConfirmSpec"
+        @save-template="onSaveAsTemplate"
       />
       <ChatMessageList :messages="messages" :loading="loading" />
       <p v-if="errorMsg" class="chat__error">{{ errorMsg }}</p>
+      <p v-if="noticeMsg" class="chat__notice">{{ noticeMsg }}</p>
     </div>
 
     <div class="chat__footer">
@@ -231,6 +246,10 @@ watch(
 }
 .chat__error {
   color: #c62828;
+  font-size: 0.85rem;
+}
+.chat__notice {
+  color: #2e7d32;
   font-size: 0.85rem;
 }
 .chat__footer {

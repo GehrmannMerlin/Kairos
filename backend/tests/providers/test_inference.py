@@ -30,6 +30,10 @@ async def test_openai_compatible_calls_chat_completions() -> None:
     call = fake.calls[0]
     assert call["url"] == "https://api.openai.com/v1/chat/completions"
     assert call["headers"]["Authorization"] == "Bearer sk-test"
+    # 请求体必须真实发送（含 model / messages / json_object 输出格式）。
+    assert call["body"]["model"] == "gpt-4o-mini"
+    assert call["body"]["messages"][0]["role"] == "system"
+    assert call["body"]["response_format"] == {"type": "json_object"}
 
 
 @pytest.mark.asyncio

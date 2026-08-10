@@ -68,6 +68,17 @@ class RuntimeLimits(BaseModel):
     max_retries_per_url: int | None = None
 
 
+class TemplateVariableSuggestion(BaseModel):
+    """D-047: a single-use value (e.g. 深圳) the agent suggests turning into a
+    template variable ``{city}``. Stored on the spec draft so create_from_task()
+    can variable-ize the goal without an extra model call.
+    """
+
+    name: str
+    label: str
+    value: str
+
+
 class SpecDraftPayload(BaseModel):
     """Editable current-candidate spec for one task (D-004).
 
@@ -85,6 +96,7 @@ class SpecDraftPayload(BaseModel):
     completion_conditions: list[CompletionCondition] = Field(default_factory=list)
     advanced_settings: RuntimeLimits = Field(default_factory=RuntimeLimits)
     field_expansion: dict = Field(default_factory=dict)
+    template_variables: list[TemplateVariableSuggestion] = Field(default_factory=list)
 
 
 def validate_spec_payload(payload: dict) -> SpecDraftPayload:

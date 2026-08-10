@@ -28,6 +28,7 @@ class HttpClient(Protocol):
         headers: dict[str, str] | None,
         params: dict[str, str] | None,
         timeout_seconds: float,
+        body: dict | None = None,
     ) -> HttpResponse: ...
 
 
@@ -43,11 +44,12 @@ class HttpxTransport:
         headers: dict[str, str] | None,
         params: dict[str, str] | None,
         timeout_seconds: float | None = None,
+        body: dict | None = None,
     ) -> HttpResponse:
         async with httpx.AsyncClient(timeout=timeout_seconds or self._timeout) as client:
-            resp = await client.request(method, url, headers=headers, params=params)
+            resp = await client.request(method, url, headers=headers, params=params, json=body)
             try:
-                body = resp.json()
+                resp_body = resp.json()
             except Exception:
-                body = None
-            return HttpResponse(status_code=resp.status_code, body=body, text=resp.text)
+                resp_body = None
+            return HttpResponse(status_code=resp.status_code, body=resp_body, text=resp.text)

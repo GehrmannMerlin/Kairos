@@ -99,6 +99,7 @@ class ModelInferenceClient:
             headers=headers,
             params=None,
             timeout_seconds=self._timeout,
+            body=body,
         )
         if resp.status_code != 200:
             raise _map_http_error(resp.status_code)
@@ -129,6 +130,7 @@ class ModelInferenceClient:
             headers=headers,
             params=None,
             timeout_seconds=self._timeout,
+            body=body,
         )
         if resp.status_code != 200:
             raise _map_http_error(resp.status_code)
@@ -157,6 +159,7 @@ class ModelInferenceClient:
             headers=headers,
             params=params,
             timeout_seconds=self._timeout,
+            body=body,
         )
         if resp.status_code != 200:
             raise _map_http_error(resp.status_code)

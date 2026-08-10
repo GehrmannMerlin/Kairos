@@ -17,7 +17,7 @@ const seedUrls = ref<string[]>([])
 const creating = ref(false)
 const errorMsg = ref<string | null>(null)
 
-const QUICK_STARTS = ['搜集某类信息', '抓取指定网站', '搜索并批量抓取']
+const QUICK_STARTS = ['搜集某类信息', '抓取指定网站', '搜索并批量抓取', '使用模板']
 
 const QUICK_EXAMPLES: Record<string, string> = {
   搜集某类信息: '帮我搜集深圳的工业自动化设备供应商，获取公司名、官网、主营产品和联系方式',
@@ -26,6 +26,10 @@ const QUICK_EXAMPLES: Record<string, string> = {
 }
 
 function useQuickStart(label: string): void {
+  if (label === '使用模板') {
+    void router.push('/templates')
+    return
+  }
   content.value = QUICK_EXAMPLES[label] ?? content.value
 }
 
