@@ -19,27 +19,38 @@ COMPOSE_DIR="/srv/kairos/compose"
 COMPOSE=(docker compose -p kairos-staging -f "${COMPOSE_DIR}/compose.base.yml" -f "${COMPOSE_DIR}/compose.staging.yml")
 
 echo "==> rollback readiness for kairos-staging"
+
+# Resolve the most recently created immutable tag from the server (staging-<sha>).
+# Sort by creation time, not tag lexicographically (SHA sort is meaningless).
+CURRENT_WEB="$("${SSH[@]}" "docker images --format '{{.Repository}}:{{.Tag}}|{{.CreatedAt}}' | grep '^kairos-web:staging-' | sort -t'|' -k2 | tail -1 | cut -d'|' -f1" 2>/dev/null || true)"
+CURRENT_API="$("${SSH[@]}" "docker images --format '{{.Repository}}:{{.Tag}}|{{.CreatedAt}}' | grep '^kairos-api:staging-' | sort -t'|' -k2 | tail -1 | cut -d'|' -f1" 2>/dev/null || true)"
+CURRENT_WORKER="$("${SSH[@]}" "docker images --format '{{.Repository}}:{{.Tag}}|{{.CreatedAt}}' | grep '^kairos-worker:staging-' | sort -t'|' -k2 | tail -1 | cut -d'|' -f1" 2>/dev/null || true)"
+[[ -n "$CURRENT_WEB" && -n "$CURRENT_API" && -n "$CURRENT_WORKER" ]] \
+  || { echo "ERROR: could not resolve current immutable images"; exit 1; }
+echo "current images: $CURRENT_WEB / $CURRENT_API / $CURRENT_WORKER"
+
 if [[ -n "${PREVIOUS_STAGING_IMAGE:-}" ]]; then
   echo "previous image: $PREVIOUS_STAGING_IMAGE (switching compose image tags)"
-  "${SSH[@]}" "cd ${COMPOSE_DIR} && sed -i 's|KAIROS_*_IMAGE.*|&|' /dev/null" >/dev/null 2>&1 || true
-  # Compose image tags come from the deploy script env; for rollback we override
-  # them by exporting the previous tags for this invocation.
-  "${SSH[@]}" "cd ${COMPOSE_DIR} && KAIROS_WEB_IMAGE=$PREVIOUS_STAGING_IMAGE \
-      KAIROS_API_IMAGE=$PREVIOUS_STAGING_IMAGE \
-      KAIROS_WORKER_IMAGE=$PREVIOUS_STAGING_IMAGE \
-      docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml \
-      --env-file /srv/kairos/env/staging.env up -d --wait"
+  WEB_IMAGE="${PREVIOUS_STAGING_IMAGE}"; API_IMAGE="${PREVIOUS_STAGING_IMAGE}"; WORKER_IMAGE="${PREVIOUS_STAGING_IMAGE}"
+else
+  echo "FIRST_STAGING_RELEASE — no previous image; verify current immutable images can restore the stack."
+  WEB_IMAGE="$CURRENT_WEB"; API_IMAGE="$CURRENT_API"; WORKER_IMAGE="$CURRENT_WORKER"
+fi
+
+# down WITHOUT -v: named volumes (postgres_data/minio_data) are preserved.
+"${SSH[@]}" "cd ${COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
+    KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
+    docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml \
+    --env-file /srv/kairos/env/staging.env down --remove-orphans"
+
+"${SSH[@]}" "cd ${COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
+    KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
+    docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml \
+    --env-file /srv/kairos/env/staging.env up -d --wait 2>&1 | tail -12" \
+  || { echo "ERROR: restore up failed"; exit 1; }
+
+if [[ -n "${PREVIOUS_STAGING_IMAGE:-}" ]]; then
   echo "ROLLBACK COMPLETE (previous image $PREVIOUS_STAGING_IMAGE)"
 else
-  echo "FIRST_STAGING_RELEASE — no previous image to roll back to by definition."
-  echo "Verifying the current immutable images can restore the stack from down/up."
-  CURRENT_WEB="$("${SSH[@]}" "docker images --format '{{.Repository}}:{{.Tag}}' | grep '^kairos-web:staging-' | sort | tail -1")"
-  echo "current web image: ${CURRENT_WEB:-none}"
-  "${SSH[@]}" "cd ${COMPOSE_DIR} && docker compose -p kairos-staging \
-      -f compose.base.yml -f compose.staging.yml \
-      --env-file /srv/kairos/env/staging.env down --remove-orphans"
-  "${SSH[@]}" "cd ${COMPOSE_DIR} && docker compose -p kairos-staging \
-      -f compose.base.yml -f compose.staging.yml \
-      --env-file /srv/kairos/env/staging.env up -d --wait 2>&1 | tail -15"
-  echo "RESTORE COMPLETE: current immutable images brought the stack back up."
+  echo "RESTORE COMPLETE: current immutable images brought the stack back up (FIRST_STAGING_RELEASE)."
 fi

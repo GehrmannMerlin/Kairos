@@ -88,18 +88,22 @@ Baseline M-04 SHA：`cb4823117652450c822ef6834847ed3e6d93c5dc`
 
 ### DNS + HTTPS（Task 7）
 
-- DNS：PENDING
-- HTTPS：PENDING
+- DNS：BLOCKED_DNS_AUTH — `staging.kairos.ac.cn` 仍无 A 记录；zone 在 Alibaba Cloud DNS（hichina NS），本机/服务器均无 aliyun CLI、无凭据、无 browser automation 授权。唯一所需动作：在 kairos.ac.cn DNS Zone 创建 `staging A 47.238.145.24`
+- HTTPS：BLOCKED（依赖 DNS）— 共享 nginx vhost `zz-kairos-staging-tls.conf` 已备好并同步到 `/srv/kairos/deploy/nginx/conf.d/`，待 DNS 生效 + certbot 签发后激活
+- 共享 nginx 现状：`lumina-prod-nginx-1` 手动管理（无 compose labels），kairos vhost 以只读 bind-mount 注入；如需 recreate 必须保留 aurora/stellaris/kairos 全部挂载（见 compose.staging.override.yml 注释）
 
 ### Restart / Rollback（Task 8）
 
-- persistence / restart：PENDING
-- rollback readiness：PENDING
-- release manifest：PENDING
-- secret scan：PENDING
+- persistence：PASS — DB rows（smoke_probe/users/tasks）与 MinIO object 在 restart 后仍在
+- restart recovery：PASS — api/worker restart 后 ready 200，Temporal 重连，worker 重新监听 queue
+- rollback readiness：PASS — FIRST_STAGING_RELEASE；`down --remove-orphans`（无 -v，保留 named volumes）→ `up -d --wait` 以当前不可变镜像恢复，数据仍在（smoke_probe=1, users=11, tasks=4, alembic=0004）
+- release manifest：PASS — `/srv/kairos/releases/manifest-0b8a42c31f8d.json`（Git SHA / image tags+digests / migration / deploy time / domain；无 Secrets）
+- secret scan：PASS — GATE_TEST_SECRET 在 api/worker/temporal/postgres 日志、DB 可见字段、/srv/kairos 均无匹配
+- 脚本修复：rollback-staging.sh 改为按创建时间解析最新不可变镜像（SHA 字典序无意义）；deploy-staging.sh 注入 image tag + otel 配置路径
 
 ## 5. Final Status
 
-- DEPLOY-GATE-1：PENDING
-- M-04：PENDING（达到 DEPLOYED）
-- M-05：PENDING（达到 UNBLOCKED，但不开始）
+- DEPLOY-GATE-1：**BLOCKED_DNS_AUTH**（唯一阻塞 = DNS A 记录；其余全部服务器工作 PASS）
+- M-04：**DEPLOYED**（staging 已部署并验证：migration 0004 / state machine / event+outbox / checkpoint replay / owner isolation / persistence / restart / rollback 恢复）
+- M-05：**UNBLOCKED**（但本轮不开始）
+- 唯一用户动作：在 `kairos.ac.cn` DNS Zone 创建 `staging A 47.238.145.24` → 之后执行 certbot 签发 + 激活共享 nginx vhost 即可完成 HTTPS，无需其它阻塞项
