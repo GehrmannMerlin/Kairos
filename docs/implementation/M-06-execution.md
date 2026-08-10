@@ -59,14 +59,29 @@ M-09+（Search/robots/Fetch/Crawler/Extractor/Quality/CSV）、新增一级页�
 
 ## 7. 真实 Provider E2E（唯一未完成门禁）
 
-- 检查结果：本地 PostgreSQL（5434/5432）均不可达，Docker 引擎报错，**无可用真实 ModelConfig**；
-  且不能使用 Claude Code 自身凭据、不能用 Mock 冒充、不能自动下载大模型。
-- 因此按预设策略：完成全部代码 + fake/scoped 测试 + 前端闭环，最终状态 = `BLOCKED_EXTERNAL_PROVIDER`。
+### 7.1 本地栈修复（2026-08-10 复查）
 
-**REQUIRED USER ACTION**：在本地启动开发栈（`docker compose -f infra/compose/compose.yaml up -d`），
-并在 `/models` 配置任意一个真实可用 Model Provider（OpenAI/DeepSeek/OpenRouter/Ollama 等）。
+- 复查时发现本地 compose 从未把根目录 `.env` 的 `KAIROS_CREDENTIAL_MASTER_KEY` 注入容器，
+  导致 `api` 容器在访问任何 Provider 端点时 500（`CredentialConfigurationError`）。
+- 修复：`infra/compose/compose.yaml` 的 `x-backend-env` 增加 `KAIROS_CREDENTIAL_MASTER_KEY: ${KAIROS_CREDENTIAL_MASTER_KEY}`。
+- 同时确认 compose v5 需要显式 `--env-file .env`（项目目录 ≠ 仓库根目录）才能读到根目录 `.env`。
+- 修复后本地栈验证：`/api/health/live`、`/api/health/ready` 均 PASS；
+  `/api/providers/models`、`/api/providers/definitions` 正常返回。API/Worker/Migrate 均以新镜像运行。
+
+### 7.2 Provider 可用性检查（2026-08-10）
+
+- `GET /api/providers/models` → `configs: []`：本地开发用户**无任何 ModelConfig**。
+- `ollama` 命令不存在、安装目录不存在：**无现成 Ollama/本地模型**。
+- 根目录 `.env` **不含任何 Provider API Key**（OpenAI/DeepSeek/Anthropic/Gemini/OpenRouter）。
+- 本地无任何 LLM 服务端口（11434/1234/8080/3000/5000 等）在监听。
+- 按预设策略：不能使用 Claude Code 自身凭据、不能用 Mock 冒充、不能自动下载大模型。
+- 因此最终状态仍 = `BLOCKED_EXTERNAL_PROVIDER`。
+
+**REQUIRED USER ACTION**：本地开发栈现在已可正常运行。请在 Kairos `/models`
+配置任意一个真实可用 Model Provider（OpenAI/DeepSeek/OpenRouter/Anthropic/Gemini/Ollama 均可），
+例如创建后调用 `POST /api/providers/models/{config_id}/test` 确认 `connection_status=AVAILABLE`。
 配置完成后，仅重跑这一条 Real Provider E2E（自然语言 → GoalUnderstanding → Spec → 确认冻结），
-不需要重跑其他测试。
+不需要重跑其他测试。请勿把 API Key 粘贴到本会话 Prompt 中。
 
 ## 8. Git 证据
 
@@ -81,6 +96,8 @@ M-09+（Search/robots/Fetch/Crawler/Extractor/Quality/CSV）、新增一级页�
   - `feat(template): add versioned collection templates`
   - `test(task): cover M-06 core contracts`（含 fake smoke）
   - `docs(task): record M-06 implementation`
+  - `fix(infra): forward credential master key in local compose`（本轮复查补录）
+  - `docs(task): update M-06 blocker with verified local stack`（本轮复查补录）
 - working tree：clean；pushed：NO
 
 ## 9. 完成结论
