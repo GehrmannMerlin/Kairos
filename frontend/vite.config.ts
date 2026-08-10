@@ -24,5 +24,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // e2e/ 由 Playwright 负责，排除出 Vitest 收集范围。
+    exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],
   },
 })
