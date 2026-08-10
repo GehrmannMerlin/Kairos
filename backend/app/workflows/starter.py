@@ -35,6 +35,7 @@ class TaskWorkflowStarter:
         spec_version: int,
         plan_version: int = 0,
         task_queue: str | None = None,
+        pause_timeout_seconds: int | None = None,
     ) -> RunStartedResult:
         session = get_session_factory()()
         try:
@@ -55,7 +56,11 @@ class TaskWorkflowStarter:
             run_id=run.id,
             spec_version=spec_version,
             plan_version=plan_version,
-            pause_timeout_seconds=self._settings.task_pause_timeout_seconds,
+            pause_timeout_seconds=(
+                pause_timeout_seconds
+                if pause_timeout_seconds is not None
+                else self._settings.task_pause_timeout_seconds
+            ),
             cancel_timeout_seconds=self._settings.task_cancel_timeout_seconds,
         )
         await self._client.start_workflow(

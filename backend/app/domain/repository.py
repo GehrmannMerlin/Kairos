@@ -530,6 +530,11 @@ class RecordRepository:
         return _owned(self._db, Record, user_id, record_id)
 
 
+# 有界重试上限：Signal 分发失败后先保留 retryable（pending，attempts+1），
+# 达到上限后才终态 failed。终态 failed 不再被 claim，由后续 API 命令重新触发新事件。
+OUTBOX_MAX_ATTEMPTS = 3
+
+
 class OutboxRepository:
     def __init__(self, db: Any) -> None:
         self._db = db
@@ -573,8 +578,13 @@ class OutboxRepository:
         self._db.commit()
 
     def mark_failed(self, outbox: OutboxEvent) -> None:
-        outbox.status = "failed"
+        # 有界重试：达到上限前保持 pending（可被后续 dispatch_pending_for 重新 claim
+        # 并补发），避免一次 Signal 失败把行永久孤儿化。
         outbox.attempts += 1
+        if outbox.attempts >= OUTBOX_MAX_ATTEMPTS:
+            outbox.status = "failed"
+        else:
+            outbox.status = "pending"
         self._db.commit()
 
 

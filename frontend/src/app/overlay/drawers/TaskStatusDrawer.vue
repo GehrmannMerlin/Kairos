@@ -51,6 +51,15 @@ async function runCommand(cmd: 'pause' | 'resume' | 'cancel'): Promise<void> {
   }
 }
 
+// SSE 断线自动重连后，后端事件流已续上，但 Task Snapshot 可能是断线期间过期的
+// 旧状态（useTaskEvents 契约：恢复后由调用方重新拉取）。检测 reconnecting→open
+// 转换（跳过初次 connecting→open，初次由 onMounted load() 覆盖）时重新拉取。
+watch(connection, (next, prev) => {
+  if (next === 'open' && prev === 'reconnecting') {
+    void load()
+  }
+})
+
 onMounted(() => {
   void load()
   connect()

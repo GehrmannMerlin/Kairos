@@ -63,17 +63,38 @@ function pausingTask() {
     current_plan_version: null,
     template_id: null,
     template_version: null,
+    // 真实后端矩阵（backend/app/state/states.py）：PAUSING 只允许 cancel。
+    allowed_actions: ['cancel'],
+    created_at: '2026-08-10T00:00:00Z',
+    updated_at: '2026-08-10T00:00:00Z',
+  }
+}
+
+function pausedTask() {
+  return {
+    task_id: 1,
+    title: '采集',
+    state: 'PAUSED',
+    version: 2,
+    task_type: null,
+    current_spec_version: 1,
+    current_plan_version: null,
+    template_id: null,
+    template_version: null,
     allowed_actions: ['resume', 'cancel'],
     created_at: '2026-08-10T00:00:00Z',
     updated_at: '2026-08-10T00:00:00Z',
   }
 }
 
+let es: FakeEventSource
+
 beforeEach(() => {
   vi.clearAllMocks()
+  es = new FakeEventSource()
   vi.stubGlobal(
     'EventSource',
-    vi.fn().mockImplementation(() => new FakeEventSource()),
+    vi.fn().mockImplementation(() => es),
   )
 })
 
@@ -90,19 +111,20 @@ describe('TaskStatusDrawer', () => {
     const pauseBtn = buttons.find((b) => b.text() === '暂停')!
     expect(pauseBtn.attributes('disabled')).toBeDefined() // PAUSING 不允许 pause
     const resumeBtn = buttons.find((b) => b.text() === '恢复')!
-    expect(resumeBtn.attributes('disabled')).toBeUndefined()
+    expect(resumeBtn.attributes('disabled')).toBeDefined() // PAUSING 不允许 resume
     const cancelBtn = buttons.find((b) => b.text() === '取消')!
-    expect(cancelBtn.attributes('disabled')).toBeUndefined()
+    expect(cancelBtn.attributes('disabled')).toBeUndefined() // PAUSING 允许 cancel
   })
 
   it('resume calls the real command then re-queries truth (no optimistic state)', async () => {
+    // 用 PAUSED fixture（真实后端矩阵中 resume 只在 PAUSED 等状态可用）。
     // useTaskShell 的 immediate watch + Drawer onMounted load() 各触发一次，共 2 次；
     // 命令执行后 load() 再次拉取 → 共 3 次。
     vi.mocked(tasksApi.getTask)
-      .mockResolvedValueOnce(pausingTask())
-      .mockResolvedValueOnce(pausingTask())
+      .mockResolvedValueOnce(pausedTask())
+      .mockResolvedValueOnce(pausedTask())
       .mockResolvedValueOnce({
-        ...pausingTask(),
+        ...pausedTask(),
         state: 'RUNNING',
         allowed_actions: ['pause', 'cancel'],
       })
@@ -138,5 +160,27 @@ describe('TaskStatusDrawer', () => {
 
     expect(commandsApi.cancelTask).toHaveBeenCalledWith('1', { expectedVersion: 2 })
     expect(wrapper.text()).toContain('当前状态不允许取消')
+  })
+
+  it('re-queries the snapshot after a reconnect completes (reconnecting -> open)', async () => {
+    // useTaskEvents 契约：断线恢复后由调用方重新拉取 Task Snapshot。
+    vi.mocked(tasksApi.getTask).mockResolvedValue(pausingTask())
+    const wrapper = mount(TaskStatusDrawer, { props: { payload: { taskId: 1 } } })
+    await flushPromises()
+
+    const callsBefore = vi.mocked(tasksApi.getTask).mock.calls.length
+    // 初次 connecting->open 不应触发重复 load（onMounted 已 load）；模拟真正断线+重连。
+    es.triggerOpen()
+    await flushPromises()
+    expect(vi.mocked(tasksApi.getTask).mock.calls.length).toBe(callsBefore)
+
+    // 真实场景中 onerror 与 onopen 发生在不同事件循环 tick；这里分开 flush 让
+    // watch 分别观察到 reconnecting 与 open 两次转换，reconnecting->open 才触发 load。
+    es.triggerError() // 连接断开 -> reconnecting
+    await flushPromises()
+    es.triggerOpen() // EventSource 自动重连成功 -> open
+    await flushPromises()
+    expect(vi.mocked(tasksApi.getTask).mock.calls.length).toBe(callsBefore + 1)
+    expect(wrapper.text()).toContain('PAUSING')
   })
 })

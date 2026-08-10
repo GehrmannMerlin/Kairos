@@ -134,10 +134,17 @@ class TaskWorkflow:
                     )
                     self._pause_requested = False
                     self._resume_requested = False
-                    await workflow.wait_condition(
-                        lambda: self._resume_requested or self._cancel_requested,
-                        timeout=timedelta(seconds=inp.pause_timeout_seconds),
-                    )
+                    try:
+                        await workflow.wait_condition(
+                            lambda: self._resume_requested or self._cancel_requested,
+                            timeout=timedelta(seconds=inp.pause_timeout_seconds),
+                        )
+                    except TimeoutError:
+                        # pause_timeout 是复检间隔而非硬截止：用户未在窗口内恢复时，
+                        # 任务保持 PAUSED，重新进入暂停等待。绝不能落入下方 broad
+                        # except 触发 fail_run——那会把暂停任务写成矛盾终态
+                        # (task=PAUSED + run=failed)。cancel 仍会在下一轮循环顶优先处理。
+                        self._pause_requested = True
                     continue
 
                 fetch: FetchUnitResult = await workflow.execute_activity(

@@ -7,6 +7,28 @@ from app.domain.models import OutboxEvent, Task
 from app.domain.repository import TaskRepository
 from app.domain.service import DomainService
 from app.domain.task_commands import TaskCommandService
+from app.infra.outbox_dispatch import OutboxTemporalDispatcher
+
+
+class _FlakySignalHandle:
+    """第一次 signal 抛错（模拟 Signal RPC 非 NOT_FOUND 失败），之后成功。"""
+
+    def __init__(self, fail_first: bool = True) -> None:
+        self._fail_first = fail_first
+
+    async def signal(self, *args, **kwargs) -> None:
+        if self._fail_first:
+            self._fail_first = False
+            raise RuntimeError("signal rpc failed")
+        return None
+
+
+class _FlakyTemporalClient:
+    def __init__(self, handle: _FlakySignalHandle) -> None:
+        self._handle = handle
+
+    def get_workflow_handle(self, workflow_id: str) -> _FlakySignalHandle:
+        return self._handle
 
 
 @pytest.fixture()
@@ -78,3 +100,30 @@ def test_command_enqueues_outbox(db, user, running_task) -> None:
     )
     rows = db.query(OutboxEvent).filter_by(aggregate_type="task").all()
     assert any(r.event_type == "task.pause" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_outbox_signal_failure_is_retryable_then_dispatched(db, user, running_task) -> None:
+    """final review Finding 2：Signal 失败不孤儿化 outbox 行——有界重试，后续命令补发。"""
+    TaskCommandService(db).pause_task(
+        user_id=user.id,
+        task_id=running_task.id,
+        expected_version=running_task.version,
+        idempotency_key="k-outbox-retry",
+    )
+    handle = _FlakySignalHandle(fail_first=True)
+    dispatcher = OutboxTemporalDispatcher(_FlakyTemporalClient(handle))
+
+    # 第一次分发失败（非 NOT_FOUND）→ 保持 retryable：pending, attempts=1
+    sent = await dispatcher.dispatch_pending_for(db, user_id=user.id, task_id=running_task.id)
+    assert sent == 0
+    row = db.query(OutboxEvent).filter_by(event_type="task.pause").one()
+    assert row.status == "pending"
+    assert row.attempts == 1
+
+    # 后续命令再次触发 dispatch 补发成功 → dispatched
+    sent = await dispatcher.dispatch_pending_for(db, user_id=user.id, task_id=running_task.id)
+    assert sent == 1
+    row = db.query(OutboxEvent).filter_by(event_type="task.pause").one()
+    assert row.status == "dispatched"
+    assert row.attempts == 1

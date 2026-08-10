@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import signal
@@ -90,36 +91,45 @@ async def _send_command(
 async def test_start_workflow_creates_run_and_running(confirmed_task) -> None:
     settings = get_settings()
     client = await create_temporal_client(settings)
+    # 专用队列 + fixture worker，避免依赖外部生产 worker（其不注册 seam activities，
+    # 会导致 ensure_run_started 后的 fetch_next_execution_unit 失败并和断言赛跑）。
+    queue = f"kairos-test-start-{uuid4().hex[:8]}"
     starter = TaskWorkflowStarter(client, settings)
     started = await starter.start(
         user_id=confirmed_task["user_id"],
         task_id=confirmed_task["task_id"],
         spec_version=confirmed_task["spec_version"],
+        task_queue=queue,
     )
-    # starter 创建 pending Run 并返回 run_id
-    assert started.run_id > 0
-    assert started.workflow_id == f"task-workflow-{confirmed_task['task_id']}"
-
-    # ensure_run_started Activity 幂等激活：Task QUEUED->RUNNING、Run started。
-    _wait_task_state(confirmed_task["task_id"], "RUNNING")
-
-    handle = client.get_workflow_handle(started.workflow_id)
-    desc = await handle.describe()
-    assert desc.status.name in ("RUNNING", "COMPLETED")  # 至少已启动/在跑
-
-    session = get_session_factory()()
+    proc = _spawn_fixture_worker(queue)
     try:
-        run = session.get(Run, started.run_id)
-        task = session.get(Task, confirmed_task["task_id"])
-        assert run.state == "running"
-        assert run.started_at is not None
-        assert task.state == "RUNNING"
-    finally:
-        session.close()
+        # starter 创建 pending Run 并返回 run_id
+        assert started.run_id > 0
+        assert started.workflow_id == f"task-workflow-{confirmed_task['task_id']}"
 
-    # 清理：fixture 执行单元在 Task 4 才注册，这里终止 workflow 避免遗留。
-    with contextlib.suppress(Exception):
-        await handle.terminate(reason="test cleanup")
+        # ensure_run_started Activity 幂等激活：Task QUEUED->RUNNING、Run started。
+        _wait_task_state(confirmed_task["task_id"], "RUNNING")
+
+        handle = client.get_workflow_handle(started.workflow_id)
+        desc = await handle.describe()
+        assert desc.status.name in ("RUNNING", "COMPLETED")  # 至少已启动/在跑
+
+        session = get_session_factory()()
+        try:
+            run = session.get(Run, started.run_id)
+            task = session.get(Task, confirmed_task["task_id"])
+            assert run.state == "running"
+            assert run.started_at is not None
+            assert task.state == "RUNNING"
+        finally:
+            session.close()
+
+        # 清理：fixture worker 会执行 seam activities 进入执行循环，这里终止避免遗留。
+        with contextlib.suppress(Exception):
+            await handle.terminate(reason="test cleanup")
+    finally:
+        if proc.poll() is None:
+            _kill_worker(proc)
 
 
 @pytest.mark.asyncio
@@ -171,6 +181,67 @@ async def test_pause_resume_no_duplicate(confirmed_task) -> None:
                 .all()
             )
             assert len(cps) == 3  # 无重复：unit-1/2/3 各一次
+            run = session.get(Run, started.run_id)
+            assert run.state == "completed"
+        finally:
+            session.close()
+        assert result.final_state == "COMPLETED"
+    finally:
+        if proc.poll() is None:
+            _kill_worker(proc)
+
+
+@pytest.mark.asyncio
+async def test_pause_timeout_keeps_task_paused(confirmed_task) -> None:
+    """pause_timeout 是复检间隔而非硬截止（final review Finding 1）。
+
+    超时后任务必须保持 PAUSED（Run 不得写成 failed 矛盾终态），恢复后正常完成。
+    """
+    settings = get_settings()
+    client = await create_temporal_client(settings)
+    queue = f"kairos-test-pausetmo-{uuid4().hex[:8]}"
+    starter = TaskWorkflowStarter(client, settings)
+    started = await starter.start(
+        user_id=confirmed_task["user_id"],
+        task_id=confirmed_task["task_id"],
+        spec_version=confirmed_task["spec_version"],
+        task_queue=queue,
+        pause_timeout_seconds=1,
+    )
+    proc = _spawn_fixture_worker(queue)
+    try:
+        _wait_task_state(confirmed_task["task_id"], "RUNNING")
+        await _send_command(
+            client,
+            user_id=confirmed_task["user_id"],
+            task_id=confirmed_task["task_id"],
+            command="pause",
+        )
+        _wait_task_state(confirmed_task["task_id"], "PAUSED")
+
+        # 等待超过 pause_timeout=1s：超时只是复检，任务应保持 PAUSED、Run 非 failed。
+        await asyncio.sleep(1.6)
+        session = get_session_factory()()
+        try:
+            task = session.get(Task, confirmed_task["task_id"])
+            run = session.get(Run, started.run_id)
+            assert task.state == "PAUSED"
+            assert run.state != "failed"
+        finally:
+            session.close()
+
+        # 恢复后任务应正常完成（不是 FAILED 死路）。
+        await _send_command(
+            client,
+            user_id=confirmed_task["user_id"],
+            task_id=confirmed_task["task_id"],
+            command="resume",
+        )
+        handle = client.get_workflow_handle(started.workflow_id, result_type=TaskWorkflowResult)
+        result = await handle.result(rpc_timeout=timedelta(seconds=90))
+
+        session = get_session_factory()()
+        try:
             run = session.get(Run, started.run_id)
             assert run.state == "completed"
         finally:

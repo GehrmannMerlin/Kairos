@@ -7,7 +7,7 @@ thin: auth/DTO → TaskCommandService → outbox dispatch (see task_command).
 
 from __future__ import annotations
 
-import contextlib
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DbSession
@@ -49,6 +49,7 @@ from app.infra.temporal import get_temporal_client
 from app.state.states import TaskState, allowed_task_actions
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+logger = logging.getLogger(__name__)
 
 
 def get_task_draft_service(db: DbSession = Depends(get_db)) -> TaskDraftService:
@@ -289,11 +290,17 @@ async def task_command(
         reason=cmd.reason,
     )
     # DB 事务（state+event+outbox）已提交；现在把本 task 的 task.* outbox 分发为
-    # Temporal Signal。client 懒创建：连接失败也被 suppress 吞掉——命令已在 DB 生效，
-    # 失败标记 outbox failed（attempts+1），由未来 worker 轮询补发（有界重试）。
-    with contextlib.suppress(Exception):
+    # Temporal Signal。client 懒创建：连接失败/分发失败不能阻塞响应（命令已在 DB
+    # 生效），但必须记录日志——outbox 保留 pending 有界重试，不能静默吞掉真实 bug。
+    try:
         client = await get_temporal_client()
         await OutboxTemporalDispatcher(client).dispatch_pending_for(
             db, user_id=user.id, task_id=task_id
+        )
+    except Exception:
+        logger.warning(
+            "Temporal signal dispatch failed for task %s; outbox retained for retry",
+            task_id,
+            exc_info=True,
         )
     return TaskCommandResponse(command=result.command, state=result.state, version=result.version)
