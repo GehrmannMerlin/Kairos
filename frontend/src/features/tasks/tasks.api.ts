@@ -9,6 +9,8 @@ export interface TaskShellDto {
   task_type: string | null
   current_spec_version: number | null
   current_plan_version: number | null
+  template_id: string | null
+  template_version: number | null
   allowed_actions: string[]
   created_at: string
   updated_at: string

@@ -21,6 +21,8 @@ class TaskShellDto(BaseModel):
     task_type: str | None
     current_spec_version: int | None
     current_plan_version: int | None
+    template_id: str | None
+    template_version: int | None
     allowed_actions: list[str]
     created_at: datetime
     updated_at: datetime

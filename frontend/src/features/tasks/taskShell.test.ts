@@ -20,6 +20,8 @@ const okTask = {
   task_type: 'directed',
   current_spec_version: null,
   current_plan_version: null,
+  template_id: null,
+  template_version: null,
   allowed_actions: ['submit', 'delete'],
   created_at: '2026-08-10T00:00:00Z',
   updated_at: '2026-08-10T00:00:00Z',

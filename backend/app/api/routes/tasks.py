@@ -73,6 +73,8 @@ def _shell_dto(task: Task) -> TaskShellDto:
         task_type=task.task_type,
         current_spec_version=task.current_spec_version,
         current_plan_version=task.current_plan_version,
+        template_id=task.template_id,
+        template_version=task.template_version,
         allowed_actions=allowed_task_actions(TaskState(task.state)),
         created_at=task.created_at,
         updated_at=task.updated_at,
