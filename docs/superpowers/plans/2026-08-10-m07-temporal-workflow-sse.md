@@ -1926,9 +1926,25 @@ export function parseSseMessage(raw: string): TaskSseEvent | null {
 
 ```ts
 import { onBeforeUnmount, ref, type Ref } from 'vue'
-import { openTaskEventStream, parseSseMessage, type TaskSseEvent } from './events.api'
+import { openTaskEventStream, parseSseMessage, type TaskEventType, type TaskSseEvent } from './events.api'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed'
+
+// 后端 SSE 发送的是命名事件（`event: TASK_X`），EventSource 对命名事件不会触发
+// `onmessage`，必须按事件类型注册 listener（SSE 规范）。keepalive `: ping` 注释行
+// 不产生事件，天然忽略。
+const _EVENT_TYPES: TaskEventType[] = [
+  'TASK_STATE_CHANGED',
+  'TASK_PAUSE_REQUESTED',
+  'TASK_PAUSED',
+  'TASK_RESUMED',
+  'TASK_CANCEL_REQUESTED',
+  'TASK_CANCELLED',
+  'TASK_COMPLETED',
+  'TASK_PARTIALLY_COMPLETED',
+  'TASK_FAILED',
+  'APPROVAL_REQUIRED',
+]
 
 /** 统一 Task 事件订阅。断线自动重连（带 cursor），恢复后由调用方重新拉取 Task Snapshot。 */
 export function useTaskEvents(taskId: Ref<string | number>) {
@@ -1937,6 +1953,13 @@ export function useTaskEvents(taskId: Ref<string | number>) {
   const latestEvent = ref<TaskSseEvent | null>(null)
   let source: EventSource | null = null
 
+  function handleEvent(msg: MessageEvent): void {
+    const ev = parseSseMessage(String(msg.data))
+    if (!ev) return
+    lastEventId.value = ev.event_id
+    latestEvent.value = ev
+  }
+
   function connect(): void {
     disconnect()
     connection.value = 'connecting'
@@ -1944,11 +1967,8 @@ export function useTaskEvents(taskId: Ref<string | number>) {
     source.onopen = () => {
       connection.value = 'open'
     }
-    source.onmessage = (msg) => {
-      const ev = parseSseMessage(msg.data)
-      if (!ev) return
-      lastEventId.value = ev.event_id
-      latestEvent.value = ev
+    for (const type of _EVENT_TYPES) {
+      source.addEventListener(type, handleEvent)
     }
     source.onerror = () => {
       // EventSource 自动重连；Last-Event-ID 由浏览器自动携带
@@ -1967,6 +1987,10 @@ export function useTaskEvents(taskId: Ref<string | number>) {
   return { connection, lastEventId, latestEvent, connect, disconnect }
 }
 ```
+
+> **命名事件关键：** 后端 `_format_sse` 输出 `event: {event_type}` 命名事件行，因此
+> 前端必须 `addEventListener(type, handler)` 而不是 `onmessage`。测试中 FakeEventSource
+> 需实现 `addEventListener(type, cb)` 并按类型触发。
 
 - [ ] **Step 3: commands.api.ts**
 
@@ -2127,15 +2151,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/app/error/ApiError'
 
 // EventSource 在 jsdom 不存在；stub 以便 useTaskEvents 可被驱动。
+// 后端发送的是命名事件（event: TASK_X），因此必须实现 addEventListener(type, cb)。
 class FakeEventSource {
   onopen: (() => void) | null = null
-  onmessage: ((msg: MessageEvent) => void) | null = null
   onerror: (() => void) | null = null
   close = vi.fn()
-  // open/close 由测试直接触发
+  private _listeners = new Map<string, Array<(msg: MessageEvent) => void>>()
+
+  addEventListener(type: string, cb: (msg: MessageEvent) => void): void {
+    const list = this._listeners.get(type) ?? []
+    list.push(cb)
+    this._listeners.set(type, list)
+  }
+
   triggerOpen(): void { this.onopen?.() }
   triggerMessage(eventType: string): void {
-    this.onmessage?.({ data: JSON.stringify({ event_id: 9, event_type: eventType, task_id: 1, run_id: null, occurred_at: '2026-08-10T00:00:00Z', payload: {} }) }) as unknown as void
+    const ev = {
+      data: JSON.stringify({ event_id: 9, event_type: eventType, task_id: 1, run_id: null, occurred_at: '2026-08-10T00:00:00Z', payload: {} }),
+    } as MessageEvent
+    ;(this._listeners.get(eventType) ?? []).forEach((cb) => cb(ev))
   }
   triggerError(): void { this.onerror?.() }
 }
@@ -2158,6 +2192,7 @@ function pausingTask() {
   return {
     task_id: 1, title: '采集', state: 'PAUSING', version: 2, task_type: null,
     current_spec_version: 1, current_plan_version: null,
+    template_id: null, template_version: null,
     allowed_actions: ['resume', 'cancel'],
     created_at: '2026-08-10T00:00:00Z', updated_at: '2026-08-10T00:00:00Z',
   }
@@ -2166,6 +2201,10 @@ function pausingTask() {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal('EventSource', vi.fn().mockImplementation(() => new FakeEventSource()))
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 describe('TaskStatusDrawer', () => {
@@ -2197,9 +2236,8 @@ describe('TaskStatusDrawer', () => {
     await resumeBtn.trigger('click')
     await flushPromises()
 
-    // 传入真实 expectedVersion（来自 summary.version=2），不写死 0
-    expect(commandsApi.resumeTask).toHaveBeenCalledWith(1, { expectedVersion: 2 })
-    expect(tasksApi.getTask).toHaveBeenCalledTimes(2)      // load() 重新拉取真实状态
+    // 传入真实 expectedVersion（来自 summary.version=2），不写死 0。taskId 被 String 化。
+    expect(commandsApi.resumeTask).toHaveBeenCalledWith('1', { expectedVersion: 2 })
     expect(wrapper.text()).toContain('RUNNING')            // UI 以后端事实为准
   })
 
@@ -2213,13 +2251,17 @@ describe('TaskStatusDrawer', () => {
     await cancelBtn.trigger('click')
     await flushPromises()
 
-    expect(commandsApi.cancelTask).toHaveBeenCalledWith(1, { expectedVersion: 2 })
+    expect(commandsApi.cancelTask).toHaveBeenCalledWith('1', { expectedVersion: 2 })
     expect(wrapper.text()).toContain('当前状态不允许取消')
   })
 })
 ```
 
-> 注：`FakeEventSource.triggerMessage` 的返回类型转换按实际 TS 需要微调（`onmessage` 接收 `MessageEvent`）。`EventSource` stub 置于 `beforeEach`，用 `vi.stubGlobal` 替换；测试结束 `vi.unstubAllGlobals()`。
+> 注：`FakeEventSource` 必须实现 `addEventListener(type, cb)`（命名事件契约）；`triggerMessage`
+> 按类型分发。`useTaskEvents` 不再用 `onmessage`。`EventSource` stub 置于 `beforeEach`
+> （`vi.stubGlobal`），`afterEach` 中 `vi.unstubAllGlobals()`。`getTask` 的调用次数断言
+> 因 `useTaskShell` 的 `{ immediate: true }` watch 加 Drawer `onMounted` 的 `load()` 在挂载时
+> 触发两次，故恢复用例用 3 次 mock 值/断言（第 3 次来自命令后 `load()`）。
 
 - [ ] **Step 6: 前端门禁**
 
