@@ -9,13 +9,7 @@ from app.domain.repository import (
     RunRepository,
     TaskRepository,
 )
-from app.domain.service import DomainService
 from app.state.states import NodeState, TaskState
-
-
-@pytest.fixture()
-def service(db) -> DomainService:
-    return DomainService(TaskRepository(db))
 
 
 def test_transition_writes_state_event_outbox(db, service, user, task) -> None:

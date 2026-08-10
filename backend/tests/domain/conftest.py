@@ -7,10 +7,16 @@ from app.auth.models import User
 from app.auth.repository import UserRepository
 from app.domain.models import Task
 from app.domain.repository import TaskRepository
+from app.domain.service import DomainService
 from app.infra.db import Base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
+
+
+@pytest.fixture()
+def service(db: DbSession) -> DomainService:
+    return DomainService(TaskRepository(db))
 
 
 @pytest.fixture()
