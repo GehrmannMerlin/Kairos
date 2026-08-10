@@ -79,3 +79,39 @@ def test_failed_transaction_produces_no_checkpoint(db, service, user, task, run)
     assert db.query(Checkpoint).count() == 0
     fresh = TaskRepository(db).get_owned(user.id, task.id)
     assert fresh.state == TaskState.DRAFT.value
+
+
+def test_commit_checkpoint_reuses_same_batch(db, user, task) -> None:
+    from app.domain.models import Checkpoint
+    from app.domain.repository import TaskRepository
+    from app.domain.service import DomainService
+
+    svc = DomainService(TaskRepository(db))
+    first = svc.commit_checkpoint(
+        user_id=user.id,
+        task_id=task.id,
+        run_id=1,
+        batch_identity="unit-1",
+        spec_version=1,
+        plan_version=0,
+        node_run_id=None,
+        input_fingerprint="fp-1",
+        committed_refs={"n": 1},
+        content_hash=None,
+    )
+    second = svc.commit_checkpoint(
+        user_id=user.id,
+        task_id=task.id,
+        run_id=1,
+        batch_identity="unit-1",
+        spec_version=1,
+        plan_version=0,
+        node_run_id=None,
+        input_fingerprint="fp-1",
+        committed_refs={"n": 1},
+        content_hash=None,
+    )
+    assert second.id == first.id  # 复用，不重复提交
+
+    rows = db.query(Checkpoint).filter_by(run_id=1).all()
+    assert len(rows) == 1
