@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from app.config import Settings
+from app.config import Settings, get_settings
 
 
 def _interceptors() -> list[Any]:
@@ -23,6 +24,26 @@ async def create_temporal_client(settings: Settings) -> Client:
         namespace=settings.temporal_namespace,
         interceptors=_interceptors(),
     )
+
+
+_client_lock = asyncio.Lock()
+_cached_client: Client | None = None
+
+
+async def get_temporal_client() -> Client:
+    """Module-level cached Temporal client (double-checked locking).
+
+    ``create_temporal_client`` is async so it cannot live in a sync
+    ``@lru_cache``; reuse one client per process to avoid a fresh connection
+    (and TLS handshake) on every request. Each uvicorn worker owns its own
+    process-scoped client, so multi-worker deployments do not share state.
+    """
+    global _cached_client
+    if _cached_client is None:
+        async with _client_lock:
+            if _cached_client is None:
+                _cached_client = await create_temporal_client(get_settings())
+    return _cached_client
 
 
 async def create_smoke_worker(client: Client, settings: Settings) -> Worker:

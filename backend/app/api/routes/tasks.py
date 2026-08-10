@@ -1,14 +1,17 @@
-"""Task shell query API (M-05). Thin read-only owner-safe queries.
+"""Task API routes: read-only shell queries (M-05) + task commands (M-07).
 
-No task commands here — create/chat/spec/plan/run arrive in M-06+. Cross-user
-access raises 404 (NOT_FOUND) through ``TaskRepository.get_owned`` so the
-existence of another user's task is never revealed.
+Cross-user access raises 404 (NOT_FOUND) through ``TaskRepository.get_owned``
+so the existence of another user's task is never revealed. Command routes stay
+thin: auth/DTO → TaskCommandService → outbox dispatch (see task_command).
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import contextlib
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DbSession
+from temporalio.client import Client
 
 from app.agents.deps import get_goal_understanding_service
 from app.agents.service import GoalUnderstandingService
@@ -24,6 +27,8 @@ from app.api.schemas import (
     CreateTaskCommand,
     CreateTaskResponse,
     SpecDraftResponse,
+    TaskCommandDto,
+    TaskCommandResponse,
     TaskShellDto,
     TaskShellListResponse,
     TemplateDto,
@@ -36,9 +41,12 @@ from app.domain.errors import SpecValidationError
 from app.domain.models import ChatMessage, Task
 from app.domain.repository import TaskRepository
 from app.domain.service import DomainService
+from app.domain.task_commands import TaskCommandService
 from app.domain.task_draft import TaskDraftService
 from app.domain.template_service import TemplateService
 from app.infra.deps import get_db
+from app.infra.outbox_dispatch import OutboxTemporalDispatcher
+from app.infra.temporal import get_temporal_client
 from app.state.states import TaskState, allowed_task_actions
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -50,6 +58,10 @@ def get_task_draft_service(db: DbSession = Depends(get_db)) -> TaskDraftService:
 
 def get_domain_service(db: DbSession = Depends(get_db)) -> DomainService:
     return DomainService(TaskRepository(db))
+
+
+def get_task_command_service(db: DbSession = Depends(get_db)) -> TaskCommandService:
+    return TaskCommandService(db)
 
 
 def _chat_dto(message: ChatMessage) -> ChatMessageDto:
@@ -242,3 +254,45 @@ def confirm_spec(
     )
     task = drafts.get_task(user_id=user.id, task_id=task_id)
     return ConfirmSpecResponse(task_id=task_id, spec_version=row.version, state=task.state)
+
+
+# ---- M-07 Task pause/resume/cancel commands ----
+
+
+_TASK_COMMANDS = {"pause", "resume", "cancel"}
+
+
+@router.post("/{task_id}/commands/{command}", response_model=TaskCommandResponse)
+async def task_command(
+    task_id: int,
+    command: str,
+    cmd: TaskCommandDto,
+    user: User = Depends(require_user),
+    db: DbSession = Depends(get_db),
+    service: TaskCommandService = Depends(get_task_command_service),
+    client: Client = Depends(get_temporal_client),
+) -> TaskCommandResponse:
+    """Pause / resume / cancel a task (M-07).
+
+    Route 保持薄层：auth/DTO → TaskCommandService（幂等 + M-04 状态机事务 +
+    outbox 入队，一次提交）→ 分发本 task 的 task.* outbox 为 Temporal Signal。
+    Signal 失败不改变 HTTP 结果：DB 命令已生效，outbox 保留 pending 待有界重试补发。
+    """
+    if command not in _TASK_COMMANDS:
+        raise HTTPException(status_code=404, detail="未知命令")
+    handler = getattr(service, f"{command}_task")
+    result = handler(
+        user_id=user.id,
+        task_id=task_id,
+        expected_version=cmd.expected_version,
+        idempotency_key=cmd.idempotency_key,
+        reason=cmd.reason,
+    )
+    # DB 事务（state+event+outbox）已提交；现在把本 task 的 task.* outbox 分发为
+    # Temporal Signal。失败标记 outbox failed（attempts+1），由未来 worker 轮询补发
+    # （有界重试）；不阻塞响应——命令已在 DB 生效。分发失败不改变 HTTP 结果。
+    with contextlib.suppress(Exception):
+        await OutboxTemporalDispatcher(client).dispatch_pending_for(
+            db, user_id=user.id, task_id=task_id
+        )
+    return TaskCommandResponse(command=result.command, state=result.state, version=result.version)

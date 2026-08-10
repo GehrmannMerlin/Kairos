@@ -544,6 +544,27 @@ class OutboxRepository:
             )
         )
 
+    def claim_pending_for_aggregate(
+        self, *, user_id: int, aggregate_type: str, aggregate_id: int
+    ) -> list[OutboxEvent]:
+        """Pending outbox events for ONE aggregate (owner-scoped, ordered).
+
+        The dispatcher filters by aggregate so one task's command events never
+        starve another task's pending rows.
+        """
+        return list(
+            self._db.scalars(
+                select(OutboxEvent)
+                .where(
+                    OutboxEvent.user_id == user_id,
+                    OutboxEvent.aggregate_type == aggregate_type,
+                    OutboxEvent.aggregate_id == aggregate_id,
+                    OutboxEvent.status == "pending",
+                )
+                .order_by(OutboxEvent.id)
+            )
+        )
+
     def mark_dispatched(self, outbox: OutboxEvent) -> None:
         from datetime import UTC, datetime
 

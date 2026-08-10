@@ -133,3 +133,22 @@ class UseTemplateResponse(BaseModel):
 
 class CreateTemplateFromTaskCommand(BaseModel):
     task_id: int
+
+
+class TaskCommandDto(BaseModel):
+    """pause/resume/cancel 命令体。
+
+    expected_version 来自前端最近一次 Task Query（乐观锁，与 M-06 confirm 一致）。
+    idempotency_key 可选：同 key + 同 payload 重放返回首次结果；同 key + 不同 payload
+    抛出 IdempotencyConflictError (409)。DTO 不含任何 Secret。
+    """
+
+    expected_version: int
+    idempotency_key: str | None = None
+    reason: str | None = None
+
+
+class TaskCommandResponse(BaseModel):
+    command: str
+    state: str
+    version: int
