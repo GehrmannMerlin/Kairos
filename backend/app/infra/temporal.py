@@ -43,6 +43,7 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
         commit_checkpoint,
         complete_run,
         ensure_run_started,
+        fail_run,
         mark_cancelled,
         mark_paused,
     )
@@ -56,6 +57,7 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
             ensure_run_started,
             mark_paused,
             mark_cancelled,
+            fail_run,
             complete_run,
             commit_checkpoint,
         ],

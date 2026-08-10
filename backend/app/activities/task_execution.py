@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from app.domain.errors import IllegalTransitionError, StaleVersionError
 from app.domain.repository import (
@@ -39,8 +40,11 @@ class EnsureRunStartedResult:
     started: bool
 
 
-class RunSpecNotFrozenError(Exception):
-    """Spec 未冻结时稳定业务错误：不允许进入 RUNNING。"""
+class RunSpecNotFrozenError(ApplicationError):
+    """Spec 未冻结时稳定业务错误：不允许进入 RUNNING（non-retryable，不重试）。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, non_retryable=True)
 
 
 @activity.defn
@@ -126,6 +130,36 @@ async def mark_cancelled(inp: MarkCancelledInput) -> None:
             )
         run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
         run.state = "cancelled"
+        run.finished_at = _utcnow()
+        session.commit()
+    finally:
+        session.close()
+
+
+@dataclass
+class FailRunInput:
+    task_id: int
+    user_id: int
+    run_id: int
+
+
+@activity.defn
+async def fail_run(inp: FailRunInput) -> None:
+    session = get_session_factory()()
+    try:
+        task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
+        with contextlib.suppress(IllegalTransitionError):
+            # 已在终态（如 FAILED/COMPLETED）时视为幂等成功
+            DomainService(TaskRepository(session)).transition_task(
+                user_id=inp.user_id,
+                task_id=inp.task_id,
+                command="fail",
+                expected_version=task.version,
+                actor_type="system",
+                reason="workflow_failed",
+            )
+        run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
+        run.state = "failed"
         run.finished_at = _utcnow()
         session.commit()
     finally:

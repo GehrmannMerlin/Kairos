@@ -27,3 +27,8 @@ def test_system_commands_are_not_user_actions() -> None:
 def test_mark_paused_only_from_pausing() -> None:
     with pytest.raises(IllegalTransitionError):
         assert_task_transition(TaskState.RUNNING, "mark_paused")
+
+
+def test_fail_transition_from_running() -> None:
+    """fail_run Activity 依赖 M-04 的 RUNNING->FAILED 过渡。"""
+    assert assert_task_transition(TaskState.RUNNING, "fail") == TaskState.FAILED

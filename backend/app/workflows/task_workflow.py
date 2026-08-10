@@ -25,11 +25,13 @@ with workflow.unsafe.imports_passed_through():
         CommitCheckpointInput,
         CompleteRunInput,
         EnsureRunStartedInput,
+        FailRunInput,
         MarkCancelledInput,
         MarkPausedInput,
         commit_checkpoint,
         complete_run,
         ensure_run_started,
+        fail_run,
         mark_cancelled,
         mark_paused,
     )
@@ -112,60 +114,73 @@ class TaskWorkflow:
         )
 
         while True:
-            if self._cancel_requested:
+            try:
+                if self._cancel_requested:
+                    await workflow.execute_activity(
+                        mark_cancelled,
+                        MarkCancelledInput(
+                            task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id
+                        ),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    return TaskWorkflowResult(inp.task_id, inp.run_id, "CANCELLED")
+
+                if self._pause_requested:
+                    # 协作式暂停：当前安全单元已由上一轮 commit；标记 PAUSED 后等待恢复。
+                    await workflow.execute_activity(
+                        mark_paused,
+                        MarkPausedInput(task_id=inp.task_id, user_id=inp.user_id),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    self._pause_requested = False
+                    self._resume_requested = False
+                    await workflow.wait_condition(
+                        lambda: self._resume_requested or self._cancel_requested,
+                        timeout=timedelta(seconds=inp.pause_timeout_seconds),
+                    )
+                    continue
+
+                fetch: FetchUnitResult = await workflow.execute_activity(
+                    fetch_next_execution_unit,
+                    FetchUnitInput(run_id=inp.run_id, after_index=self._last_index),
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                unit: ExecutionUnit | None = fetch.unit
+                if unit is None:
+                    break
+
+                exec_result: ExecuteUnitResult = await workflow.execute_activity(
+                    execute_safe_unit,
+                    ExecuteUnitInput(run_id=inp.run_id, unit=unit),
+                    start_to_close_timeout=timedelta(seconds=120),
+                )
                 await workflow.execute_activity(
-                    mark_cancelled,
-                    MarkCancelledInput(task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id),
+                    commit_checkpoint,
+                    CommitCheckpointInput(
+                        task_id=inp.task_id,
+                        user_id=inp.user_id,
+                        run_id=inp.run_id,
+                        spec_version=inp.spec_version,
+                        plan_version=inp.plan_version,
+                        batch_identity=f"unit-{unit.index}",
+                        node_run_id=None,
+                        input_fingerprint=unit.input_fingerprint,
+                        committed_refs=exec_result.committed_refs,
+                        content_hash=None,
+                    ),
                     start_to_close_timeout=timedelta(seconds=60),
                 )
-                return TaskWorkflowResult(inp.task_id, inp.run_id, "CANCELLED")
-
-            if self._pause_requested:
-                # 协作式暂停：当前安全单元已由上一轮 commit；标记 PAUSED 后等待恢复。
+                self._last_index = unit.index
+            except Exception:
+                # 执行循环出现不可恢复错误：fail_run 收尾（任务 FAILED、Run failed）。
+                # ensure_run_started 保持在工作流启动段，其 non-retryable 业务错误应作为
+                # 工作流失败暴露，而不是被这里吞掉转成 FAILED 过渡。
                 await workflow.execute_activity(
-                    mark_paused,
-                    MarkPausedInput(task_id=inp.task_id, user_id=inp.user_id),
+                    fail_run,
+                    FailRunInput(task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id),
                     start_to_close_timeout=timedelta(seconds=60),
                 )
-                self._pause_requested = False
-                self._resume_requested = False
-                await workflow.wait_condition(
-                    lambda: self._resume_requested or self._cancel_requested,
-                    timeout=timedelta(seconds=inp.pause_timeout_seconds),
-                )
-                continue
-
-            fetch: FetchUnitResult = await workflow.execute_activity(
-                fetch_next_execution_unit,
-                FetchUnitInput(run_id=inp.run_id, after_index=self._last_index),
-                start_to_close_timeout=timedelta(seconds=30),
-            )
-            unit: ExecutionUnit | None = fetch.unit
-            if unit is None:
-                break
-
-            exec_result: ExecuteUnitResult = await workflow.execute_activity(
-                execute_safe_unit,
-                ExecuteUnitInput(run_id=inp.run_id, unit=unit),
-                start_to_close_timeout=timedelta(seconds=120),
-            )
-            await workflow.execute_activity(
-                commit_checkpoint,
-                CommitCheckpointInput(
-                    task_id=inp.task_id,
-                    user_id=inp.user_id,
-                    run_id=inp.run_id,
-                    spec_version=inp.spec_version,
-                    plan_version=inp.plan_version,
-                    batch_identity=f"unit-{unit.index}",
-                    node_run_id=None,
-                    input_fingerprint=unit.input_fingerprint,
-                    committed_refs=exec_result.committed_refs,
-                    content_hash=None,
-                ),
-                start_to_close_timeout=timedelta(seconds=60),
-            )
-            self._last_index = unit.index
+                return TaskWorkflowResult(inp.task_id, inp.run_id, "FAILED")
 
         await workflow.execute_activity(
             complete_run,
