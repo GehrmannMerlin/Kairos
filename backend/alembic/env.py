@@ -9,10 +9,11 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from app.config import get_settings
-from app.infra.db import Base
 
 # Import models so their tables are registered on Base.metadata.
+from app.auth import models as auth_models  # noqa: F401
+from app.config import get_settings
+from app.infra.db import Base
 from app.storage import models  # noqa: F401
 from sqlalchemy import engine_from_config, pool
 
