@@ -46,9 +46,28 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
     service_name: str = "kairos-api"
 
+    # --- Session cookie (M-02) ---
+    session_cookie_name: str = "kairos_session"
+    session_cookie_httponly: bool = True
+    session_cookie_samesite: str = "lax"
+    session_cookie_secure: bool = False  # dev; must be True for staging/production
+    session_cookie_path: str = "/"
+    session_cookie_max_age_seconds: int = 60 * 60 * 24 * 7  # 7 days
+
+    # --- Auth rate limiting (M-02, in-memory) ---
+    auth_login_max_attempts: int = 5
+    auth_login_window_seconds: int = 15 * 60
+
     # --- API / CORS ---
     api_port: int = 8000
     cors_origins: list[str] = ["http://localhost:5173"]
+
+    @field_validator("session_cookie_samesite")
+    @classmethod
+    def _validate_samesite(cls, value: str) -> str:
+        if value not in {"lax", "strict", "none"}:
+            raise ValueError("session_cookie_samesite must be lax/strict/none")
+        return value
 
     @field_validator("cors_origins", mode="before")
     @classmethod

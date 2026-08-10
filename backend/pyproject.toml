@@ -23,6 +23,7 @@ dependencies = [
     # version (e.g. 0.65b0) which older pip rejects as a pre-release under >=.
     "opentelemetry-instrumentation-fastapi==0.65b0",
     "opentelemetry-exporter-otlp>=1.27",
+    "pwdlib[argon2]>=0.2",
 ]
 
 [project.optional-dependencies]

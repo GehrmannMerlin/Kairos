@@ -7,8 +7,10 @@ there is intentionally no "list all users" surface in M-02.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any, cast
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session as DbSession
 
 from app.auth.models import Session, User
@@ -82,6 +84,6 @@ class SessionRepository:
             )
             .values(revoked_at=now)
         )
-        result = self._db.execute(stmt)
+        cursor = cast(CursorResult[Any], self._db.execute(stmt))
         self._db.commit()
-        return result.rowcount or 0
+        return cursor.rowcount or 0
