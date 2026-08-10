@@ -12,6 +12,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -35,16 +36,106 @@ class Task(Base):
     )
     state: Mapped[str] = mapped_column(String(30), nullable=False, default="DRAFT")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    task_type: Mapped[str] = mapped_column(String(30), nullable=False, default="directed")
+    # NULL until Goal Understanding resolves it to a canonical TaskType (M-06).
+    task_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     current_spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Template reference kept when the Task was created from a CollectionTemplate (D-047).
+    # Runtime facts always come from the generated CollectionSpecVersion, never from the template.
+    template_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ChatMessage(Base):
+    """Append-only Chat history for the single Task workspace (D-033).
+
+    Never UPDATE a historical message. Agent messages that reference a structured
+    object (CollectionSpecDraft, GoalUnderstandingResult, clarification,
+    model_required, error) carry a typed ``ref_type`` / ``ref_id`` instead of
+    flattening business facts into plain markdown.
+    """
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # user | assistant | system
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    ref_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    ref_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    meta: Mapped[dict | None] = mapped_column("meta", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CollectionSpecDraft(Base):
+    """Editable current-candidate spec for one Task (D-004).
+
+    Saving a draft does NOT create a CollectionSpecVersion; only confirm_spec
+    freezes an immutable version. One draft per task.
+    """
+
+    __tablename__ = "collection_spec_drafts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CollectionTemplate(Base):
+    """Versioned collection template (D-047 / D-054).
+
+    ``template_id`` is the stable logical identity; each edit appends a new
+    ``version`` row and flips ``is_current`` (same pattern as M-03 ModelConfig).
+    Old versions are immutable history and keep working for Tasks that referenced
+    them. A template stores a CollectionSpec skeleton only — never Run/Record/
+    Evidence/Checkpoint execution state.
+    """
+
+    __tablename__ = "collection_templates"
+    __table_args__ = (UniqueConstraint("template_id", "version", name="uq_ct_template_version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    template_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    task_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    goal_template: Mapped[str] = mapped_column(Text, nullable=False)
+    variables: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    field_schema: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    completion_conditions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    advanced_settings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    field_expansion: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    default_model_config_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 

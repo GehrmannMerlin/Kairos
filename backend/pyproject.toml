@@ -26,6 +26,10 @@ dependencies = [
     "httpx>=0.27",
     "pwdlib[argon2]>=0.2",
     "cryptography>=42",
+    # M-06 Goal Understanding. We only use pydantic-ai's typed Agent/FunctionModel
+    # orchestration; the actual model call routes through app.providers (M-03),
+    # never through pydantic-ai's own provider SDKs.
+    "pydantic-ai>=2.27",
 ]
 
 [project.optional-dependencies]

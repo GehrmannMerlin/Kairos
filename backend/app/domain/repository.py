@@ -12,8 +12,11 @@ from sqlalchemy import select
 
 from app.auth.errors import NotFoundError
 from app.domain.models import (
+    ChatMessage,
     Checkpoint,
+    CollectionSpecDraft,
     CollectionSpecVersion,
+    CollectionTemplate,
     DomainEvent,
     IdempotencyKey,
     NodeAttempt,
@@ -37,8 +40,24 @@ class TaskRepository:
     def __init__(self, db: Any) -> None:
         self._db = db
 
-    def create(self, *, user_id: int, title: str, task_type: str = "directed") -> Task:
-        task = Task(user_id=user_id, title=title, task_type=task_type, state="DRAFT", version=1)
+    def create(
+        self,
+        *,
+        user_id: int,
+        title: str,
+        task_type: str | None = None,
+        template_id: str | None = None,
+        template_version: int | None = None,
+    ) -> Task:
+        task = Task(
+            user_id=user_id,
+            title=title,
+            task_type=task_type,
+            template_id=template_id,
+            template_version=template_version,
+            state="DRAFT",
+            version=1,
+        )
         self._db.add(task)
         self._db.commit()
         self._db.refresh(task)
@@ -108,6 +127,257 @@ class SpecVersionRepository:
         if row is None:
             raise NotFoundError("资源不存在")
         return row
+
+    def latest_version(self, user_id: int, task_id: int) -> CollectionSpecVersion | None:
+        return self._db.scalar(
+            select(CollectionSpecVersion)
+            .where(
+                CollectionSpecVersion.user_id == user_id,
+                CollectionSpecVersion.task_id == task_id,
+            )
+            .order_by(CollectionSpecVersion.version.desc())
+            .limit(1)
+        )
+
+    def next_version(self, user_id: int, task_id: int) -> int:
+        latest = self.latest_version(user_id, task_id)
+        return (latest.version + 1) if latest is not None else 1
+
+    def mark_confirmed(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        version: int,
+        confirmed_by: int,
+    ) -> CollectionSpecVersion:
+        from datetime import UTC, datetime
+
+        row = self.get_version(user_id, task_id, version)
+        row.confirmed_at = datetime.now(UTC)
+        row.confirmed_by = confirmed_by
+        self._db.add(row)
+        return row
+
+
+class ChatMessageRepository:
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def create(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        role: str,
+        content: str,
+        ref_type: str | None = None,
+        ref_id: int | None = None,
+        meta: dict | None = None,
+    ) -> ChatMessage:
+        row = ChatMessage(
+            user_id=user_id,
+            task_id=task_id,
+            role=role,
+            content=content,
+            ref_type=ref_type,
+            ref_id=ref_id,
+            meta=meta,
+        )
+        self._db.add(row)
+        self._db.commit()
+        self._db.refresh(row)
+        return row
+
+    def list_by_task(self, user_id: int, task_id: int) -> list[ChatMessage]:
+        return list(
+            self._db.scalars(
+                select(ChatMessage)
+                .where(ChatMessage.user_id == user_id, ChatMessage.task_id == task_id)
+                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+            )
+        )
+
+
+class SpecDraftRepository:
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def get_for_task(self, user_id: int, task_id: int) -> CollectionSpecDraft | None:
+        return self._db.scalar(
+            select(CollectionSpecDraft).where(
+                CollectionSpecDraft.user_id == user_id, CollectionSpecDraft.task_id == task_id
+            )
+        )
+
+    def upsert(self, *, user_id: int, task_id: int, payload: dict) -> CollectionSpecDraft:
+        row = self.get_for_task(user_id, task_id)
+        if row is None:
+            row = CollectionSpecDraft(user_id=user_id, task_id=task_id, payload=payload)
+            self._db.add(row)
+        else:
+            row.payload = payload
+            self._db.add(row)
+        self._db.commit()
+        self._db.refresh(row)
+        return row
+
+
+class TemplateRepository:
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def create(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        task_type: str,
+        goal_template: str,
+        variables: list,
+        field_schema: list,
+        completion_conditions: list,
+        advanced_settings: dict,
+        field_expansion: dict,
+        default_model_config_ref: dict | None,
+    ) -> CollectionTemplate:
+        from uuid import uuid4
+
+        row = CollectionTemplate(
+            template_id=uuid4().hex,
+            user_id=user_id,
+            version=1,
+            name=name,
+            task_type=task_type,
+            goal_template=goal_template,
+            variables=variables,
+            field_schema=field_schema,
+            completion_conditions=completion_conditions,
+            advanced_settings=advanced_settings,
+            field_expansion=field_expansion,
+            default_model_config_ref=default_model_config_ref,
+            is_current=True,
+            is_favorite=False,
+        )
+        self._db.add(row)
+        self._db.commit()
+        self._db.refresh(row)
+        return row
+
+    def append_version(
+        self,
+        *,
+        template_id: str,
+        user_id: int,
+        name: str,
+        task_type: str,
+        goal_template: str,
+        variables: list,
+        field_schema: list,
+        completion_conditions: list,
+        advanced_settings: dict,
+        field_expansion: dict,
+        default_model_config_ref: dict | None,
+    ) -> CollectionTemplate:
+        self._unset_current(template_id, user_id)
+        version = self.next_version(template_id)
+        current = self.get_version(user_id, template_id, max(1, version - 1))
+        row = CollectionTemplate(
+            template_id=template_id,
+            user_id=user_id,
+            version=version,
+            name=name,
+            task_type=task_type,
+            goal_template=goal_template,
+            variables=variables,
+            field_schema=field_schema,
+            completion_conditions=completion_conditions,
+            advanced_settings=advanced_settings,
+            field_expansion=field_expansion,
+            default_model_config_ref=default_model_config_ref,
+            is_current=True,
+            is_favorite=current.is_favorite,
+        )
+        self._db.add(row)
+        self._db.commit()
+        self._db.refresh(row)
+        return row
+
+    def next_version(self, template_id: str) -> int:
+        from sqlalchemy import func
+
+        latest = self._db.scalar(
+            select(func.max(CollectionTemplate.version)).where(
+                CollectionTemplate.template_id == template_id
+            )
+        )
+        return (latest or 0) + 1
+
+    def get_current(self, user_id: int, template_id: str) -> CollectionTemplate:
+        row = self._db.scalar(
+            select(CollectionTemplate).where(
+                CollectionTemplate.template_id == template_id,
+                CollectionTemplate.user_id == user_id,
+                CollectionTemplate.is_current.is_(True),
+            )
+        )
+        if row is None:
+            raise NotFoundError("资源不存在")
+        return row
+
+    def get_version(self, user_id: int, template_id: str, version: int) -> CollectionTemplate:
+        row = self._db.scalar(
+            select(CollectionTemplate).where(
+                CollectionTemplate.template_id == template_id,
+                CollectionTemplate.user_id == user_id,
+                CollectionTemplate.version == version,
+            )
+        )
+        if row is None:
+            raise NotFoundError("资源不存在")
+        return row
+
+    def list_current(self, user_id: int) -> list[CollectionTemplate]:
+        return list(
+            self._db.scalars(
+                select(CollectionTemplate)
+                .where(
+                    CollectionTemplate.user_id == user_id,
+                    CollectionTemplate.is_current.is_(True),
+                )
+                .order_by(
+                    CollectionTemplate.is_favorite.desc(), CollectionTemplate.created_at.desc()
+                )
+            )
+        )
+
+    def set_favorite(self, user_id: int, template_id: str, favorite: bool) -> CollectionTemplate:
+        current = self.get_current(user_id, template_id)
+        current.is_favorite = favorite
+        self._db.add(current)
+        self._db.commit()
+        self._db.refresh(current)
+        return current
+
+    def delete(self, user_id: int, template_id: str) -> None:
+        current = self.get_current(user_id, template_id)
+        current.is_current = False
+        self._db.add(current)
+        self._db.commit()
+
+    def _unset_current(self, template_id: str, user_id: int) -> None:
+        from sqlalchemy import update
+
+        self._db.execute(
+            update(CollectionTemplate)
+            .where(
+                CollectionTemplate.template_id == template_id,
+                CollectionTemplate.user_id == user_id,
+                CollectionTemplate.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        self._db.commit()
 
 
 class PlanVersionRepository:
@@ -366,6 +636,9 @@ class CheckpointRepository:
 # Re-exported for convenience in service/tests.
 __all__ = [
     "TaskRepository",
+    "ChatMessageRepository",
+    "SpecDraftRepository",
+    "TemplateRepository",
     "SpecVersionRepository",
     "PlanVersionRepository",
     "RunRepository",
