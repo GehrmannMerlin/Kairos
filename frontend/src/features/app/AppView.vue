@@ -1,41 +1,44 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
-
-import AppShell from '@/app/shell/AppShell.vue'
-import { authStore } from '@/features/auth/useAuth'
-
-const router = useRouter()
-
-async function onLogout(): Promise<void> {
-  await authStore.logout()
-  await router.push('/login')
-}
+// 工作台（D-045）。「+ 新任务」真实创建与最近任务真实读取在 M-06 接入；
+// M-05 只呈现骨架：新任务输入为明确占位，最近任务为真实 Empty State。
 </script>
 
 <template>
-  <AppShell>
-    <section class="app-placeholder">
-      <h1>工作区（M-02 受保护占位）</h1>
-      <p>当前用户：{{ authStore.user.value?.email }}</p>
-      <button @click="onLogout">退出登录</button>
-    </section>
-  </AppShell>
+  <section class="page">
+    <header class="page__header">
+      <h1>工作台</h1>
+    </header>
+
+    <div class="card workbench__new-task">
+      <textarea
+        class="workbench__input"
+        rows="3"
+        disabled
+        placeholder="描述你的采集需求，例如：帮我搜集深圳的工业自动化设备供应商，获取公司名、官网、主营产品和联系方式"
+      />
+      <p class="muted">任务创建能力将在下一模块接入（M-06）</p>
+    </div>
+
+    <div class="workbench__section">
+      <h2 class="workbench__section-title">最近任务</h2>
+      <p class="empty">暂无任务</p>
+    </div>
+  </section>
 </template>
 
 <style scoped>
-.app-placeholder h1 {
-  font-size: 1.25rem;
-  margin: 0 0 0.5rem;
-}
-.app-placeholder p {
-  color: var(--color-text-secondary);
-}
-.app-placeholder button {
-  margin-top: 1rem;
-  padding: 0.5rem 1rem;
+.workbench__input {
+  display: block;
+  width: 100%;
+  padding: 0.6rem;
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
+  resize: vertical;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+}
+.workbench__section-title {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
 }
 </style>

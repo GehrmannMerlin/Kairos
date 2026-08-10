@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 
 import ModelConfigDrawer from '@/features/providers/ModelConfigDrawer.vue'
 import * as providersApi from '@/features/providers/providers.api'
@@ -153,7 +152,6 @@ onMounted(() => {
 <template>
   <section class="models">
     <div class="models__header">
-      <RouterLink to="/app">← 返回工作台</RouterLink>
       <h1>模型与搜索服务配置</h1>
     </div>
 
