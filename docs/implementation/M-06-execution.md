@@ -1,6 +1,6 @@
 # M-06 模块执行记录
 
-状态：IN_PROGRESS → **BLOCKED_EXTERNAL_PROVIDER**（全部代码/scoped 测试通过，唯一缺真实 Provider E2E）
+状态：IN_PROGRESS → BLOCKED_EXTERNAL_PROVIDER → **DONE**（真实 Provider E2E PASS）
 负责人/Agent：Claude Code — 2026-08-10
 Baseline（M-05 DONE）SHA：`2f7c0bc0477a423ff937591173f4d959074fa397`
 依赖模块：M-02（DONE）、M-03（DONE）、M-04（DEPLOYED）、M-05（DONE）
@@ -30,7 +30,7 @@ M-07/M-08 稳定交接契约；同时完成模板 CRUD/Version/变量/使用/从
 - [x] 前端：工作台真实创建 / Chat 工作区 / Model Required 返回链（return_to）/ Spec Summary Card / Editor Sheet / 模板列表·编辑·变量 Sheet
 - [x] M-06 fake smoke（TEST G）全链通过
 - [x] docs：`docs/architecture/task-draft-spec.md`、本执行记录
-- [ ] 真实 Provider E2E（被外部 Provider / 本地环境阻塞，见第 7 节）
+- [x] 真实 Provider E2E（DeepSeek，见第 7.2 节）
 
 ## 4. 明确不做
 
@@ -50,7 +50,7 @@ M-09+（Search/robots/Fetch/Crawler/Extractor/Quality/CSV）、新增一级页�
 | 前端 lint/format | `npm run lint:check && npm run format:check` | PASS | PASS |
 | 前端 build | `npm run build` | PASS | PASS |
 | Migration | `alembic upgrade head --sql`（PG 方言编译）| PASS | PASS（0005 全套 DDL 编译通过）|
-| 真实 Provider E2E | 自然语言→Spec→确认 | 单条真实链 | **BLOCKED**（见第 7 节）|
+| 真实 Provider E2E | 自然语言→GoalUnderstanding→Spec→确认 | 单条真实链 | **PASS**（DeepSeek `deepseek-chat`，见第 7.2 节）|
 
 ## 6. 跨模块联动结果
 
@@ -68,20 +68,27 @@ M-09+（Search/robots/Fetch/Crawler/Extractor/Quality/CSV）、新增一级页�
 - 修复后本地栈验证：`/api/health/live`、`/api/health/ready` 均 PASS；
   `/api/providers/models`、`/api/providers/definitions` 正常返回。API/Worker/Migrate 均以新镜像运行。
 
-### 7.2 Provider 可用性检查（2026-08-10）
+### 7.2 Real Provider Gate 完成（2026-08-10，用户授权使用真实 DeepSeek Key）
 
-- `GET /api/providers/models` → `configs: []`：本地开发用户**无任何 ModelConfig**。
-- `ollama` 命令不存在、安装目录不存在：**无现成 Ollama/本地模型**。
-- 根目录 `.env` **不含任何 Provider API Key**（OpenAI/DeepSeek/Anthropic/Gemini/OpenRouter）。
-- 本地无任何 LLM 服务端口（11434/1234/8080/3000/5000 等）在监听。
-- 按预设策略：不能使用 Claude Code 自身凭据、不能用 Mock 冒充、不能自动下载大模型。
-- 因此最终状态仍 = `BLOCKED_EXTERNAL_PROVIDER`。
-
-**REQUIRED USER ACTION**：本地开发栈现在已可正常运行。请在 Kairos `/models`
-配置任意一个真实可用 Model Provider（OpenAI/DeepSeek/OpenRouter/Anthropic/Gemini/Ollama 均可），
-例如创建后调用 `POST /api/providers/models/{config_id}/test` 确认 `connection_status=AVAILABLE`。
-配置完成后，仅重跑这一条 Real Provider E2E（自然语言 → GoalUnderstanding → Spec → 确认冻结），
-不需要重跑其他测试。请勿把 API Key 粘贴到本会话 Prompt 中。
+- **ModelConfig**：`POST /api/providers/models` 创建
+  - config_id：`9c01a51b5c9c432487bcff4b4484471d`，version 1，provider=`deepseek`，model=`deepseek-chat`。
+  - 保存路径：ModelConfig Service → CredentialVault → CredentialVersion（ciphertext/wrapped DEK/nonce，无明文）。
+  - `POST /api/providers/models/{config_id}/test` → **AVAILABLE**（latency 217ms）。设为默认模型。
+- **真实 E2E 链**（任务 id=2，固定输入：搜集深圳工业自动化设备供应商/公司名/官网/主营产品/联系方式）：
+  - Task Draft → 首条 User ChatMessage 持久化（content 未丢）→ `POST /tasks/{id}/understand`
+  - GoalUnderstandingAgent 经 M-03 ModelInferenceClient 调用真实 DeepSeek，返回 typed `GoalUnderstandingResult`
+  - `task_type=EXPLORATORY`，`fields=4`（公司名/官网/主营产品/联系方式，用户核心字段齐全）
+  - CollectionSpec Draft 服务端校验通过（schema `m06.1`）
+  - `confirm_spec`：M-04 状态机（DRAFT→QUEUED）→ `task.spec_confirmed` DomainEvent → Outbox Event（pending）
+  - 不可变 CollectionSpecVersion：version 1，`confirmed_at`/`confirmed_by` 已冻结；Task id 不变、User 消息不丢。
+- **结构化输出兼容修复**：`response_format=json_object` 下 DeepSeek 首轮输出不遵守契约
+  （`goal`/`confidence` 缺失、`completion_conditions` 误为对象、`task_overview`/`clarifying_question` 等别名）。
+  已更新 `app/agents/goal_understanding.py` 系统 Prompt，显式给出完整 JSON 字段契约与示例；
+  重试后 E2E 全链 PASS。scoped agent 测试（5 例）与 ruff 均 PASS。
+- **Secret 检查**：API 响应、应用日志、DB 各明文列（credential_versions/credentials/model_configs/
+  domain_events/outbox_events/chat_messages/spec drafts+versions/tasks）均无 Key 明文 → **PASS**。
+  临时 Key 文件位于 repo 外，已使用后删除。
+- **最终状态：DONE**（真实 Provider E2E PASS，M-06 唯一缺失门禁已补齐）。
 
 ## 8. Git 证据
 
@@ -98,12 +105,14 @@ M-09+（Search/robots/Fetch/Crawler/Extractor/Quality/CSV）、新增一级页�
   - `docs(task): record M-06 implementation`
   - `fix(infra): forward credential master key in local compose`（本轮复查补录）
   - `docs(task): update M-06 blocker with verified local stack`（本轮复查补录）
+  - `fix(agent): enforce goal understanding JSON contract`（真实 Provider 兼容修复）
+  - `docs(task): close M-06 real provider gate`（本轮收口）
 - working tree：clean；pushed：NO
 
 ## 9. 完成结论
 
 - M-06 全部代码 + scoped 门禁 PASS（后端 97、前端 66、lint/format/mypy/build、migration DDL 编译、fake smoke）。
-- 本轮复查：本地栈已修复并验证可正常运行（master key 转发 + `--env-file .env`），health/ready 与 Provider 端点 PASS。
-- 唯一未通过：真实 Provider E2E（本地无任何真实 ModelConfig，无 Ollama/本地模型，`.env` 无 Provider Key）。
-- 最终状态：**BLOCKED_EXTERNAL_PROVIDER**（IMPLEMENTATION = COMPLETE）。
-- 不进入 M-07；待用户在 `/models` 配置真实 Provider 后仅重跑 Real Provider E2E。
+- 真实 Provider E2E **PASS**（DeepSeek `deepseek-chat`，config `9c01a51b…` v1，AVAILABLE；natural language → GoalUnderstanding → typed EXPLORATORY Spec → confirm → frozen CollectionSpecVersion v1）。
+- Secret 检查 PASS（Key 不经 Git/文档/日志/API 明文，临时文件已删除）。
+- 最终状态：**DONE**（IMPLEMENTATION = COMPLETE + 真实 Provider Gate PASS）。
+- 下一模块：M-07（Temporal TaskWorkflow / SSE）。
