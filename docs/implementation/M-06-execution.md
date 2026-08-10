@@ -103,6 +103,7 @@ M-09+（Search/robots/Fetch/Crawler/Extractor/Quality/CSV）、新增一级页�
 ## 9. 完成结论
 
 - M-06 全部代码 + scoped 门禁 PASS（后端 97、前端 66、lint/format/mypy/build、migration DDL 编译、fake smoke）。
-- 唯一未通过：真实 Provider E2E（环境无可用真实 ModelConfig + 本地服务未运行）。
+- 本轮复查：本地栈已修复并验证可正常运行（master key 转发 + `--env-file .env`），health/ready 与 Provider 端点 PASS。
+- 唯一未通过：真实 Provider E2E（本地无任何真实 ModelConfig，无 Ollama/本地模型，`.env` 无 Provider Key）。
 - 最终状态：**BLOCKED_EXTERNAL_PROVIDER**（IMPLEMENTATION = COMPLETE）。
-- 不进入 M-07；待用户配置真实 Provider 后仅重跑 Real Provider E2E。
+- 不进入 M-07；待用户在 `/models` 配置真实 Provider 后仅重跑 Real Provider E2E。
