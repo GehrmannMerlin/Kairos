@@ -120,8 +120,14 @@ onMounted(() => {
     <section class="settings__section">
       <h2>账户资料</h2>
       <dl class="settings__account">
-        <div><dt>邮箱</dt><dd>{{ email }}</dd></div>
-        <div><dt>显示名称</dt><dd>{{ displayName ?? '—' }}</dd></div>
+        <div>
+          <dt>邮箱</dt>
+          <dd>{{ email }}</dd>
+        </div>
+        <div>
+          <dt>显示名称</dt>
+          <dd>{{ displayName ?? '—' }}</dd>
+        </div>
       </dl>
     </section>
 
@@ -183,8 +189,7 @@ onMounted(() => {
         <h3>默认模型</h3>
         <p v-if="defaultsLoading" class="muted">加载中…</p>
         <p v-else-if="defaultModelName" class="muted">
-          默认模型：{{ defaultModelName }}（
-          <RouterLink to="/models">去模型配置</RouterLink>）
+          默认模型：{{ defaultModelName }}（ <RouterLink to="/models">去模型配置</RouterLink>）
         </p>
         <p v-else class="muted">
           未配置默认模型（
@@ -203,7 +208,9 @@ onMounted(() => {
 
     <section class="settings__section">
       <h2>存储与数据</h2>
-      <p class="muted">任务 / 记录 / 证据 / 导出统计、清理已删除任务文件、删除全部数据等危险操作将在后续模块接入</p>
+      <p class="muted">
+        任务 / 记录 / 证据 / 导出统计、清理已删除任务文件、删除全部数据等危险操作将在后续模块接入
+      </p>
     </section>
   </section>
 </template>

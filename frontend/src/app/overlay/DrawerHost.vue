@@ -34,7 +34,11 @@ const TITLES: Record<DrawerType, string> = {
 const activeDrawer = computed(() => {
   if (!drawerState.value.open || !drawerState.value.type) return null
   const type = drawerState.value.type
-  return { component: drawerComponents[type], payload: drawerState.value.payload, title: TITLES[type] }
+  return {
+    component: drawerComponents[type],
+    payload: drawerState.value.payload,
+    title: TITLES[type],
+  }
 })
 
 useEscapeClose(closeDrawer)

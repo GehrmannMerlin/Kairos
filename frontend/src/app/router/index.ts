@@ -62,7 +62,12 @@ const routes: RouteRecordRaw[] = [
           },
           { path: 'chat', name: 'task-chat', component: TaskChatView, meta: { title: '任务对话' } },
           { path: 'data', name: 'task-data', component: TaskDataView, meta: { title: '数据' } },
-          { path: 'quality', name: 'task-quality', component: TaskQualityView, meta: { title: '质量' } },
+          {
+            path: 'quality',
+            name: 'task-quality',
+            component: TaskQualityView,
+            meta: { title: '质量' },
+          },
           {
             path: 'execution',
             name: 'task-execution',

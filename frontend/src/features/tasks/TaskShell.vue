@@ -39,12 +39,7 @@ function openStatusDrawer(): void {
       <header class="task-shell__header">
         <span class="task-shell__title">{{ summary?.title ?? `任务 ${taskId}` }}</span>
         <span v-if="state" class="task-shell__state">{{ state }}</span>
-        <button
-          v-if="summary"
-          type="button"
-          class="task-shell__status"
-          @click="openStatusDrawer"
-        >
+        <button v-if="summary" type="button" class="task-shell__status" @click="openStatusDrawer">
           状态
         </button>
         <span v-if="loading" class="muted">加载中…</span>

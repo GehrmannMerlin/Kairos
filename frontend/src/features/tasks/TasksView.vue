@@ -48,7 +48,9 @@ onMounted(() => void load())
       <tbody>
         <tr v-for="t in tasks" :key="t.task_id">
           <td>
-            <RouterLink :to="`/tasks/${t.task_id}/chat`" class="task-link">{{ t.title }}</RouterLink>
+            <RouterLink :to="`/tasks/${t.task_id}/chat`" class="task-link">{{
+              t.title
+            }}</RouterLink>
           </td>
           <td>{{ t.state }}</td>
           <td class="muted">{{ t.updated_at }}</td>

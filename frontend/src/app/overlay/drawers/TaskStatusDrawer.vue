@@ -18,10 +18,22 @@ const data = props.payload as TaskStatusPayload | undefined
 <template>
   <template v-if="data">
     <dl class="status-list">
-      <div class="status-row"><dt>任务</dt><dd>{{ data.title }}</dd></div>
-      <div class="status-row"><dt>ID</dt><dd>{{ data.taskId }}</dd></div>
-      <div class="status-row"><dt>状态</dt><dd>{{ data.state }}</dd></div>
-      <div class="status-row"><dt>版本</dt><dd>{{ data.version }}</dd></div>
+      <div class="status-row">
+        <dt>任务</dt>
+        <dd>{{ data.title }}</dd>
+      </div>
+      <div class="status-row">
+        <dt>ID</dt>
+        <dd>{{ data.taskId }}</dd>
+      </div>
+      <div class="status-row">
+        <dt>状态</dt>
+        <dd>{{ data.state }}</dd>
+      </div>
+      <div class="status-row">
+        <dt>版本</dt>
+        <dd>{{ data.version }}</dd>
+      </div>
       <div class="status-row">
         <dt>Spec 版本</dt>
         <dd>{{ data.currentSpecVersion ?? '—' }}</dd>
