@@ -2576,32 +2576,40 @@ batch、重复命令同 key 幂等。结合 crash/restart 与 start contract 形
 
 - [ ] **Step 1: 编写 M-07 execution record**
 
-`docs/implementation/M-07-execution.md`：
+`docs/implementation/M-07-execution.md`。把下列 `<...>` 占位替换为**真实 Git 值**（不要保留占位）：
+
+- `Baseline SHA`：`git rev-parse 408a933` 之前 M-06 收口 HEAD —— 即本分支起点 `408a9335174d0423b0f084fa0c38c2f8da8cf2bf`（M-06 DONE 后）。
+- `## 1. 模块目标`：写 2-3 句 M-07 目标（Temporal TaskWorkflow、Run 启动、pause/resume/cancel、heartbeat/checkpoint、worker 恢复、SSE replay、前端 Drawer、M-08 seam）。
+- `Commits`：用 `git log --oneline 408a933..HEAD` 列出 Task 1-7 的全部提交（含本 Task 之前的 docs 计划提交）。保持英文 Conventional Commits 标题。
 
 ```markdown
 # M-07 模块执行记录
 
-状态：IN_PROGRESS
+状态：IN_PROGRESS（最终 DONE 由控制器在全部门禁验证后更新）
 负责人/Agent：Claude Code — 2026-08-10
-Baseline（M-06 DONE）SHA：`<M-06 收口后 HEAD SHA>`
+Baseline（M-06 DONE）SHA：`408a9335174d0423b0f084fa0c38c2f8da8cf2bf`
 依赖模块：M-04（DEPLOYED）、M-06（DONE）
 目标环境：local（M-07 不属于 Deploy Gate；DEPLOY-GATE-2 必须等 M-05～M-08）
 
 ## 1. 模块目标
-...
+建立真实可靠的长期任务执行底座：TaskWorkflow（Run 启动、pause/resume/cancel、
+heartbeat/checkpoint 复用、worker 崩溃恢复）与可重连的 SSE 事件流（Last-Event-ID
+重放、跨用户隔离、前端 Task Status Drawer 真实状态过渡），并为 M-08 Plan 提供稳定
+执行 seam（TaskWorkflowStarter.submit_validated_plan）。
 
 ## 2. 契约
-- TaskWorkflowInput / Result / Signals
-- TaskCommandService pause/resume/cancel
-- SSETaskEvent schema + /api/events/tasks/{id} replay
+- TaskWorkflowInput / Result / Signals（pause/resume/cancel/approval_resolution/safe_pause）
+- TaskCommandService pause/resume/cancel（幂等 + 状态机事务 + outbox）
+- OutboxTemporalDispatcher（outbox -> Temporal Signal，有界重试）
+- SSETaskEvent schema + /api/events/tasks/{id} replay（cursor = domain_events.id）
 - TaskWorkflowStarter（M-08 seam：submit_validated_plan）
 
 ## 3. 行为
-- 协作式暂停/取消（PAUSING/CANCELLING 真实中间态）
-- heartbeat 不生成 Checkpoint
-- checkpoint 复用（同 batch + fingerprint 幂等）
-- worker crash/restart：batch1 不重复
-- SSE Last-Event-ID 重放；SSE 不是事实源
+- 协作式暂停/取消（PAUSING/CANCELLING 真实中间态由命令层写入，PAUSED/CANCELLED 由 Workflow 安全停止后写入）
+- heartbeat 不生成 Checkpoint（heartbeat_progress 只发进度）
+- checkpoint 复用（同 batch_identity + input_fingerprint 幂等，reused=True）
+- worker crash/restart：真实子进程 kill，batch1 不重复、batch2 完成、最终结果一次
+- SSE Last-Event-ID / ?after_id 重放；keepalive 是注释行非业务事件；SSE 不是事实源
 
 ## 4. Temporal 集成命令
 cd backend && set KAIROS_RUN_INTEGRATION=1 && .venv/Scripts/python.exe -m pytest tests/integration/test_task_workflow.py tests/integration/test_worker_crash_restart.py -q
@@ -2610,15 +2618,15 @@ cd backend && set KAIROS_RUN_INTEGRATION=1 && .venv/Scripts/python.exe -m pytest
 cd frontend && npm run type-check && npm run lint:check && npm run format:check && npm run test:unit -- taskEvents TaskStatusDrawer
 
 ## 6. Migration
-NO MIGRATION（复用 M-04 runs/checkpoints/domain_events/outbox_events；SSE cursor = domain_events.id）
+NO MIGRATION（复用 M-04 runs/checkpoints/domain_events/outbox_events/idempotency_keys；SSE cursor = domain_events.id）
 
 ## 7. Git 证据
-- 分支：feature/M-07-temporal-workflow-sse（从 M-06 HEAD 创建，未 push）
-- Commits：<Task 1-7 列表>
+- 分支：feature/M-07-temporal-workflow-sse（从 M-06 HEAD 408a933 创建，未 push）
+- Commits：<git log --oneline 408a933..HEAD 列出的全部提交>
 - working tree：clean；pushed：NO
 
 ## 8. 完成结论
-- M-07 DONE 门禁全部满足后填写 DONE。
+- M-07 DONE 门禁全部满足后由控制器填写 DONE。
 ```
 
 - [ ] **Step 2: 前端 + 后端最终门禁 + secret scan**
