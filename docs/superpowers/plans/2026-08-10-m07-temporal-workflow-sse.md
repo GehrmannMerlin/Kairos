@@ -1564,6 +1564,7 @@ git commit -m "test(workflow): cover worker crash restart recovery
 - Create: `backend/app/api/events.py`
 - Create: `backend/app/api/routes/events.py`
 - Modify: `backend/app/api/router.py`
+- Create: `backend/tests/api/conftest.py`（提供 `db`/`user`/`user2` fixtures——`tests/api/` 目前无 conftest，`tests/domain/conftest.py` 不作用于本目录）
 - Test: `backend/tests/api/test_task_events.py`
 
 **Interfaces:**
@@ -1630,7 +1631,47 @@ def test_cross_user_isolation(db, user, user2) -> None:
     assert query_task_events(db, user2.id, task_id, after_id=0) == []
 ```
 
-> 需在 `tests/api` 或 `tests/domain` conftest 提供 `user2` fixture（或复用 `user` 创建第二个）。
+`backend/tests/api/conftest.py`（复用 `tests/domain/conftest.py` 的 SQLite 模式，本目录专属）：
+
+```python
+"""tests/api 共享 fixtures：SQLite 会话 + 两个用户（跨用户隔离测试需要）。"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+
+import pytest
+from app.auth.models import User
+from app.auth.repository import UserRepository
+from app.infra.db import Base
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import sessionmaker
+
+
+@pytest.fixture()
+def db(tmp_path) -> DbSession:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'api.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    session = factory()
+    yield session
+    session.close()
+
+
+@pytest.fixture()
+def user(db: DbSession) -> User:
+    return UserRepository(db).create("alice@example.com", "hash", None)
+
+
+@pytest.fixture()
+def user2(db: DbSession) -> User:
+    return UserRepository(db).create("bob@example.com", "hash", None)
+```
+
+> `UserRepository.create` 签名 `(email, password_hash, display_name=None)`，与 `tests/domain/conftest.py` 一致。
 
 - [ ] **Step 2: 运行确认失败**
 
@@ -1803,7 +1844,7 @@ Expected: PASS。
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/app/api/events.py backend/app/api/routes/events.py backend/app/api/router.py backend/tests/api/test_task_events.py
+git add backend/app/api/events.py backend/app/api/routes/events.py backend/app/api/router.py backend/tests/api/conftest.py backend/tests/api/test_task_events.py
 git commit -m "feat(api): add replayable task event stream
 
 新增 /api/events/tasks/{id} SSE：基于 domain_events 重放（Last-Event-ID /
