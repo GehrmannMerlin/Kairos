@@ -16,6 +16,8 @@ from app.api.schemas import (
     AddSeedUrlCommand,
     ChatListResponse,
     ChatMessageDto,
+    ConfirmSpecCommand,
+    ConfirmSpecResponse,
     CreateMessageCommand,
     CreateMessageResponse,
     CreateTaskCommand,
@@ -28,8 +30,10 @@ from app.api.schemas import (
 )
 from app.auth.deps import require_user
 from app.auth.models import User
+from app.domain.errors import SpecValidationError
 from app.domain.models import ChatMessage, Task
 from app.domain.repository import TaskRepository
+from app.domain.service import DomainService
 from app.domain.task_draft import TaskDraftService
 from app.infra.deps import get_db
 from app.state.states import TaskState, allowed_task_actions
@@ -39,6 +43,10 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 def get_task_draft_service(db: DbSession = Depends(get_db)) -> TaskDraftService:
     return TaskDraftService(db)
+
+
+def get_domain_service(db: DbSession = Depends(get_db)) -> DomainService:
+    return DomainService(TaskRepository(db))
 
 
 def _chat_dto(message: ChatMessage) -> ChatMessageDto:
@@ -178,3 +186,26 @@ async def understand_task(
         result=outcome.result.model_dump(mode="json"),
         spec_draft=outcome.spec_draft,
     )
+
+
+@router.post("/{task_id}/spec-confirm", response_model=ConfirmSpecResponse)
+def confirm_spec(
+    task_id: int,
+    cmd: ConfirmSpecCommand,
+    user: User = Depends(require_user),
+    domain: DomainService = Depends(get_domain_service),
+    drafts: TaskDraftService = Depends(get_task_draft_service),
+) -> ConfirmSpecResponse:
+    """Freeze an immutable CollectionSpecVersion (D-004). Saving a draft != confirming."""
+    payload = cmd.payload or drafts.get_spec_draft(user_id=user.id, task_id=task_id)
+    if payload is None:
+        raise SpecValidationError("请先保存采集方案")
+    row = domain.confirm_spec(
+        user_id=user.id,
+        task_id=task_id,
+        expected_version=cmd.expected_version,
+        spec_payload=payload,
+        actor_id=user.id,
+    )
+    task = drafts.get_task(user_id=user.id, task_id=task_id)
+    return ConfirmSpecResponse(task_id=task_id, spec_version=row.version, state=task.state)

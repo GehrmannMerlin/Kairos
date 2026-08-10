@@ -83,3 +83,16 @@ class UnderstandResponse(BaseModel):
     message: ChatMessageDto
     result: dict
     spec_draft: dict
+
+
+class ConfirmSpecCommand(BaseModel):
+    """expected_version is the Task.version the client last saw (optimistic lock)."""
+
+    expected_version: int
+    payload: dict | None = None
+
+
+class ConfirmSpecResponse(BaseModel):
+    task_id: int
+    spec_version: int
+    state: str

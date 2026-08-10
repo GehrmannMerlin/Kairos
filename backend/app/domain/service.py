@@ -8,13 +8,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.domain.models import Checkpoint, DomainEvent
+from app.domain.models import Checkpoint, CollectionSpecVersion, DomainEvent
 from app.domain.repository import (
     CheckpointRepository,
     NodeAttemptRepository,
     NodeRunRepository,
+    SpecVersionRepository,
     TaskRepository,
 )
+from app.domain.spec import validate_spec_payload
 from app.state.events import append_domain_event, enqueue_outbox
 from app.state.states import assert_node_transition, assert_task_transition
 
@@ -86,6 +88,95 @@ class DomainService:
         db.commit()
         db.refresh(event)
         return event
+
+    def confirm_spec(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        expected_version: int,
+        spec_payload: dict,
+        actor_id: int | None = None,
+    ) -> CollectionSpecVersion:
+        """Freeze a CollectionSpecVersion in one transaction (M-06).
+
+        - Server-side typed validation of the payload.
+        - optimistic version control (STALE_VERSION on mismatch).
+        - DRAFT -> QUEUED via the M-04 state machine (submit); a QUEUED task may
+          be re-confirmed as a new version before execution starts.
+        - creates an immutable version row + task.current_spec_version +
+          append-only DomainEvent + transactional Outbox, committed once.
+        - Confirming never UPDATEs an existing version; a revision becomes vN+1.
+        """
+        from app.domain.errors import IllegalTransitionError, StaleVersionError
+        from app.state.states import TaskState
+
+        db = self._tasks._db
+        task = self._tasks.get_owned(user_id, task_id)
+        if task.version != expected_version:
+            raise StaleVersionError("任务已被其他操作修改")
+
+        current = TaskState(task.state)
+        if current == TaskState.DRAFT:
+            next_state = assert_task_transition(current, "submit")
+        elif current == TaskState.QUEUED:
+            next_state = current  # pre-execution revision; already queued
+        else:
+            raise IllegalTransitionError("当前状态不允许确认采集方案")
+
+        spec = validate_spec_payload(spec_payload)
+        specs = SpecVersionRepository(db)
+        version = specs.next_version(user_id, task_id)
+
+        row = CollectionSpecVersion(
+            user_id=user_id,
+            task_id=task_id,
+            version=version,
+            spec_type="collection",
+            schema_version=spec.schema_version,
+            payload=spec.model_dump(mode="json"),
+            confirmed_at=datetime.now(UTC),
+            confirmed_by=actor_id or user_id,
+        )
+        db.add(row)
+
+        task.current_spec_version = version
+        if spec.task_type is not None:
+            task.task_type = spec.task_type.value
+        task.state = next_state.value
+        task.version += 1
+        db.add(task)
+
+        payload: dict = {
+            "command": "confirm_spec",
+            "spec_version": version,
+            "from_state": current.value,
+            "to_state": next_state.value,
+        }
+        event = append_domain_event(
+            db,
+            user_id=user_id,
+            aggregate_type="task",
+            aggregate_id=task_id,
+            event_type="task.spec_confirmed",
+            aggregate_version=task.version,
+            payload=payload,
+            actor_type="user",
+            actor_id=actor_id or user_id,
+        )
+        enqueue_outbox(
+            db,
+            user_id=user_id,
+            aggregate_type="task",
+            aggregate_id=task_id,
+            event_type="task.spec_confirmed",
+            payload=payload,
+            dispatch_key=f"task:{task_id}:spec_confirmed",
+        )
+        db.commit()
+        db.refresh(row)
+        db.refresh(event)
+        return row
 
     def transition_node(
         self,
