@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 
+import { mapApiError } from '@/app/error/apiErrorMapper'
 import ModelConfigDrawer from '@/features/providers/ModelConfigDrawer.vue'
 import * as providersApi from '@/features/providers/providers.api'
 import type {
@@ -57,8 +58,8 @@ async function loadAll(): Promise<void> {
     searchDefs.value = defs.searches
     modelConfigs.value = models.configs
     searchConfigs.value = searches.configs
-  } catch {
-    error.value = '加载配置失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   } finally {
     loading.value = false
   }
@@ -70,8 +71,8 @@ async function onTestModel(config: ModelConfigDto): Promise<void> {
   try {
     await providersApi.testModelConnection(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '测试连接失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   } finally {
     testingId.value = null
   }
@@ -82,8 +83,8 @@ async function onSetDefault(config: ModelConfigDto): Promise<void> {
   try {
     await providersApi.setModelDefault(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '设置默认失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   }
 }
 
@@ -93,8 +94,8 @@ async function onDeleteModel(config: ModelConfigDto): Promise<void> {
   try {
     await providersApi.deleteModelConfig(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '删除失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   }
 }
 
@@ -104,8 +105,8 @@ async function onTestSearch(config: SearchConfigDto): Promise<void> {
   try {
     await providersApi.testSearchConnection(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '测试连接失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   } finally {
     testingId.value = null
   }
@@ -117,8 +118,8 @@ async function onDeleteSearch(config: SearchConfigDto): Promise<void> {
   try {
     await providersApi.deleteSearchConfig(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '删除失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   }
 }
 
