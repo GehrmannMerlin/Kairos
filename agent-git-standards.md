@@ -1,8 +1,8 @@
 # 网页信息采集 Agent：Git 提交与分支规范
 
-> 版本：v1.0  
-> 日期：2026-08-10  
-> 核心策略：**`main` + 短生命周期功能分支；以可独立验证的小功能为 Commit 单位；Conventional Commits；main 永远保持可部署。**
+> 版本：v1.1
+> 日期：2026-08-10
+> 核心策略：**唯一仓库 `GehrmannMerlin/Kairos`；`main` + 短生命周期功能分支；以可独立验证的小功能为 Commit 单位；英文 Conventional Commits 标题 + 中文正文；main 永远保持可部署。**
 
 ---
 
@@ -18,7 +18,41 @@ Git 历史必须同时满足：
 
 ---
 
-## 2. 分支模型
+## 2. 正式仓库与远程
+
+- Kairos 唯一正式代码仓库为 `https://github.com/GehrmannMerlin/Kairos.git`。
+- 本地唯一标准远程名为 `origin`。
+- 执行 Push、Pull、Fetch、创建 PR、Tag 或 Release 前，必须运行 `git remote -v`，确认相关远程 URL 精确指向上述正式仓库。
+- Push 前还必须检查当前分支及其上游，禁止依赖隐式目标猜测推送位置。
+- 禁止将 Kairos 项目代码推送到其他远程仓库。
+- 变更正式仓库地址必须取得用户明确授权，并先更新本规范。
+
+远程操作前的最小检查：
+
+```text
+git remote -v
+git branch --show-current
+git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'
+```
+
+如果 `origin` 缺失、URL 不匹配或上游分支不符合预期，必须停止远程写操作并先修正配置。
+
+### 2.1 初次接入
+
+远程仓库为空，或本地尚未配置 `origin` / `main` 时，只有在用户明确授权后才允许：
+
+```text
+配置 origin
+确认初始 main 基线
+首次 Push
+建立远程分支保护规则
+```
+
+本规范只定义目标状态，不构成执行上述外部写操作的授权。
+
+---
+
+## 3. 分支模型
 
 采用：
 
@@ -34,7 +68,7 @@ ci/*
 
 不设长期 `develop` 分支，不使用完整 GitFlow。
 
-### 2.1 `main`
+### 3.1 `main`
 
 `main` 必须：
 
@@ -43,17 +77,18 @@ ci/*
 - 可部署 Staging。
 - 不接受未经检查的实验代码。
 - 不包含明文 Secrets。
+- 不接受直接 Commit 或直接 Push；所有变更必须通过 PR。
 
-### 2.2 短生命周期分支
+### 3.2 短生命周期分支
 
 一个分支聚焦一个模块内的一个明确工作目标。
 
 推荐：
 
 ```text
-feature/M-05-task-spec-versioning
-feature/M-09-source-discovery
-fix/M-12-duplicate-record
+feature/m-05-task-spec-versioning
+feature/m-09-source-discovery
+fix/m-12-duplicate-record
 refactor/provider-adapter-boundary
 docs/deployment-runbook
 ci/staging-deploy
@@ -62,18 +97,19 @@ ci/staging-deploy
 规则：
 
 - 分支名称只用小写英文、数字、`-`、`/`。
-- 能关联模块时带 `M-xx`。
-- 分支完成后合并并删除。
+- 不使用人员、工具或 Agent 身份前缀。
+- 能关联模块时带小写 `m-xx`。
+- 分支完成后合并并删除本地分支；远程分支按本规范的保留规则处理。
 - 不维护长期个人开发分支。
 - 分支偏离 `main` 时间过长时应及时同步，避免大规模冲突。
 
 ---
 
-## 3. Commit 粒度
+## 4. Commit 粒度
 
 采用“可独立验证的小功能”为单位。
 
-正确示例：
+标题示例（实际提交仍必须包含中文正文）：
 
 ```text
 feat(task): add CollectionSpec versioning
@@ -89,15 +125,16 @@ refactor(provider): extract model adapter protocol
 - 每写一个测试就单独提交。
 - 每个模块只允许一个 Commit。
 
-### 3.1 一个 Commit 应满足
+### 4.1 一个 Commit 应满足
 
 - 只有一个主要意图。
 - 测试和实现可以放在同一个 Commit，只要属于同一行为。
 - 不混入无关格式化或大范围重构。
 - 能通过 Commit Message 理解变更原因。
 - 回退该 Commit 时影响范围可预测。
+- 包含英文标题和中文正文，不能只有单行标题。
 
-### 3.2 禁止巨大混合 Commit
+### 4.2 禁止巨大混合 Commit
 
 禁止：
 
@@ -118,17 +155,30 @@ feat: complete M-09
 
 ---
 
-## 4. Conventional Commits
+## 5. Conventional Commits
 
 格式：
 
 ```text
-<type>(<scope>): <subject>
+<type>(<scope>): <英文 subject>
+
+<中文正文，说明变更内容和原因>
 ```
 
 `scope` 可省略。
 
-### 4.1 允许的 type
+每个 Commit 都必须包含标题和正文，标题与正文之间必须保留一个空行。
+
+合规示例：
+
+```text
+feat(task): add task specification versioning
+
+实现任务规格版本冻结与历史版本查询，确保已有任务继续引用创建时的稳定规格。
+关联模块：M-05
+```
+
+### 5.1 允许的 type
 
 ```text
 feat      新功能
@@ -143,7 +193,7 @@ build     构建/依赖
 revert    回退
 ```
 
-### 4.2 推荐 scope
+### 5.2 推荐 scope
 
 第一版固定优先使用：
 
@@ -175,7 +225,7 @@ ci
 
 无需为了“scope 完整”创建过多 scope。
 
-### 4.3 subject
+### 5.3 subject
 
 - 使用英文。
 - 小写开头。
@@ -200,9 +250,17 @@ final
 123
 ```
 
+### 5.4 正文
+
+- 必须使用中文。
+- 必须说明变更内容和变更原因，不得省略。
+- 能关联模块时必须增加 `关联模块：M-xx`。
+- 无法关联模块时无需添加虚假的模块编号或“关联模块：无”等占位说明。
+- 复杂变更可继续补充影响范围、验证证据或迁移注意事项。
+
 ---
 
-## 5. Breaking Change
+## 6. Breaking Change
 
 如果修改了已经被其他模块消费的公共契约，必须明确标识。
 
@@ -210,19 +268,16 @@ final
 
 ```text
 feat(api)!: version task event payload
-```
 
-或 Commit Footer：
-
-```text
-BREAKING CHANGE: task SSE payload now requires event_id
+调整任务事件的版本契约，确保消费者能够明确识别不兼容的 payload。
+BREAKING CHANGE: 任务 SSE payload 现在必须包含 event_id
 ```
 
 但第一版开发期间优先使用兼容迁移，不应频繁制造 Breaking Change。
 
 ---
 
-## 6. Commit 前快速门禁
+## 7. Commit 前快速门禁
 
 为了保证开发速度，本地 Commit 不要求跑所有真实 Browser E2E。
 
@@ -257,25 +312,27 @@ migration upgrade
 
 ---
 
-## 7. Pull Request 规则
+## 8. Pull Request 规则
 
-分支进入 `main` 必须通过 PR。
+分支进入 `main` 必须通过 PR；`main` 禁止直接 Commit 和直接 Push。
+
+- PR 标题必须使用英文，并符合 Conventional Commits。
+- PR 正文必须使用中文。
+- 合并 Commit 的标题和正文仍须遵守“英文标题 + 中文正文”规则。
 
 PR 必须包含：
 
 ```text
 变更目标
-关联模块：M-xx
 主要实现
-数据库/Migration 影响
-API/Event/Workflow 契约影响
 测试证据
 风险点
-Staging 验证要求
 回滚影响
 ```
 
-### 7.1 PR 不追求形式主义
+能关联模块时必须写明 `关联模块：M-xx`。数据库/Migration、API/Event/Workflow 契约及 Staging 验证影响按实际情况补充；无影响时可简要写明“无”，不得省略对审查有实际价值的信息。
+
+### 8.1 PR 不追求形式主义
 
 以下不强制：
 
@@ -286,7 +343,7 @@ Staging 验证要求
 
 只保留对审查和部署有实际价值的信息。
 
-### 7.2 CI
+### 8.2 CI
 
 PR 至少必须通过：
 
@@ -306,19 +363,23 @@ CI 失败不得合并 `main`。
 
 ---
 
-## 8. Merge 策略
+## 9. Merge 策略
 
-推荐默认使用 **Squash Merge** 处理大量微小修正型 Commit；如果分支内部已经由多个有意义、可独立回退的 Commit 组成，可保留 Merge/Rebase 后的 Commit。
+默认使用 **Rebase and Merge**，保留分支内有意义、可独立验证和回退的 Commit，同时保持 `main` 历史线性。
+
+只有当分支包含大量 `fixup`、拼写修正或其他不值得独立保留的临时 Commit 时，才允许使用 **Squash Merge**。最终合并 Commit 仍必须包含英文 Conventional Commits 标题和中文正文。
+
+PR 合并后必须保留远程功能分支，不得开启或执行自动删除远程已合并分支。
 
 原则：
 
 > `main` 历史应清晰，但不要求为了“漂亮历史”牺牲开发速度。
 
-合并后的 Commit Message 仍必须符合 Conventional Commits。
+不得为了整理历史而对已经共享的 `main` 执行 Force Push 或重写历史。
 
 ---
 
-## 9. Agent 工作规则
+## 10. Agent 工作规则
 
 Agent 开始一个模块任务时：
 
@@ -339,21 +400,55 @@ CI
 ↓
 合并 main
 ↓
+本地切回 main
+↓
+同步 origin/main
+↓
+确认工作树正常
+↓
+删除已合并的本地功能分支
+↓
 Staging
 ```
+
+功能开发期间允许本地检出对应的短生命周期分支。PR 合并完成后，本地项目必须位于已合并、已同步的 `main`，已合并的本地功能分支必须删除，远程功能分支继续保留为开发过程记录。
+
+删除本地分支前必须确认 PR 已合并、远程分支仍存在，且本地分支没有尚未推送到对应远程分支的独立提交。未合并、远程分支缺失或本地仍有独立提交时不得强制删除。
+
+本地收尾命令示例：
+
+```text
+git fetch origin
+git switch main
+git pull --ff-only origin main
+git status --short --branch
+git branch -d feature/m-xx-description
+```
+
+Rebase and Merge 会重写 Commit 哈希，因此即使 PR 已合并，`git branch -d` 也可能因祖先关系不同而拒绝删除。此时不得立即强制删除；必须先在 GitHub 确认 PR 状态为已合并，再确认本地分支与保留的远程分支指向同一 Commit：
+
+```text
+git rev-parse feature/m-xx-description
+git rev-parse origin/feature/m-xx-description
+```
+
+只有两个 SHA 完全一致时，才允许使用 `git branch -D feature/m-xx-description` 删除本地副本。不得执行 `git push origin --delete feature/m-xx-description`；远程功能分支由本规范要求保留。
 
 Agent 禁止：
 
 - 在一个分支偷偷实现多个未来模块。
 - 测试失败仍然 Commit 并声称模块完成。
 - 使用 `git push --force` 覆盖共享 `main`。
+- 直接 Commit 或 Push 到 `main`。
+- 向 `https://github.com/GehrmannMerlin/Kairos.git` 之外的远程推送 Kairos 项目代码。
+- 擅自删除已合并的远程功能分支。
 - 为通过 CI 删除测试。
 - 关闭核心 lint/type rule 而不说明原因。
 - 把 Secrets 加入 Git 后再“删掉文件”了事；一旦泄露必须轮换密钥。
 
 ---
 
-## 10. Version Tag 与 Production Release
+## 11. Version Tag 与 Production Release
 
 Production 不因每次 `main` 更新自动发布。
 
@@ -386,7 +481,7 @@ v1.0.0
 
 第一版未正式稳定前使用 `0.x.y`。
 
-### 10.1 Patch
+### 11.1 Patch
 
 Bug 修复：
 
@@ -394,7 +489,7 @@ Bug 修复：
 v0.3.1
 ```
 
-### 10.2 Minor
+### 11.2 Minor
 
 向后兼容的新功能：
 
@@ -402,7 +497,7 @@ v0.3.1
 v0.4.0
 ```
 
-### 10.3 Major
+### 11.3 Major
 
 正式稳定后发生不兼容契约变更：
 
@@ -412,7 +507,7 @@ v1.0.0 → v2.0.0
 
 ---
 
-## 11. Release Tag 与镜像关系
+## 12. Release Tag 与镜像关系
 
 同一次发布必须能对应：
 
@@ -441,7 +536,7 @@ test
 
 ---
 
-## 12. Hotfix
+## 13. Hotfix
 
 线上紧急 Bug：
 
@@ -469,19 +564,21 @@ Production
 
 ---
 
-## 13. Revert
+## 14. Revert
 
 优先使用 Git Revert 保留历史：
 
 ```text
 revert: revert "feat(task): ..."
+
+回退引发任务状态异常的功能提交，恢复上一版可验证行为。
 ```
 
 不要为了隐藏错误重写已经共享的 `main` 历史。
 
 ---
 
-## 14. Git 禁止提交内容
+## 15. Git 禁止提交内容
 
 必须 `.gitignore` / Secret Scan 阻止：
 
@@ -508,7 +605,7 @@ temporary evidence
 
 ---
 
-## 15. 模块完成与 Git 证据
+## 16. 模块完成与 Git 证据
 
 一个模块 `DONE` 至少要能够关联：
 
