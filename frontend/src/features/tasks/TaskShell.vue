@@ -2,29 +2,40 @@
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
+import { useTaskShell } from '@/features/tasks/useTaskShell'
+
 // Task 一级工作区（D-044）。顶部只保留「对话 / 数据 / 质量」三个 Tab；
 // 执行详情与证据是二级页面，不成第 4 Tab，也不进全局导航。
+// owner-safe：无权/不存在 Task 渲染通用 not-found，不泄漏任何 task 元数据。
 const route = useRoute()
 const taskId = computed(() => (typeof route.params.taskId === 'string' ? route.params.taskId : ''))
 const taskPrefix = computed(() => `/tasks/${taskId.value}`)
+
+const { summary, loading, notFound, state } = useTaskShell(taskId)
 </script>
 
 <template>
   <div class="task-shell">
-    <header class="task-shell__header">
-      <span class="task-shell__title">任务 {{ taskId }}</span>
-      <span class="muted">任务状态将在后续接入</span>
-    </header>
+    <section v-if="notFound" class="task-workspace">
+      <p class="empty">任务不存在或无权访问</p>
+    </section>
+    <template v-else>
+      <header class="task-shell__header">
+        <span class="task-shell__title">{{ summary?.title ?? `任务 ${taskId}` }}</span>
+        <span v-if="state" class="task-shell__state">{{ state }}</span>
+        <span v-if="loading" class="muted">加载中…</span>
+      </header>
 
-    <nav class="task-shell__tabs" aria-label="任务工作区">
-      <RouterLink :to="`${taskPrefix}/chat`" class="task-shell__tab">对话</RouterLink>
-      <RouterLink :to="`${taskPrefix}/data`" class="task-shell__tab">数据</RouterLink>
-      <RouterLink :to="`${taskPrefix}/quality`" class="task-shell__tab">质量</RouterLink>
-    </nav>
+      <nav class="task-shell__tabs" aria-label="任务工作区">
+        <RouterLink :to="`${taskPrefix}/chat`" class="task-shell__tab">对话</RouterLink>
+        <RouterLink :to="`${taskPrefix}/data`" class="task-shell__tab">数据</RouterLink>
+        <RouterLink :to="`${taskPrefix}/quality`" class="task-shell__tab">质量</RouterLink>
+      </nav>
 
-    <div class="task-shell__body">
-      <RouterView />
-    </div>
+      <div class="task-shell__body">
+        <RouterView />
+      </div>
+    </template>
   </div>
 </template>
 
@@ -38,6 +49,13 @@ const taskPrefix = computed(() => `/tasks/${taskId.value}`)
 .task-shell__title {
   font-weight: 600;
   font-size: 1.1rem;
+}
+.task-shell__state {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
 }
 .task-shell__tabs {
   display: flex;

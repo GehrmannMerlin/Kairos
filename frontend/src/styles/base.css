@@ -79,6 +79,11 @@ body {
 .toolbar {
   margin-bottom: 0.75rem;
 }
+.form-error {
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+}
 .task-workspace {
   min-height: 40vh;
 }

@@ -1,6 +1,25 @@
 <script setup lang="ts">
-// 工作台（D-045）。「+ 新任务」真实创建与最近任务真实读取在 M-06 接入；
-// M-05 只呈现骨架：新任务输入为明确占位，最近任务为真实 Empty State。
+import { onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
+
+import { listTasks, type TaskShellDto } from '@/features/tasks/tasks.api'
+
+// 工作台（D-045）。「+ 新任务」真实创建在 M-06 接入；M-05 只呈现占位输入。
+// 最近任务读取真实 owner-safe 列表，无则真实 Empty State。
+const recent = ref<TaskShellDto[]>([])
+const loaded = ref(false)
+
+async function loadRecent(): Promise<void> {
+  try {
+    recent.value = (await listTasks()).tasks.slice(0, 5)
+  } catch {
+    // 列表接口暂不可用时保持 Empty State
+  } finally {
+    loaded.value = true
+  }
+}
+
+onMounted(() => void loadRecent())
 </script>
 
 <template>
@@ -21,7 +40,13 @@
 
     <div class="workbench__section">
       <h2 class="workbench__section-title">最近任务</h2>
-      <p class="empty">暂无任务</p>
+      <ul v-if="recent.length" class="workbench__recent">
+        <li v-for="t in recent" :key="t.task_id">
+          <RouterLink :to="`/tasks/${t.task_id}/chat`" class="task-link">{{ t.title }}</RouterLink>
+          <span class="muted">{{ t.state }}</span>
+        </li>
+      </ul>
+      <p v-else class="empty">暂无任务</p>
     </div>
   </section>
 </template>
@@ -40,5 +65,24 @@
 .workbench__section-title {
   font-size: 1rem;
   margin: 0 0 0.75rem;
+}
+.workbench__recent {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.workbench__recent li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px dashed var(--color-border);
+}
+.task-link {
+  color: var(--color-text);
+  text-decoration: none;
+}
+.task-link:hover {
+  text-decoration: underline;
 }
 </style>
