@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
+import { openDrawer } from '@/app/overlay/drawer.store'
+import type { TaskStatusPayload } from '@/app/overlay/drawers/TaskStatusDrawer.vue'
 import { useTaskShell } from '@/features/tasks/useTaskShell'
 
 // Task 一级工作区（D-044）。顶部只保留「对话 / 数据 / 质量」三个 Tab；
@@ -12,6 +14,20 @@ const taskId = computed(() => (typeof route.params.taskId === 'string' ? route.p
 const taskPrefix = computed(() => `/tasks/${taskId.value}`)
 
 const { summary, loading, notFound, state } = useTaskShell(taskId)
+
+function openStatusDrawer(): void {
+  if (!summary.value) return
+  const payload: TaskStatusPayload = {
+    taskId: summary.value.task_id,
+    title: summary.value.title,
+    state: summary.value.state,
+    version: summary.value.version,
+    currentSpecVersion: summary.value.current_spec_version,
+    currentPlanVersion: summary.value.current_plan_version,
+    allowedActions: summary.value.allowed_actions,
+  }
+  openDrawer('TASK_STATUS', payload)
+}
 </script>
 
 <template>
@@ -23,6 +39,14 @@ const { summary, loading, notFound, state } = useTaskShell(taskId)
       <header class="task-shell__header">
         <span class="task-shell__title">{{ summary?.title ?? `任务 ${taskId}` }}</span>
         <span v-if="state" class="task-shell__state">{{ state }}</span>
+        <button
+          v-if="summary"
+          type="button"
+          class="task-shell__status"
+          @click="openStatusDrawer"
+        >
+          状态
+        </button>
         <span v-if="loading" class="muted">加载中…</span>
       </header>
 
@@ -56,6 +80,15 @@ const { summary, loading, notFound, state } = useTaskShell(taskId)
   border: 1px solid var(--color-border);
   border-radius: 999px;
   padding: 0.1rem 0.6rem;
+}
+.task-shell__status {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
 }
 .task-shell__tabs {
   display: flex;
