@@ -1,0 +1,19 @@
+# Local OpenTelemetry Collector: receive OTLP, print traces to stdout (debug).
+# M-17 will extend this with real export/backends; nothing production-facing here.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]
