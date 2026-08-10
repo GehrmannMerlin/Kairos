@@ -176,6 +176,8 @@ Expected: PASS（旧矩阵测试仍绿）。
 """Temporal TaskWorkflow integration (requires KAIROS_RUN_INTEGRATION=1 + local stack)."""
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import timedelta
 
 import pytest
@@ -184,9 +186,22 @@ from app.domain.models import Run, Task
 from app.infra.deps import get_session_factory
 from app.infra.temporal import create_temporal_client
 from app.workflows.starter import TaskWorkflowStarter
-from app.workflows.task_workflow import TaskWorkflowResult
 
 pytestmark = pytest.mark.integration
+
+
+def _wait_task_state(task_id: int, want: str, timeout: float = 30.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        session = get_session_factory()()
+        try:
+            task = session.get(Task, task_id)
+            if task is not None and task.state == want:
+                return
+        finally:
+            session.close()
+        time.sleep(0.2)
+    raise TimeoutError(f"task {task_id} did not reach {want}")
 
 
 @pytest.mark.asyncio
@@ -203,8 +218,12 @@ async def test_start_workflow_creates_run_and_running(confirmed_task) -> None:
     assert started.run_id > 0
     assert started.workflow_id == f"task-workflow-{confirmed_task['task_id']}"
 
+    # ensure_run_started Activity 幂等激活：Task QUEUED->RUNNING、Run started。
+    _wait_task_state(confirmed_task["task_id"], "RUNNING")
+
     handle = client.get_workflow_handle(started.workflow_id)
-    result: TaskWorkflowResult = await handle.result(rpc_timeout=timedelta(seconds=60))
+    desc = await handle.describe()
+    assert desc.status.name in ("RUNNING", "COMPLETED")  # 至少已启动/在跑
 
     session = get_session_factory()()
     try:
@@ -215,7 +234,12 @@ async def test_start_workflow_creates_run_and_running(confirmed_task) -> None:
         assert task.state == "RUNNING"
     finally:
         session.close()
-    assert result.final_state == "RUNNING"
+
+    # 清理：fixture 执行单元在 Task 4 才注册，这里终止 workflow 避免遗留。
+    try:
+        await handle.terminate(reason="test cleanup")
+    except Exception:
+        pass
 ```
 
 `confirmed_task` fixture 见 `backend/tests/integration/conftest.py`（本 Task 创建）：
