@@ -14,12 +14,14 @@ os.environ.setdefault("KAIROS_OTEL_ENABLED", "false")
 @pytest.fixture(autouse=True)
 def _clear_process_caches() -> Iterator[None]:
     """Reset process-scoped singletons between tests to avoid env bleed."""
+    from app.auth.deps import get_login_limiter
     from app.config import get_settings
     from app.infra import deps
 
     get_settings.cache_clear()
     deps.get_session_factory.cache_clear()
     deps.get_object_storage.cache_clear()
+    get_login_limiter.cache_clear()
     yield
 
 

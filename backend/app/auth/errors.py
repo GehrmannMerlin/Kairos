@@ -43,3 +43,13 @@ class RateLimitedError(AuthError):
 class NotFoundError(AuthError):
     code = "NOT_FOUND"
     status_code = 404
+
+
+def assert_owned(owner_id: int, current_user_id: int) -> None:
+    """Unified ownership guard.
+
+    Cross-user access raises 404 (NOT_FOUND) so the existence of another user's
+    resource is never revealed. Future business modules reuse this guard.
+    """
+    if owner_id != current_user_id:
+        raise NotFoundError("资源不存在")

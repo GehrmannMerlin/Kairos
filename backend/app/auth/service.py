@@ -111,9 +111,9 @@ class AuthService:
 
     def revoke_session(self, user: User, session_id: int) -> None:
         session = self._sessions.get_by_id(session_id)
-        if session is None or session.user_id != user.id:
-            # 404, never 403: do not reveal whether the session exists.
+        if session is None:
             raise errors.NotFoundError("会话不存在")
+        errors.assert_owned(session.user_id, user.id)
         self._sessions.revoke(session, datetime.now(UTC))
 
     def revoke_other_sessions(self, user: User, keep_session_id: int) -> int:

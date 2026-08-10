@@ -7,6 +7,7 @@ No real secrets are ever committed to the repository.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,7 +50,7 @@ class Settings(BaseSettings):
     # --- Session cookie (M-02) ---
     session_cookie_name: str = "kairos_session"
     session_cookie_httponly: bool = True
-    session_cookie_samesite: str = "lax"
+    session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     session_cookie_secure: bool = False  # dev; must be True for staging/production
     session_cookie_path: str = "/"
     session_cookie_max_age_seconds: int = 60 * 60 * 24 * 7  # 7 days
@@ -61,13 +62,6 @@ class Settings(BaseSettings):
     # --- API / CORS ---
     api_port: int = 8000
     cors_origins: list[str] = ["http://localhost:5173"]
-
-    @field_validator("session_cookie_samesite")
-    @classmethod
-    def _validate_samesite(cls, value: str) -> str:
-        if value not in {"lax", "strict", "none"}:
-            raise ValueError("session_cookie_samesite must be lax/strict/none")
-        return value
 
     @field_validator("cors_origins", mode="before")
     @classmethod
