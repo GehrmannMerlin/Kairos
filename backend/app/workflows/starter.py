@@ -28,7 +28,13 @@ class TaskWorkflowStarter:
         self._settings = settings or get_settings()
 
     async def start(
-        self, *, user_id: int, task_id: int, spec_version: int, plan_version: int = 0
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        spec_version: int,
+        plan_version: int = 0,
+        task_queue: str | None = None,
     ) -> RunStartedResult:
         session = get_session_factory()()
         try:
@@ -56,17 +62,27 @@ class TaskWorkflowStarter:
             "task_workflow",
             arg=inp,
             id=workflow_id,
-            task_queue=self._settings.temporal_task_queue,
+            task_queue=task_queue or self._settings.temporal_task_queue,
         )
         return RunStartedResult(run_id=run.id, workflow_id=workflow_id)
 
     async def submit_validated_plan(
-        self, *, user_id: int, task_id: int, spec_version: int, plan_version: int
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        spec_version: int,
+        plan_version: int,
+        task_queue: str | None = None,
     ) -> RunStartedResult:
         """M-08 seam：Plan Validator PASS 后调用，把已验证 Plan 交给 Workflow 调度。
 
         M-07 只提供类型化入口（复用 start，plan_version 非 0）；M-08 负责持久化 PlanVersion。
         """
         return await self.start(
-            user_id=user_id, task_id=task_id, spec_version=spec_version, plan_version=plan_version
+            user_id=user_id,
+            task_id=task_id,
+            spec_version=spec_version,
+            plan_version=plan_version,
+            task_queue=task_queue,
         )
