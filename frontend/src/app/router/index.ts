@@ -6,6 +6,7 @@ import HomeView from '@/features/home/HomeView.vue'
 import NotFoundView from '@/features/home/NotFoundView.vue'
 import LoginView from '@/features/auth/LoginView.vue'
 import RegisterView from '@/features/auth/RegisterView.vue'
+import ModelsView from '@/features/providers/ModelsView.vue'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -29,6 +30,12 @@ const routes: RouteRecordRaw[] = [
     path: '/app',
     name: 'app',
     component: AppView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/models',
+    name: 'models',
+    component: ModelsView,
     meta: { requiresAuth: true },
   },
   {
