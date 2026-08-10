@@ -38,7 +38,7 @@ class TaskRepository:
         self._db = db
 
     def create(self, *, user_id: int, title: str, task_type: str = "directed") -> Task:
-        task = Task(user_id=user_id, title=title, task_type=task_type, state="draft", version=1)
+        task = Task(user_id=user_id, title=title, task_type=task_type, state="DRAFT", version=1)
         self._db.add(task)
         self._db.commit()
         self._db.refresh(task)
@@ -185,7 +185,7 @@ class NodeRunRepository:
             task_id=task_id,
             node_type=node_type,
             input_fingerprint=input_fingerprint,
-            state="pending",
+            state="PENDING",
             version=1,
         )
         self._db.add(row)

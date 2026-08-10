@@ -15,7 +15,7 @@ def test_task_roundtrip(db, user) -> None:
     task = repo.create(user_id=user.id, title="t", task_type="directed")
     fetched = repo.get_owned(user.id, task.id)
     assert fetched.title == "t"
-    assert fetched.state == "draft"
+    assert fetched.state == "DRAFT"
     assert fetched.version == 1
 
 
@@ -38,4 +38,4 @@ def test_run_and_spec_roundtrip(db, user, task) -> None:
     )
     assert spec.version == 1
     assert run.state == "pending"
-    assert node.state == "pending"
+    assert node.state == "PENDING"

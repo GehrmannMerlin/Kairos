@@ -33,7 +33,7 @@ class Task(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    state: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="DRAFT")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     task_type: Mapped[str] = mapped_column(String(30), nullable=False, default="directed")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -123,7 +123,7 @@ class NodeRun(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     node_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    state: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
