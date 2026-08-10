@@ -39,21 +39,37 @@ ok "temporal smoke workflow + PG/MinIO read-back"
 
 echo "==> [3/7] auth register/login/session (Gate Test User A/B)"
 "${SSH[@]}" "cd ${COMPOSE_DIR} && ${COMPOSE[*]} exec -T api python - <<'PY'
-import httpx, urllib.parse, uuid, json, os
+import httpx, uuid
 base='http://localhost:8000/api'
 email_a=f'gate-a-{uuid.uuid4().hex[:8]}@kairos.test'
 email_b=f'gate-b-{uuid.uuid4().hex[:8]}@kairos.test'
 pw='G!atePass_'+uuid.uuid4().hex[:6]
+
+def authed_login(email, password):
+    c=httpx.Client(base_url=base, timeout=15)
+    r=c.post('/auth/login', json={'email':email,'password':password})
+    assert r.status_code==200, r.text
+    # Session cookie is Secure; httpx will not send it over plain HTTP, so
+    # extract Set-Cookie and apply it explicitly (internal check only).
+    setcookie=r.headers.get('set-cookie','')
+    for part in setcookie.split(','):
+        kv=part.split(';')[0].strip()
+        if '=' in kv:
+            k,v=kv.split('=',1); c.cookies.set(k, v)
+    return c
+
 c=httpx.Client(base_url=base, timeout=15)
-r=c.post('/auth/register', json={'email':email_a,'password':pw})
-print('register A', r.status_code, r.text[:120]); assert r.status_code in (200,201), r.text
-r=c.post('/auth/login', json={'email':email_a,'password':pw})
-print('login A', r.status_code, r.text[:120]); assert r.status_code==200, r.text
-tok_a=c.cookies.get('kairos_session') or c.headers.get('set-cookie','')
-r=c.post('/auth/register', json={'email':email_b,'password':pw})
-print('register B', r.status_code, r.text[:120]); assert r.status_code in (200,201), r.text
-r=c.post('/auth/login', json={'email':email_b,'password':pw})
-print('login B', r.status_code, r.text[:120]); assert r.status_code==200, r.text
+r=c.post('/auth/register', json={'email':email_a,'password':pw,'confirm_password':pw})
+print('register A', r.status_code, r.text[:120]); assert r.status_code==201, r.text
+ca=authed_login(email_a, pw)
+r=ca.get('/auth/me'); print('me A', r.status_code, r.text[:120]); assert r.status_code==200, r.text
+c2=httpx.Client(base_url=base, timeout=15)
+r=c2.post('/auth/register', json={'email':email_b,'password':pw,'confirm_password':pw})
+print('register B', r.status_code, r.text[:120]); assert r.status_code==201, r.text
+cb=authed_login(email_b, pw)
+r=cb.get('/auth/me'); print('me B', r.status_code); assert r.status_code==200, r.text
+r=ca.post('/auth/logout'); print('logout A', r.status_code); assert r.status_code in (204,200), r.text
+r=ca.get('/auth/me'); print('me A after logout', r.status_code); assert r.status_code==401, r.text
 print('AUTH_OK')
 PY" || fail "auth smoke"
 ok "auth register/login/session"
@@ -63,23 +79,24 @@ echo "==> [4/7] ownership isolation (B must not read/modify A's resource)"
 # M-04 owner isolation is covered by domain tests; here we assert the API
 # ownership guard rejects cross-user access. Uses the domain repository path
 # directly to create an A-owned Task, then asserts B-scoped read returns 404.
-import sys; sys.path.insert(0,'/app')
-from app.auth.models import User
+import sys, uuid; sys.path.insert(0,'/app')
 from app.domain.repository import TaskRepository
 from app.auth.errors import NotFoundError
 from app.auth.repository import UserRepository
 from app.infra.deps import get_session_factory
 s=get_session_factory()()
 try:
-    a=UserRepository(s).create('owner-a-'+str(abs(hash('a')))+'@kairos.test','hash',None)
-    b=UserRepository(s).create('owner-b-'+str(abs(hash('b')))+'@kairos.test','hash',None)
+    a=UserRepository(s).create('owner-a-'+uuid.uuid4().hex[:8]+'@kairos.test','hash',None)
+    b=UserRepository(s).create('owner-b-'+uuid.uuid4().hex[:8]+'@kairos.test','hash',None)
     t=TaskRepository(s).create(user_id=a.id, title='smoke-owner', task_type='directed')
     s.commit()
     try:
-        TaskRepository(s).get(user_id=b.id, task_id=t.id)
+        TaskRepository(s).get_owned(user_id=b.id, task_id=t.id)
         print('OWNERSHIP_FAIL: B read A task'); raise SystemExit(1)
     except NotFoundError:
         print('OWNERSHIP_OK: B read A task -> 404 policy')
+    mine=TaskRepository(s).get_owned(user_id=a.id, task_id=t.id)
+    print('OWNER_OK: A read own task', mine.id)
 finally:
     s.close()
 PY" || fail "ownership smoke"
@@ -87,52 +104,76 @@ ok "ownership isolation"
 
 echo "==> [5/7] credential security (fake GATE_TEST_SECRET not plaintext)"
 "${SSH[@]}" "cd ${COMPOSE_DIR} && ${COMPOSE[*]} exec -T api python - <<'PY'
-import asyncio, uuid, sys; sys.path.insert(0,'/app')
-from app.credentials.service import CredentialService
+import sys, uuid; sys.path.insert(0,'/app')
+from app.config import get_settings
 from app.credentials.repository import CredentialRepository
-from app.infra.deps import get_session_factory
+from app.credentials.vault import CredentialVault
+from app.credentials.crypto import master_key_from_env_value
+from app.credentials.models import CredentialVersion
 from app.auth.repository import UserRepository
-async def run():
-    s=get_session_factory()()
-    try:
-        u=UserRepository(s).create('cred-'+uuid.uuid4().hex[:8]+'@kairos.test','hash',None)
-        svc=CredentialService(s, CredentialRepository(s))
-        cred=await svc.create_credential(
-            owner_id=u.id, provider='model', credential={'api_key':'GATE_TEST_SECRET'})
-        raw=s.get(CredentialRepository(s)._model, cred.id)
-        print('DB_HAS_PLAINTEXT' if raw and 'GATE_TEST_SECRET' in str(raw.encrypted_blob) else 'DB_NO_PLAINTEXT')
-        assert 'GATE_TEST_SECRET' not in str(raw.encrypted_blob)
-        print('CREDENTIAL_SECURITY_OK')
-        return True
-    finally:
-        s.close()
-assert asyncio.run(run())
+from app.infra.deps import get_session_factory
+s=get_session_factory()()
+try:
+    settings=get_settings()
+    u=UserRepository(s).create('cred-'+uuid.uuid4().hex[:8]+'@kairos.test','hash',None)
+    vault=CredentialVault(master_key=master_key_from_env_value(settings.credential_master_key),
+                          key_version=settings.credential_key_version,
+                          repository=CredentialRepository(s))
+    info=vault.store_secret(user_id=u.id, kind='model', name='gate-test', secret='GATE_TEST_SECRET')
+    s.flush()
+    row=s.get(CredentialVersion, info.version_id)
+    assert 'GATE_TEST_SECRET' not in str(row.secret_ciphertext), 'plaintext in ciphertext!'
+    assert 'GATE_TEST_SECRET' not in str(row.wrapped_dek), 'plaintext in wrapped_dek!'
+    print('DB_NO_PLAINTEXT: secret stored as ciphertext')
+    plain=vault.read_for_execution(user_id=u.id, credential_version_id=info.version_id)
+    assert plain=='GATE_TEST_SECRET'
+    print('DECRYPT_ROUNDTRIP_OK')
+    vault.revoke(user_id=u.id, credential_id=info.credential_id)
+    print('CREDENTIAL_SECURITY_OK')
+finally:
+    s.close()
 PY" || fail "credential security"
 ok "credential security (no plaintext in DB)"
 
 echo "==> [6/7] M-04 checkpoint + event/outbox (reuse domain smoke)"
 "${SSH[@]}" "cd ${COMPOSE_DIR} && ${COMPOSE[*]} exec -T api python - <<'PY'
-import sys; sys.path.insert(0,'/app')
-# Exercise the M-04 domain transaction -> event -> outbox -> checkpoint path
-# against the staging DB, reusing the domain smoke scenario helpers.
-from app.domain.service import DomainService
+import sys, uuid; sys.path.insert(0,'/app')
+# M-04 domain transaction -> event -> outbox -> checkpoint against staging DB.
+from app.auth.repository import UserRepository
 from app.domain.repository import (TaskRepository, SpecVersionRepository,
-    PlanVersionRepository, RunRepository, NodeRunRepository)
-from app.state.events import append_domain_event, enqueue_outbox
+    PlanVersionRepository, RunRepository)
+from app.domain.service import DomainService
+from app.domain.models import DomainEvent, OutboxEvent, Checkpoint
 from app.infra.deps import get_session_factory
+from sqlalchemy import select, func
 s=get_session_factory()()
 try:
-    u=TaskRepository(s)._session
-    from app.auth.repository import UserRepository
-    owner=UserRepository(s).create('ckpt-'+str(abs(hash('ckpt')))+'@kairos.test','hash',None)
-    svc=DomainService(s)
+    owner=UserRepository(s).create('ckpt-'+uuid.uuid4().hex[:8]+'@kairos.test','hash',None)
+    svc=DomainService(TaskRepository(s))
     task=TaskRepository(s).create(user_id=owner.id, title='smoke-ckpt', task_type='directed')
-    r=svc.transition_task(task, 'submit')
-    s.flush()
-    append_domain_event(s, owner_id=owner.id, task_id=task.id, event_type='task.submitted', payload={'state':r.state.value})
-    enqueue_outbox(s, owner_id=owner.id, aggregate_type='task', aggregate_id=task.id, event_type='task.submitted')
     s.commit()
-    print('CHECKPOINT_OK: transaction+event+outbox committed')
+    spec=SpecVersionRepository(s).create(user_id=owner.id, task_id=task.id, version=1,
+        spec_type='directed', schema_version='1', payload={})
+    plan=PlanVersionRepository(s).create(user_id=owner.id, task_id=task.id, spec_version=1, version=1, payload={})
+    run=RunRepository(s).create(user_id=owner.id, task_id=task.id, spec_version=1, plan_version=1)
+    s.commit()
+    ev=svc.transition_task(user_id=owner.id, task_id=task.id, command='submit',
+                           expected_version=task.version, actor_type='user', actor_id=owner.id)
+    s.flush()
+    nev=s.scalar(select(func.count()).select_from(DomainEvent).where(DomainEvent.aggregate_id==task.id))
+    nout=s.scalar(select(func.count()).select_from(OutboxEvent).where(OutboxEvent.aggregate_id==task.id))
+    assert nev>=1 and nout>=1, 'event/outbox missing after transition'
+    assert TaskRepository(s).get_owned(owner.id, task.id).state=='QUEUED'
+    fp='fp-'+uuid.uuid4().hex
+    ck=svc.commit_checkpoint(user_id=owner.id, task_id=task.id, run_id=run.id,
+        batch_identity='batch-1', spec_version=1, plan_version=1, node_run_id=None,
+        input_fingerprint=fp, committed_refs={'record_ids':[]}, content_hash='ch1')
+    ck2=svc.commit_checkpoint(user_id=owner.id, task_id=task.id, run_id=run.id,
+        batch_identity='batch-1', spec_version=1, plan_version=1, node_run_id=None,
+        input_fingerprint=fp, committed_refs={'record_ids':[]}, content_hash='ch1')
+    nc=s.scalar(select(func.count()).select_from(Checkpoint).where(Checkpoint.run_id==run.id))
+    assert ck2.id==ck.id and nc==1, 'replay did not reuse checkpoint'
+    print('CHECKPOINT_OK: transition+event+outbox committed; replay reused (count=%d)' % nc)
 finally:
     s.close()
 PY" || fail "M-04 checkpoint"
