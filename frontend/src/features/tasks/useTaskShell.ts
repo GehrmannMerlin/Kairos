@@ -14,6 +14,8 @@ export interface UseTaskShell {
   allowedActions: ComputedRef<string[]>
   /** allowed_actions 统一消费；按钮显隐/禁用只来自后端。 */
   can: (action: string) => boolean
+  /** 重新拉取 Task Snapshot（命令执行后 / SSE 重连恢复时调用）。 */
+  load: () => Promise<void>
 }
 
 /** 每个 Task 路由实例独立持有 shell 状态；taskId 变化时重新加载。 */
@@ -50,5 +52,5 @@ export function useTaskShell(taskId: Ref<string>): UseTaskShell {
     return allowedActions.value.includes(action)
   }
 
-  return { summary, loading, notFound, error, state, allowedActions, can }
+  return { summary, loading, notFound, error, state, allowedActions, can, load }
 }

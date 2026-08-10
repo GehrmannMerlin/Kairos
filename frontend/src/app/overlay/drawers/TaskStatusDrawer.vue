@@ -1,57 +1,121 @@
 <script setup lang="ts">
-// Task Status Drawer（D-032/D-067）。展示后端真实事实；不存在的计数显示「—」，
-// 不写静态数字；command 未实现的 action 只作信息展示，不提供可点击假按钮。
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useTaskShell } from '@/features/tasks/useTaskShell'
+import { useTaskEvents } from '@/features/tasks/useTaskEvents'
+import { cancelTask, pauseTask, resumeTask } from '@/features/tasks/commands.api'
+import type { TaskSseEvent } from '@/features/tasks/events.api'
+
 export interface TaskStatusPayload {
   taskId: number | string
-  title: string
-  state: string
-  version: number
-  currentSpecVersion?: number | null
-  currentPlanVersion?: number | null
-  allowedActions: string[]
 }
 
 const props = defineProps<{ payload?: unknown }>()
-const data = props.payload as TaskStatusPayload | undefined
+const payload = props.payload as TaskStatusPayload | undefined
+const taskIdRef = computed(() => String(payload?.taskId ?? ''))
+const taskId = ref(taskIdRef.value)
+watch(taskIdRef, (v) => {
+  taskId.value = v
+})
+
+const { summary, loading, can, load } = useTaskShell(taskId)
+const { connection, latestEvent, connect, disconnect } = useTaskEvents(taskId)
+
+const busy = ref(false)
+const notice = ref('')
+
+const connectionLabel = computed(() => {
+  const map: Record<string, string> = {
+    connecting: '连接中…',
+    open: '实时',
+    reconnecting: '重连中…',
+    closed: '已断开',
+    idle: '未连接',
+  }
+  return map[connection.value] ?? connection.value
+})
+
+async function runCommand(cmd: 'pause' | 'resume' | 'cancel'): Promise<void> {
+  if (!can(cmd) || busy.value) return
+  const version = summary.value?.version
+  if (version === undefined) return
+  busy.value = true
+  notice.value = ''
+  try {
+    const fn = { pause: pauseTask, resume: resumeTask, cancel: cancelTask }[cmd]
+    await fn(taskId.value, { expectedVersion: version })
+    await load() // 立即拉取真实状态（PAUSING/CANCELLING 中间态来自后端事实）
+  } catch (err) {
+    notice.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+onMounted(() => {
+  void load()
+  connect()
+})
+onBeforeUnmount(disconnect)
+
+const importantEvent = computed<TaskSseEvent | null>(() => latestEvent.value)
 </script>
 
 <template>
-  <template v-if="data">
+  <div v-if="summary" class="status-drawer">
     <dl class="status-list">
       <div class="status-row">
         <dt>任务</dt>
-        <dd>{{ data.title }}</dd>
-      </div>
-      <div class="status-row">
-        <dt>ID</dt>
-        <dd>{{ data.taskId }}</dd>
+        <dd>{{ summary.title }}</dd>
       </div>
       <div class="status-row">
         <dt>状态</dt>
-        <dd>{{ data.state }}</dd>
-      </div>
-      <div class="status-row">
-        <dt>版本</dt>
-        <dd>{{ data.version }}</dd>
+        <dd>{{ summary.state }}</dd>
       </div>
       <div class="status-row">
         <dt>Spec 版本</dt>
-        <dd>{{ data.currentSpecVersion ?? '—' }}</dd>
+        <dd>{{ summary.current_spec_version ?? '—' }}</dd>
       </div>
       <div class="status-row">
         <dt>Plan 版本</dt>
-        <dd>{{ data.currentPlanVersion ?? '—' }}</dd>
+        <dd>{{ summary.current_plan_version ?? '—' }}</dd>
+      </div>
+      <div class="status-row">
+        <dt>事件流</dt>
+        <dd>{{ connectionLabel }}</dd>
       </div>
     </dl>
 
-    <section>
-      <h3 class="status-actions__title">可执行动作</h3>
-      <p class="muted">对应命令将在各模块接入后开放</p>
-      <div class="status-actions__tags">
-        <span v-for="a in data.allowedActions" :key="a" class="status-tag">{{ a }}</span>
-      </div>
-    </section>
-  </template>
+    <p v-if="importantEvent" class="muted">最近事件：{{ importantEvent.event_type }}</p>
+
+    <div class="command-row">
+      <button
+        type="button"
+        class="ghost"
+        :disabled="!can('pause') || busy"
+        @click="runCommand('pause')"
+      >
+        暂停
+      </button>
+      <button
+        type="button"
+        class="ghost"
+        :disabled="!can('resume') || busy"
+        @click="runCommand('resume')"
+      >
+        恢复
+      </button>
+      <button
+        type="button"
+        class="danger"
+        :disabled="!can('cancel') || busy"
+        @click="runCommand('cancel')"
+      >
+        取消
+      </button>
+    </div>
+    <p v-if="notice" class="error">{{ notice }}</p>
+    <p v-if="loading" class="muted">加载中…</p>
+  </div>
   <p v-else class="muted">任务状态信息暂不可用</p>
 </template>
 
@@ -73,21 +137,17 @@ const data = props.payload as TaskStatusPayload | undefined
   margin: 0;
   word-break: break-word;
 }
-.status-actions__title {
-  font-size: 0.95rem;
-  margin: 0 0 0.25rem;
-}
-.status-actions__tags {
+.command-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
+  gap: 0.5rem;
+  margin-top: 1rem;
 }
-.status-tag {
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  padding: 0.15rem 0.6rem;
-  font-size: 0.8rem;
+.muted {
   color: var(--color-text-secondary);
+  font-size: 0.85rem;
+}
+.error {
+  color: var(--color-danger, #c0392b);
+  font-size: 0.85rem;
 }
 </style>

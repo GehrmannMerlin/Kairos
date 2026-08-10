@@ -17,15 +17,8 @@ const { summary, loading, notFound, state } = useTaskShell(taskId)
 
 function openStatusDrawer(): void {
   if (!summary.value) return
-  const payload: TaskStatusPayload = {
-    taskId: summary.value.task_id,
-    title: summary.value.title,
-    state: summary.value.state,
-    version: summary.value.version,
-    currentSpecVersion: summary.value.current_spec_version,
-    currentPlanVersion: summary.value.current_plan_version,
-    allowedActions: summary.value.allowed_actions,
-  }
+  // Drawer 自行 Query Task Snapshot + SSE；这里只传 taskId。
+  const payload: TaskStatusPayload = { taskId: summary.value.task_id }
   openDrawer('TASK_STATUS', payload)
 }
 </script>
