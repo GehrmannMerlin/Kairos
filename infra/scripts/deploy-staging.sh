@@ -18,6 +18,7 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/kairos_staging_deploy_rsa}"
 SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}")
 SCP=(scp -i "$SSH_KEY" -o BatchMode=yes)
 SERVER_COMPOSE_DIR="/srv/kairos/compose"
+SERVER_OTEL_DIR="/srv/kairos/otel"
 SERVER_VHOST_DIR="/srv/kairos/deploy/nginx/conf.d"
 PLATFORM="${PLATFORM:-linux/amd64}"   # server arch confirmed x86_64
 
@@ -48,28 +49,34 @@ docker save "$WEB_IMAGE" "$API_IMAGE" "$WORKER_IMAGE" \
   | "${SSH[@]}" "docker load" || fail "image transfer failed"
 
 echo "==> syncing compose, vhost and otel config"
+"${SSH[@]}" "mkdir -p ${SERVER_OTEL_DIR}"
 "${SCP[@]}" "$ROOT"/infra/compose/compose.base.yml \
             "$ROOT"/infra/compose/compose.staging.yml \
             "$ROOT"/infra/compose/compose.staging.override.yml \
             "${DEPLOY_USER}@${DEPLOY_HOST}:${SERVER_COMPOSE_DIR}/"
 "${SCP[@]}" "$ROOT"/infra/reverse-proxy/zz-kairos-staging-tls.conf \
             "${DEPLOY_USER}@${DEPLOY_HOST}:${SERVER_VHOST_DIR}/"
+# compose.base.yml mounts ../otel/otel-collector.yaml relative to the compose dir,
+# so on the server it resolves to /srv/kairos/otel/otel-collector.yaml.
 "${SCP[@]}" "$ROOT"/infra/otel/otel-collector.yaml \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:${SERVER_COMPOSE_DIR}/otel-collector.yaml"
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${SERVER_OTEL_DIR}/otel-collector.yaml"
 
 echo "==> validating compose config on server"
-"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && docker compose -p kairos-staging \
-    -f compose.base.yml -f compose.staging.yml config -q" \
+"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
+    KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
+    docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml config -q" \
   || fail "compose config validation failed on server"
 
 echo "==> bringing up kairos-staging"
-"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && docker compose -p kairos-staging \
-    -f compose.base.yml -f compose.staging.yml \
+"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
+    KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
+    docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml \
     --env-file /srv/kairos/env/staging.env up -d --wait 2>&1 | tail -25" \
   || fail "compose up failed"
 
 echo "==> stack status"
-"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && docker compose -p kairos-staging \
-    -f compose.base.yml -f compose.staging.yml ps"
+"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
+    KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
+    docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml ps"
 
 echo "DONE: $SHA (images: $WEB_IMAGE / $API_IMAGE / $WORKER_IMAGE)"

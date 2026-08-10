@@ -54,23 +54,37 @@ Baseline M-04 SHA：`cb4823117652450c822ef6834847ed3e6d93c5dc`
 
 ### Repository 部署产物（Task 4）
 
-- compose base/staging/override：PENDING
-- reverse-proxy vhost：PENDING
-- 脚本：PENDING
+- compose base/staging/override：PASS — `compose.base.yml`（base，服务级 log rotation，无宿主端口）+ `compose.staging.yml`（env_file 可插拔、web/api join `lumina-prod-internal`、container_name `kairos-api/kairos-web`）+ `compose.staging.override.yml`（共享 nginx vhost 注入）
+- reverse-proxy vhost：PASS — `infra/reverse-proxy/zz-kairos-staging-tls.conf`（staging.kairos.ac.cn，/api/events/ 关 proxy_buffering 预留 SSE）
+- 脚本：PASS — deploy/migrate/smoke/rollback-staging.sh（`bash -n` 全过）
+- 本地校验：PASS — `docker compose config -q`（base 与 base+staging，env_file 用 `KAIROS_STAGING_ENV_FILE` 可插拔）
+- Commit：`c27cd89`（+ 基线 `89c787b`）
 
 ### 镜像与部署（Task 5）
 
-- Git SHA：PENDING
-- image tags/digests：PENDING
-- compose project：PENDING
-- 容器状态：PENDING
+- Git SHA：`0b8a42c31f8d`（含 httpx runtime 修复；首次 `c27cd89cdd6d` 因缺 httpx 启动失败）
+- 部署发现并修复 M-03 runtime 缺陷：`httpx` 只在 dev extras，生产镜像 `pip install .` 无 httpx → `fix(provider)` commit `0b8a42c`
+- image tags：`kairos-web:staging-0b8a42c31f8d` / `kairos-api:staging-0b8a42c31f8d` / `kairos-worker:staging-0b8a42c31f8d`
+- image digests：
+  - web `sha256:7dd4be85f31aac5f1fbaf1b7935e66f004038e251ae6c0c0957db24d504ff0c5`
+  - api `sha256:c859cdf5c9487943c8fbe020723b7a3afe349178c0cd9ac090bdcae7a28dc84d`
+  - worker `sha256:b3fe3aa81be775c89c4b85b12e38f8100f0d14a64f0b3212452de0e7e2205ece`
+- compose project：`kairos-staging`（网络 `kairos-staging-internal` + web/api join `lumina-prod-internal`）
+- 容器状态：PASS — postgres/minio/temporal/api/web healthy；worker up；minio-init exited 0；migrate 已达 head（见 Task 6）
+- 传输方式：docker save → SSH → docker load（本地 buildx linux/amd64，不在服务器构建）
 
 ### Migration + Gate Smoke（Task 6）
 
-- Migration revision：PENDING（预期 0004）
-- health live/ready：PENDING
-- auth / ownership / credential security：PENDING
-- Temporal / M-04 checkpoint：PENDING
+- Migration revision：PASS — `alembic_version = 0004`（当前 head，干净 staging DB，24 张表）
+- health live：PASS — `/api/health/live` 200 ok
+- health ready：PASS — `/api/health/ready` 200，postgresql/temporal/object_storage 全 ok
+- Auth Smoke：PASS — A/B register 201、login 200、session `me` 200、logout 204、logout 后 me 401（Gate Test User A/B）
+- Ownership：PASS — B 读 A 的 Task 触发 404 policy（get_owned），无泄漏；A 可读自身
+- Credential Security：PASS — `GATE_TEST_SECRET` 存为密文（ciphertext 无明文），decrypt roundtrip OK，revoke 完成；**发现并修复 master key 生成长度缺陷**（32→64 hex）
+- Temporal：PASS — M-01 `smoke_workflow` → Activity → PG row + MinIO object 双向读回 OK
+- M-04 Checkpoint：PASS — submit 同事务写 state=QUEUED + event + outbox；commit_checkpoint → replay 复用（count=1）
+- Secret Leak 扫描：PASS — api/worker/temporal/postgres 日志、DB 可见字段、/srv/kairos 均无 `GATE_TEST_SECRET`
+- 附加修复：`gen-staging-env.sh` 脚本入库（master key 64 hex，幂等保留）
 
 ### DNS + HTTPS（Task 7）
 
