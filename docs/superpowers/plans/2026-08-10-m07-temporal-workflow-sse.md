@@ -1118,7 +1118,6 @@ class TaskCommandResponse(BaseModel):
 ```python
 from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session as DbSession
-from temporalio.client import Client
 
 from app.api.schemas import TaskCommandDto, TaskCommandResponse
 from app.domain.task_commands import TaskCommandService
@@ -1142,7 +1141,6 @@ async def task_command(
     user: User = Depends(require_user),
     db: DbSession = Depends(get_db),
     service: TaskCommandService = Depends(get_task_command_service),
-    client: Client = Depends(get_temporal_client),
 ) -> TaskCommandResponse:
     if command not in _TASK_COMMANDS:
         raise HTTPException(status_code=404, detail="未知命令")
@@ -1153,15 +1151,14 @@ async def task_command(
         idempotency_key=cmd.idempotency_key, reason=cmd.reason,
     )
     # DB 事务（state+event+outbox）已提交；现在把本 task 的 task.* outbox 分发为
-    # Temporal Signal。失败标记 outbox failed（attempts+1），由未来 worker 轮询补发
-    # （有界重试）；不阻塞响应——命令已在 DB 生效。
-    try:
+    # Temporal Signal。Signal 失败不改变 HTTP 结果：DB 命令已生效，outbox 保留
+    # pending 待有界重试补发。Temporal client 在此处延迟创建（不在路由依赖中），
+    # 保证 Temporal 短暂不可用时 DB 命令仍能成功执行、不阻塞、不 500。
+    with contextlib.suppress(Exception):
+        client = await get_temporal_client()
         await OutboxTemporalDispatcher(client).dispatch_pending_for(
             db, user_id=user.id, task_id=task_id
         )
-    except Exception:
-        # 分发失败不改变 HTTP 结果；outbox 保留 pending 待补发。
-        pass
     return TaskCommandResponse(command=result.command, state=result.state, version=result.version)
 ```
 
@@ -1200,12 +1197,13 @@ async def task_command(
 `cd backend && .venv/Scripts/python.exe -m pytest tests/domain/test_task_commands.py tests/api/test_task_commands.py -q`
 Expected: PASS。`tests/api/test_task_commands.py` 参照 `test_task_draft.py` 的 TestClient 模式，覆盖：合法 pause/resume/cancel 返回正确 state；非法命令 404；无权限/不存在 task 404。
 
-> **API 测试必须 override `get_temporal_client`**：`task_command` route 通过
-> `Depends(get_temporal_client)` 在进入路由体之前创建 Temporal client（会尝试连接
-> Temporal），单元测试不应依赖本地 Temporal。在 `_make_app` 中加
-> `app.dependency_overrides[get_temporal_client] = lambda: FakeClient()`（fake 只用于
-> 依赖注入，`dispatch_pending_for` 由 route 内 try/except 吞掉分发失败，命令已在 DB
-> 生效）。FakeClient 需提供 `get_workflow_handle(...).signal(...)` 不抛错的假实现。
+> **API 测试与 Temporal client**：`task_command` route 不再通过 `Depends` 提前连接
+> Temporal —— client 在 dispatch 块内延迟创建，且整个分发包在
+> `contextlib.suppress(Exception)` 中。因此单元测试**无需** override
+> `get_temporal_client`：Temporal 连接失败会被吞掉，DB 命令照常成功。若测试想验证
+> dispatch 路径真实调用，可 `monkeypatch` 模块级 `get_temporal_client` 返回一个 fake
+> client（提供 `get_workflow_handle(...).signal(...)` 记录调用），并断言对应
+> `task.pause` outbox 被 mark_dispatched。
 
 - [ ] **Step 7: ruff/mypy 门禁**
 
