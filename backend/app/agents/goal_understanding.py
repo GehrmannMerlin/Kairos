@@ -40,17 +40,40 @@ GOAL_UNDERSTANDING_SYSTEM_PROMPT = (
     "- EXPLORATORY：用户只给主题和期望字段，没有具体网址，需要自行搜索并发现来源。\n"
     "- SPECIFIED_SOURCE：用户直接给出网站/URL/栏目，从这些指定来源批量提取。\n"
     "- HYBRID：先搜索发现目标网站，再从这些官网采集字段。\n"
-    "要求：\n"
-    "1. 只输出一个合法 JSON 对象，不要输出任何额外文字或 markdown。\n"
-    "2. fields 使用简洁中文名；type 取值 text/number/url/email/phone/date/boolean/other；"
+    "\n"
+    "你必须只输出一个 JSON 对象，且必须严格遵循下面的字段契约，不得增删顶层字段，"
+    "不得使用其他键名：\n"
+    '{"task_type": "EXPLORATORY|SPECIFIED_SOURCE|HYBRID",\n'
+    ' "goal": "一句话采集目标（必填，字符串）",\n'
+    ' "fields": [{"name": "字段中文名", "type": "text|number|url|email|phone|date|boolean|other", '
+    '"required": true, "description": "可选说明"}],\n'
+    ' "auto_expand_fields": false,\n'
+    ' "source_scope": {"mode": "EXPLORATORY|SPECIFIED_SOURCE|HYBRID", '
+    '"seed_urls": [], "source_hints": []},\n'
+    ' "completion_conditions": [{"kind": "min_records|range_covered|saturation|limit", '
+    '"target": 20, "threshold": null, "note": null}],\n'
+    ' "advanced_runtime_limits": {"max_pages": null, "max_duration_minutes": null, '
+    '"max_retries_per_url": null},\n'
+    ' "confidence": 0.9,\n'
+    ' "ambiguities": [],\n'
+    ' "clarification_required": false,\n'
+    ' "clarification_question": null,\n'
+    ' "template_variables": [{"name": "city", "label": "城市", "value": "深圳"}]}\n'
+    "\n"
+    "字段契约说明：\n"
+    "1. completion_conditions 必须是数组，每个元素必须含 kind（只能取上面四个值之一），"
+    "不能是单个对象。\n"
+    "2. fields 数组使用简洁中文名；type 取值必须是 text/number/url/email/phone/date/boolean/other；"
     "核心字段 required=true。\n"
     "3. source_scope.seed_urls 只放用户明确提供的网址；"
     "source_hints 放用户描述或你推断的来源提示。\n"
-    "4. completion_conditions 表达 D-006 多条件完成语义"
-    "（min_records/range_covered/saturation/limit）。\n"
+    "4. confidence 是 0～1 的浮点数，表示你对任务类型和字段判定的把握。\n"
     "5. 若信息不足以确定采集范围（既无网址也无明确实体列表），"
-    "clarification_required=true 并只问一个最影响任务范围的高杠杆问题，不要一次问五六个。\n"
-    "6. 若检测到'深圳'这类单次条件值适合做成模板变量，在 template_variables 给出 name/label/value。"
+    "clarification_required=true 并只问一个最影响任务范围的高杠杆问题，"
+    "写在 clarification_question，不要一次问五六个。\n"
+    "6. 若检测到'深圳'这类单次条件值适合做成模板变量，"
+    "在 template_variables 给出 name/label/value。\n"
+    "7. 不要输出任何 JSON 之外的文字、markdown 代码块或注释。"
 )
 
 
