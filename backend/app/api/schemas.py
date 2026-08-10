@@ -18,7 +18,7 @@ class TaskShellDto(BaseModel):
     title: str
     state: str
     version: int
-    task_type: str
+    task_type: str | None
     current_spec_version: int | None
     current_plan_version: int | None
     allowed_actions: list[str]
@@ -28,3 +28,51 @@ class TaskShellDto(BaseModel):
 
 class TaskShellListResponse(BaseModel):
     tasks: list[TaskShellDto]
+
+
+class CreateTaskCommand(BaseModel):
+    """Create a Task Draft; content present = create + first user message (D-045)."""
+
+    content: str | None = None
+    seed_urls: list[str] = []
+    idempotency_key: str | None = None
+
+
+class CreateTaskResponse(BaseModel):
+    task_id: int
+
+
+class ChatMessageDto(BaseModel):
+    id: int
+    role: str
+    content: str
+    ref_type: str | None
+    ref_id: int | None
+    meta: dict | None
+    created_at: datetime
+
+
+class ChatListResponse(BaseModel):
+    messages: list[ChatMessageDto]
+
+
+class CreateMessageCommand(BaseModel):
+    content: str
+    idempotency_key: str | None = None
+
+
+class CreateMessageResponse(BaseModel):
+    message: ChatMessageDto
+
+
+class SpecDraftResponse(BaseModel):
+    task_id: int
+    payload: dict | None
+
+
+class UpdateSpecDraftCommand(BaseModel):
+    payload: dict
+
+
+class AddSeedUrlCommand(BaseModel):
+    url: str

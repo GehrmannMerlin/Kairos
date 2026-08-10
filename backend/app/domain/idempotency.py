@@ -48,6 +48,28 @@ def idempotency_key_for_artifact(
 
 
 class IdempotencyService:
+    def find_replay(
+        self, db, *, user_id: int, operation: str, client_key: str, payload: Any
+    ) -> int | None:
+        """Return the recorded result_ref_id for a replayed request, or None.
+
+        Same key + same payload fingerprint = replay (return the id). Same key +
+        different payload = conflict (raise), never a silent reuse.
+        """
+        from app.domain.repository import IdempotencyRepository
+
+        key = api_operation_key(operation, client_key)
+        fp = stable_fingerprint(payload)
+        repo = IdempotencyRepository(db)
+        existing = repo.find(user_id=user_id, operation=operation, key=key)
+        if existing is None:
+            return None
+        if existing.payload_fingerprint != fp:
+            from app.domain.errors import IdempotencyConflictError
+
+            raise IdempotencyConflictError("相同幂等键但请求内容不同")
+        return existing.result_ref_id
+
     def record(
         self,
         db,
