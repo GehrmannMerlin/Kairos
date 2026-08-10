@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.errors import register_exception_handlers
 from app.api.router import api_router
 from app.config import get_settings
 from app.infra.telemetry import init_fastapi_telemetry, setup_otel
@@ -23,6 +24,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(api_router, prefix="/api")
+    register_exception_handlers(app)
 
     init_fastapi_telemetry(app, settings)
     return app
