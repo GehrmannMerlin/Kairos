@@ -9,11 +9,19 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.auth.errors import AuthError
+from app.providers.errors import ProviderError
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AuthError)
     async def handle_auth_error(_request: Request, exc: AuthError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.to_dict()},
+        )
+
+    @app.exception_handler(ProviderError)
+    async def handle_provider_error(_request: Request, exc: ProviderError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.to_dict()},
