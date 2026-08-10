@@ -35,15 +35,22 @@ Baseline M-04 SHA：`cb4823117652450c822ef6834847ed3e6d93c5dc`
 
 ### SSH Bootstrap（Task 2）
 
-- deploy user：PENDING
-- SSH public-key fingerprint：PENDING
-- PermitRootLogin no / PasswordAuthentication no / Fail2ban：PENDING
-- 新会话验证：PENDING
+- deploy user：PASS — `deploy` 已创建，加入 docker 组，最小 sudo（仅 certbot + systemctl restart docker，`/etc/sudoers.d/kairos-deploy`）
+- 新 Key：`~/.ssh/kairos_staging_deploy_rsa`（RSA 4096，comment `kairos-staging-deploy`，repo 外）
+- SSH public-key fingerprint：`SHA256:RTsDg3In9jnzaGQWa/JRnwJ6CvX8TfI0i3vlIp1owyc`
+- 新会话验证：PASS — `ssh -i kairos_staging_deploy_rsa deploy@47.238.145.24` 成功
+- SSH 加固：PASS — `PermitRootLogin no`、`PasswordAuthentication no`（基线已 no）、`PubkeyAuthentication yes`、`MaxAuthTries 3`；`sshd -T` 确认生效
+- 加固备份：`/etc/ssh/sshd_config.kairos.bak-20260810-174009`
+- Fail2ban：PASS — active（22 保持公网开放，仅 key 认证）
+- 既有 ecs-user 通道复验：PASS（未锁死既有入口）
 
 ### 服务器基线与 Secrets（Task 3）
 
-- /srv/kairos 目录：PENDING
-- /srv/kairos/env/staging.env（600）：PENDING（幂等保留，Master Key 稳定）
+- /srv/kairos 目录：PASS — `{compose,env,data/staging,backups/staging,scripts,releases,deploy/nginx/conf.d}` owner=deploy；`env` 700
+- Docker：29.6.2（已存在，不重装）；时区 Asia/Shanghai
+- Docker 日志轮转：daemon.json 为空，不改共享 daemon（会重启影响线上 lumina/stellaris/aurora）；改为在 kairos compose 服务级配置 log rotation（Task 4 实现）
+- /srv/kairos/env/staging.env（600）：PASS — 已生成（POSTGRES_*/MINIO_*/KAIROS_SESSION_SECRET/KAIROS_CREDENTIAL_MASTER_KEY/k1）
+- Master Key 幂等保留：PASS — 重跑不重建（MASTER_KEY_STABLE_PASS），M-03 解密稳定
 
 ### Repository 部署产物（Task 4）
 

@@ -1,0 +1,166 @@
+# Kairos staging compose — base (environment-agnostic service definitions).
+#
+# Evolved from infra/compose/compose.yaml (M-01 local) rather than maintaining a
+# second unrelated stack. Usage:
+#   docker compose -f compose.base.yml -f compose.staging.yml up -d
+#
+# Design rules for DEPLOY-GATE-1 (see agent-production-deployment-standards.md):
+#   - No host ports for internal services: PostgreSQL/Temporal/MinIO/OTel/API/
+#     Worker are reachable only on the private kairos-staging network.
+#   - Only the shared nginx reverse proxy exposes 80/443 to the public.
+#   - Images are immutable and versioned via `${KAIROS_*_IMAGE}` (staging-<gitsha>);
+#     no `latest`.
+#   - Service-level Docker log rotation (shared daemon.json is left untouched so
+#     we never restart the host Docker and disturb existing workloads).
+#   - Persisted data uses named volumes; restart policy unless-stopped.
+name: kairos-staging
+
+x-backend-env: &backend-env
+  KAIROS_ENV: staging
+  KAIROS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kairos_staging}:${POSTGRES_PASSWORD:-dev_pw}@postgres:5432/${POSTGRES_DB:-kairos_staging}
+  KAIROS_TEMPORAL_ADDRESS: temporal:7233
+  KAIROS_TEMPORAL_NAMESPACE: default
+  KAIROS_S3_ENDPOINT: minio:9000
+  KAIROS_S3_ACCESS_KEY: ${MINIO_ACCESS_KEY:-kairos_staging}
+  KAIROS_S3_SECRET_KEY: ${MINIO_SECRET_KEY:-dev_secret}
+  KAIROS_S3_BUCKET: kairos-staging
+  KAIROS_S3_SECURE: "false"
+  KAIROS_OTEL_ENABLED: "true"
+  KAIROS_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  KAIROS_CORS_ORIGINS: '["https://staging.kairos.ac.cn"]'
+  KAIROS_SESSION_COOKIE_SECURE: "true"
+  KAIROS_SESSION_COOKIE_SAMESITE: lax
+  KAIROS_CREDENTIAL_MASTER_KEY: ${KAIROS_CREDENTIAL_MASTER_KEY:-}
+  KAIROS_CREDENTIAL_KEY_VERSION: ${KAIROS_CREDENTIAL_KEY_VERSION:-k1}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kairos_staging}
+      POSTGRES_USER: ${POSTGRES_USER:-kairos_staging}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_pw}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kairos_staging} -d ${POSTGRES_DB:-kairos_staging}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  temporal:
+    image: temporalio/auto-setup:1.26.2
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-kairos_staging}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-dev_pw}
+      POSTGRES_SEEDS: postgres
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address $(hostname -i):7233 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-kairos_staging}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-dev_secret}
+    volumes:
+      - minio_data:/data
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-kairos_staging} ${MINIO_SECRET_KEY:-dev_secret};
+      mc mb --ignore-existing local/kairos-staging;
+      exit 0;
+      "
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.105.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../otel/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    logging: *default-logging
+
+  migrate:
+    image: ${KAIROS_API_IMAGE:-kairos-api:dev}
+    environment: *backend-env
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    logging: *default-logging
+
+  api:
+    image: ${KAIROS_API_IMAGE:-kairos-api:dev}
+    restart: unless-stopped
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/live')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  worker:
+    image: ${KAIROS_WORKER_IMAGE:-kairos-worker:dev}
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    environment: *backend-env
+    depends_on:
+      temporal:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    logging: *default-logging
+
+  web:
+    image: ${KAIROS_WEB_IMAGE:-kairos-web:dev}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  minio_data:

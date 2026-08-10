@@ -1,0 +1,53 @@
+# Kairos staging compose — staging environment overrides.
+#
+# Applies on top of compose.base.yml:
+#   docker compose -f compose.base.yml -f compose.staging.yml up -d
+#
+# DEPLOY-GATE-1 specifics for the shared production host 47.238.145.24:
+#   - project name kairos-staging (isolated from lumina/stellaris/aurora projects).
+#   - web/api join the shared `lumina-prod-internal` network so the existing
+#     shared nginx can reach them via Docker DNS (kairos-web:80 / kairos-api:8000).
+#   - container_name fixed so the shared nginx upstream names are stable.
+#   - secrets injected from /srv/kairos/env/staging.env (600, never in Git).
+name: kairos-staging
+
+x-staging-env-file: &staging-env-file
+  env_file:
+    - ${KAIROS_STAGING_ENV_FILE:-/srv/kairos/env/staging.env}
+
+services:
+  postgres:
+    <<: *staging-env-file
+
+  temporal:
+    <<: *staging-env-file
+
+  minio:
+    <<: *staging-env-file
+
+  migrate:
+    <<: *staging-env-file
+
+  api:
+    <<: *staging-env-file
+    container_name: kairos-api
+    networks:
+      - default
+      - edge
+
+  worker:
+    <<: *staging-env-file
+
+  web:
+    <<: *staging-env-file
+    container_name: kairos-web
+    networks:
+      - default
+      - edge
+
+networks:
+  default:
+    name: kairos-staging-internal
+  edge:
+    name: lumina-prod-internal
+    external: true
