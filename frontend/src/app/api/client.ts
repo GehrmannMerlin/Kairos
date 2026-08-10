@@ -6,8 +6,12 @@ export interface ApiClientOptions {
   timeoutMs?: number
 }
 
-export interface ApiErrorBody {
+interface ApiErrorBody {
   detail?: unknown
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 /**
@@ -29,6 +33,10 @@ export class ApiClient {
 
   async post<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     return this.request<T>('POST', path, body, signal)
+  }
+
+  async delete<T>(path: string, signal?: AbortSignal): Promise<T> {
+    return this.request<T>('DELETE', path, undefined, signal)
   }
 
   private async request<T>(
@@ -76,6 +84,8 @@ export class ApiClient {
         detail = body.detail
       } else if (Array.isArray(body.detail)) {
         detail = body.detail.map((d) => String(d)).join('; ')
+      } else if (isRecord(body.detail) && typeof body.detail.message === 'string') {
+        detail = body.detail.message
       }
     } catch {
       // non-JSON error body; keep the generic message

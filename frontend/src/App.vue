@@ -1,10 +1,11 @@
 <script setup lang="ts">
+import { RouterView } from 'vue-router'
+
 import AppErrorBoundary from '@/app/error/AppErrorBoundary.vue'
-import AppShell from '@/app/shell/AppShell.vue'
 </script>
 
 <template>
   <AppErrorBoundary>
-    <AppShell />
+    <RouterView />
   </AppErrorBoundary>
 </template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink } from 'vue-router'
 </script>
 
 <template>
@@ -7,11 +7,11 @@ import { RouterLink, RouterView } from 'vue-router'
     <header class="shell__header">
       <span class="shell__brand">Kairos</span>
       <nav class="shell__nav">
-        <RouterLink to="/">工作台</RouterLink>
+        <RouterLink to="/app">工作区</RouterLink>
       </nav>
     </header>
     <main class="shell__main">
-      <RouterView />
+      <slot />
     </main>
   </div>
 </template>
