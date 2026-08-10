@@ -5,6 +5,7 @@ export type ApiErrorKind =
   | 'unauthenticated'
   | 'model_not_configured'
   | 'search_provider_not_configured'
+  | 'provider'
   | 'not_found'
   | 'conflict'
   | 'rate_limited'
@@ -30,6 +31,11 @@ const CODE_KIND: Record<string, ApiErrorKind> = {
   ILLEGAL_TRANSITION: 'conflict',
   EMAIL_TAKEN: 'conflict',
   RATE_LIMITED: 'rate_limited',
+  // M-03 provider call taxonomy (reused, not a second set of strings).
+  AUTH_FAILED: 'provider',
+  MODEL_NOT_FOUND: 'provider',
+  PROVIDER_INFERENCE_ERROR: 'provider',
+  NETWORK_ERROR: 'provider',
 }
 
 const STATUS_KIND: Record<number, ApiErrorKind> = {

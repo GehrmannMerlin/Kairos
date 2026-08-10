@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 
 import { mapApiError } from '@/app/error/apiErrorMapper'
 import ModelConfigDrawer from '@/features/providers/ModelConfigDrawer.vue'
@@ -16,6 +17,17 @@ import SearchConfigDrawer from '@/features/providers/SearchConfigDrawer.vue'
 type Tab = 'models' | 'searches'
 type DrawerState =
   { open: false } | { open: true; mode: DrawerMode; config: DrawerConfigRef | null }
+
+const route = useRoute()
+// D-066：Model Required 返回链。return_to 必须是站内路径（如 /tasks/123/chat），
+// 且不携带用户原始 Prompt；配置后回到同一 Task。
+const returnTo = computed<string | null>(() => {
+  const raw = route.query.return_to
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
+    ? value
+    : null
+})
 
 const activeTab = ref<Tab>('models')
 const modelConfigs = ref<ModelConfigDto[]>([])
@@ -154,6 +166,7 @@ onMounted(() => {
   <section class="models">
     <div class="models__header">
       <h1>模型与搜索服务配置</h1>
+      <RouterLink v-if="returnTo" :to="returnTo" class="return-link">← 返回刚才的任务</RouterLink>
     </div>
 
     <nav class="tabs">
@@ -292,6 +305,15 @@ onMounted(() => {
 .models__header h1 {
   font-size: 1.3rem;
   margin: 0 0 1rem;
+}
+.return-link {
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+.return-link:hover {
+  text-decoration: underline;
 }
 .tabs {
   display: flex;

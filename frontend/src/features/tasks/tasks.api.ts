@@ -6,7 +6,7 @@ export interface TaskShellDto {
   title: string
   state: string
   version: number
-  task_type: string
+  task_type: string | null
   current_spec_version: number | null
   current_plan_version: number | null
   allowed_actions: string[]

@@ -112,6 +112,10 @@ def create_draft(
             seed_urls=cmd.seed_urls or None,
             idempotency_key=cmd.idempotency_key,
         )
+    elif cmd.seed_urls:
+        task = service.create_empty_draft(user_id=user.id)
+        for url in cmd.seed_urls:
+            service.add_seed_url(user_id=user.id, task_id=task.id, url=url)
     else:
         task = service.create_empty_draft(user_id=user.id)
     return CreateTaskResponse(task_id=task.id)

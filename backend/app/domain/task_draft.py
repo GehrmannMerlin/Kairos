@@ -90,6 +90,18 @@ class TaskDraftService:
         self._db.flush()  # materialize task.id for the message FK
         message = ChatMessage(user_id=user_id, task_id=task.id, role="user", content=content)
         self._db.add(message)
+        if seed_urls:
+            # '添加网址' writes into Draft Context immediately (D-034); no fetch.
+            from app.domain.spec import SourceScope
+            from app.domain.task_types import TaskType
+
+            spec = SpecDraftPayload(
+                goal="",
+                source_scope=SourceScope(mode=TaskType.EXPLORATORY, seed_urls=list(seed_urls)),
+            )
+            self._drafts.upsert(
+                user_id=user_id, task_id=task.id, payload=spec.model_dump(mode="json")
+            )
         self._db.flush()
         task_id = task.id
 
@@ -146,9 +158,34 @@ class TaskDraftService:
 
     # ---- read ----
 
+    def get_task(self, *, user_id: int, task_id: int) -> Task:
+        return self._tasks.get_owned(user_id, task_id)  # owner + existence gate
+
     def list_messages(self, *, user_id: int, task_id: int) -> list[ChatMessage]:
-        self._tasks.get_owned(user_id, task_id)  # owner gate
+        self.get_task(user_id=user_id, task_id=task_id)
         return self._chat.list_by_task(user_id, task_id)
+
+    def append_message(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        role: str,
+        content: str,
+        ref_type: str | None = None,
+        ref_id: int | None = None,
+        meta: dict | None = None,
+    ) -> ChatMessage:
+        self.get_task(user_id=user_id, task_id=task_id)
+        return self._chat.create(
+            user_id=user_id,
+            task_id=task_id,
+            role=role,
+            content=content,
+            ref_type=ref_type,
+            ref_id=ref_id,
+            meta=meta,
+        )
 
     # ---- spec draft ----
 
