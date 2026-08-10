@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     auth_login_max_attempts: int = 5
     auth_login_window_seconds: int = 15 * 60
 
+    # --- Credential master key (M-03, envelope encryption) ---
+    # 32-byte hex (64 chars). Never committed; set in .env (see .env.example).
+    credential_master_key: str | None = None
+    credential_key_version: str = "k1"
+    provider_test_timeout_seconds: float = 15.0
+
     # --- API / CORS ---
     api_port: int = 8000
     cors_origins: list[str] = ["http://localhost:5173"]
