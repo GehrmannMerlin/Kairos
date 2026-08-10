@@ -2285,112 +2285,267 @@ pause/resume/cancel。Task Status Drawer 接真实 Task Query + SSE + allowed_ac
 ## Task 7: 聚焦 Temporal/SSE 集成测试（pause/resume / cancel / 幂等）
 
 **Files:**
-- Modify: `backend/tests/integration/test_task_workflow.py`（追加 pause/resume、cancel、重复命令用例）
-- Modify: `backend/tests/integration/conftest.py`（追加 `send_command` helper：直接 Signal，不经 API）
+- Modify: `backend/tests/integration/test_task_workflow.py`（顶部追加 helper `_spawn_fixture_worker` / `_kill_worker` / `_wait_task_state` / `_send_command`，再追加 pause/resume、cancel、重复命令三个用例）
+  - 注：helper 放在本测试文件内（与 Task 4 的 `test_worker_crash_restart.py` 各自持有子进程 helper 一致）；不改 conftest（`confirmed_task` fixture 已由 Task 1 提供）。
 
 **Interfaces:**
-- Consumes: Task 1-6 全部契约；Temporal `workflow_handle.signal`。
+- Consumes: Task 1-6 全部契约；`TaskCommandService`（pause/resume/cancel + 幂等）、`OutboxTemporalDispatcher`（outbox → Signal）、`TaskWorkflowStarter`（`task_queue` 参数）、`tests/integration/fixture_worker.py`（Task 4 的 fixture worker）。
 - Produces: M-07 核心 Temporal 集成验证矩阵（TEST 2/3/4 对应 Prompt TEST 2/3/4）。
 
-- [ ] **Step 1: 追加集成用例**
+> **为什么不用裸 `handle.signal`：** M-04 语义要求 PAUSED/CANCELLED 只能由 Workflow 在
+> 安全停止后写入，而 PAUSING/CANCELLING 由命令层先写入。直接 `handle.signal("pause")`
+> 绕过命令层：task 永远停在 RUNNING（`mark_paused` 的 `IllegalTransitionError` 被抑制），
+> 断言 PAUSING/PAUSED 必然失败。因此 TEST 2/3/4 必须走**真实命令路径**：
+> `TaskCommandService`（幂等 + 状态机事务 + outbox）→ `OutboxTemporalDispatcher`
+> （outbox → Temporal Signal）→ Workflow 协作式停止。这正是 M-07 要验证的可靠链。
+> 同时每个用例必须**启动 fixture worker 子进程**（监听测试专用 queue）并在
+> `starter.start(..., task_queue=queue)` 把 workflow 启动到同一 queue，否则 seam
+> `fetch_next_execution_unit` 抛 NotImplementedError，workflow 挂起。
 
-`backend/tests/integration/test_task_workflow.py` 追加：
+- [ ] **Step 1: 追加集成 helper + 用例**
+
+`backend/tests/integration/test_task_workflow.py`：文件顶部已由 Task 1 提供 `_wait_task_state`
+（保留），补充 import 与子进程/命令 helper（复用 Task 4 的 `test_worker_crash_restart.py`
+模式），并在 `test_start_workflow_creates_run_and_running` 之后追加三个用例。
+
+文件顶部 import 区补齐：
 
 ```python
+import asyncio
+import contextlib
+import os
+import signal
+import subprocess
+import sys
+import time
+from datetime import timedelta
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+from app.config import get_settings
+from app.domain.models import Checkpoint, OutboxEvent, Run, Task
+from app.domain.repository import TaskRepository
+from app.domain.task_commands import TaskCommandService
+from app.infra.deps import get_session_factory
+from app.infra.outbox_dispatch import OutboxTemporalDispatcher
+from app.infra.temporal import create_temporal_client
+from app.workflows.starter import TaskWorkflowStarter
+from app.workflows.task_workflow import TaskWorkflowResult
+
+pytestmark = pytest.mark.integration
+
+ROOT = Path(__file__).resolve().parents[3]
+```
+
+（`_wait_task_state` 已在文件中，勿重复定义。）然后追加 helper：
+
+```python
+def _spawn_fixture_worker(queue: str) -> subprocess.Popen:
+    env = dict(os.environ)
+    return subprocess.Popen(
+        [sys.executable, "-m", "tests.integration.fixture_worker", queue],
+        cwd=str(ROOT / "backend"),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _kill_worker(proc: subprocess.Popen) -> None:
+    if os.name == "nt":
+        proc.kill()
+    else:
+        proc.send_signal(signal.SIGKILL)
+
+
+async def _send_command(
+    client, *, user_id: int, task_id: int, command: str, idempotency_key: str | None = None
+) -> None:
+    """走真实命令路径：TaskCommandService（幂等+状态机+outbox）→ dispatcher（Signal）。"""
+    session = get_session_factory()()
+    try:
+        task = TaskRepository(session).get_owned(user_id, task_id)
+        svc = TaskCommandService(session)
+        handler = {
+            "pause": svc.pause_task,
+            "resume": svc.resume_task,
+            "cancel": svc.cancel_task,
+        }[command]
+        handler(
+            user_id=user_id, task_id=task_id,
+            expected_version=task.version, idempotency_key=idempotency_key,
+        )
+        await OutboxTemporalDispatcher(client).dispatch_pending_for(
+            session, user_id=user_id, task_id=task_id
+        )
+    finally:
+        session.close()
+
+
 @pytest.mark.asyncio
 async def test_pause_resume_no_duplicate(confirmed_task) -> None:
     settings = get_settings()
     client = await create_temporal_client(settings)
+    queue = f"kairos-test-pause-{uuid4().hex[:8]}"
     starter = TaskWorkflowStarter(client, settings)
     started = await starter.start(
         user_id=confirmed_task["user_id"],
         task_id=confirmed_task["task_id"],
         spec_version=confirmed_task["spec_version"],
+        task_queue=queue,
     )
-    handle = client.get_workflow_handle(started.workflow_id)
-    await asyncio.sleep(0.5)
-    await handle.signal("pause")
-    await asyncio.sleep(0.3)
-
-    session = get_session_factory()()
+    proc = _spawn_fixture_worker(queue)
     try:
-        task = session.get(Task, confirmed_task["task_id"])
-        assert task.state in ("PAUSING", "PAUSED")
-    finally:
-        session.close()
+        _wait_task_state(confirmed_task["task_id"], "RUNNING")
+        # 真实命令：RUNNING→PAUSING（状态机）+ outbox + Signal → Workflow mark_paused → PAUSED
+        await _send_command(
+            client, user_id=confirmed_task["user_id"],
+            task_id=confirmed_task["task_id"], command="pause",
+        )
+        _wait_task_state(confirmed_task["task_id"], "PAUSED")
 
-    await handle.signal("resume")
-    result: TaskWorkflowResult = await handle.result(rpc_timeout=timedelta(seconds=90))
-    session = get_session_factory()()
-    try:
-        cps = session.query(Checkpoint).filter_by(run_id=started.run_id).order_by(Checkpoint.id).all()
-        assert len(cps) == 3
-        run = session.get(Run, started.run_id)
-        assert run.state == "completed"
+        session = get_session_factory()()
+        try:
+            task = session.get(Task, confirmed_task["task_id"])
+            assert task.state == "PAUSED"
+        finally:
+            session.close()
+
+        await _send_command(
+            client, user_id=confirmed_task["user_id"],
+            task_id=confirmed_task["task_id"], command="resume",
+        )
+        handle = client.get_workflow_handle(started.workflow_id, result_type=TaskWorkflowResult)
+        result = await handle.result(rpc_timeout=timedelta(seconds=90))
+
+        session = get_session_factory()()
+        try:
+            cps = session.query(Checkpoint).filter_by(run_id=started.run_id).order_by(Checkpoint.id).all()
+            assert len(cps) == 3                      # 无重复：unit-1/2/3 各一次
+            run = session.get(Run, started.run_id)
+            assert run.state == "completed"
+        finally:
+            session.close()
+        assert result.final_state == "COMPLETED"
     finally:
-        session.close()
-    assert result.final_state == "COMPLETED"
+        if proc.poll() is None:
+            _kill_worker(proc)
 
 
 @pytest.mark.asyncio
 async def test_cancel_keeps_committed(confirmed_task) -> None:
     settings = get_settings()
     client = await create_temporal_client(settings)
+    queue = f"kairos-test-cancel-{uuid4().hex[:8]}"
     starter = TaskWorkflowStarter(client, settings)
     started = await starter.start(
         user_id=confirmed_task["user_id"],
         task_id=confirmed_task["task_id"],
         spec_version=confirmed_task["spec_version"],
+        task_queue=queue,
     )
-    handle = client.get_workflow_handle(started.workflow_id)
-    await asyncio.sleep(0.5)
-    await handle.signal("cancel")
-    result: TaskWorkflowResult = await handle.result(rpc_timeout=timedelta(seconds=90))
-
-    session = get_session_factory()()
+    proc = _spawn_fixture_worker(queue)
     try:
-        task = session.get(Task, confirmed_task["task_id"])
-        run = session.get(Run, started.run_id)
-        cps = session.query(Checkpoint).filter_by(run_id=started.run_id).all()
-        assert task.state == "CANCELLED"
-        assert run.state == "cancelled"
-        # 已提交 batch 保留；未提交 batch 不算成功（checkpoint 数 < 总数即证明）
+        _wait_task_state(confirmed_task["task_id"], "RUNNING")
+        await _send_command(
+            client, user_id=confirmed_task["user_id"],
+            task_id=confirmed_task["task_id"], command="cancel",
+        )
+        handle = client.get_workflow_handle(started.workflow_id, result_type=TaskWorkflowResult)
+        result = await handle.result(rpc_timeout=timedelta(seconds=90))
+
+        session = get_session_factory()()
+        try:
+            task = session.get(Task, confirmed_task["task_id"])
+            run = session.get(Run, started.run_id)
+            cps = session.query(Checkpoint).filter_by(run_id=started.run_id).all()
+            assert task.state == "CANCELLED"
+            assert run.state == "cancelled"
+            assert len(cps) >= 1          # 已提交 batch 保留
+            assert len(cps) < 3           # 未提交 batch 不算成功（取消时尚未跑完）
+        finally:
+            session.close()
+        assert result.final_state == "CANCELLED"
     finally:
-        session.close()
-    assert result.final_state == "CANCELLED"
+        if proc.poll() is None:
+            _kill_worker(proc)
 
 
 @pytest.mark.asyncio
-async def test_duplicate_signals_idempotent(confirmed_task) -> None:
+async def test_duplicate_command_idempotent(confirmed_task) -> None:
     settings = get_settings()
     client = await create_temporal_client(settings)
+    queue = f"kairos-test-dup-{uuid4().hex[:8]}"
     starter = TaskWorkflowStarter(client, settings)
     started = await starter.start(
         user_id=confirmed_task["user_id"],
         task_id=confirmed_task["task_id"],
         spec_version=confirmed_task["spec_version"],
+        task_queue=queue,
     )
-    handle = client.get_workflow_handle(started.workflow_id)
-    await asyncio.sleep(0.5)
-    await handle.signal("pause")
-    await handle.signal("pause")  # 重复 signal：第二次幂等
-    await handle.signal("resume")
-    result: TaskWorkflowResult = await handle.result(rpc_timeout=timedelta(seconds=90))
-    session = get_session_factory()()
+    proc = _spawn_fixture_worker(queue)
     try:
-        cps = session.query(Checkpoint).filter_by(run_id=started.run_id).all()
-        assert len(cps) == 3  # 未因重复 signal 产生重复业务效果
+        _wait_task_state(confirmed_task["task_id"], "RUNNING")
+        key = "dup-pause-1"
+        await _send_command(
+            client, user_id=confirmed_task["user_id"],
+            task_id=confirmed_task["task_id"], command="pause", idempotency_key=key,
+        )
+        # 同一 key 重复 pause：幂等（第二次不产生新转换/新 outbox/Signal 副作用）
+        await _send_command(
+            client, user_id=confirmed_task["user_id"],
+            task_id=confirmed_task["task_id"], command="pause", idempotency_key=key,
+        )
+        _wait_task_state(confirmed_task["task_id"], "PAUSED")
+
+        session = get_session_factory()()
+        try:
+            task = session.get(Task, confirmed_task["task_id"])
+            version_after_dup = task.version
+        finally:
+            session.close()
+
+        await _send_command(
+            client, user_id=confirmed_task["user_id"],
+            task_id=confirmed_task["task_id"], command="resume",
+        )
+        handle = client.get_workflow_handle(started.workflow_id, result_type=TaskWorkflowResult)
+        result = await handle.result(rpc_timeout=timedelta(seconds=90))
+
+        session = get_session_factory()()
+        try:
+            cps = session.query(Checkpoint).filter_by(run_id=started.run_id).all()
+            assert len(cps) == 3          # 未因重复命令产生重复业务效果
+            outbox_dups = session.query(OutboxEvent).filter(
+                OutboxEvent.aggregate_id == started.task_id,
+                OutboxEvent.event_type == "task.pause",
+            ).count()
+            assert outbox_dups <= 1       # 同一幂等 key 只入队一次 outbox
+        finally:
+            session.close()
+        assert result.final_state == "COMPLETED"
     finally:
-        session.close()
-    assert result.final_state == "COMPLETED"
+        if proc.poll() is None:
+            _kill_worker(proc)
 ```
 
-> 说明：`confirmed_task` 每用例一个（conftest 用 fixture 级 scope 或函数级重建）。Pause/resume 用真实 Temporal Signal + fixture worker 跑通。若本地栈 worker 未跑 task queue，测试用 `fixture_worker` 子进程（同 Task 4 方式）启动对应 queue。
+> 说明：
+> - `confirmed_task` 每用例一个（函数级 fixture，每个用例全新 user+task+spec v1）。
+> - fixture worker 子进程监听测试专用 queue；`starter.start(..., task_queue=queue)` 把
+>   workflow 启动到同一 queue。
+> - 三个用例均走**真实命令路径**（TaskCommandService + OutboxTemporalDispatcher），
+>   覆盖：pause 停止调度 + PAUSING→PAUSED、cancel 保留已提交 + CANCELLING→CANCELLED、
+>   重复命令幂等（同 key 只一次转换 + 一次 outbox + 一次 Signal）。
+> - `client.get_workflow_handle(started.workflow_id, result_type=TaskWorkflowResult)` 使
+>   `result.final_state` 正确解析（Task 4 已确认 SDK 行为）。
 
 - [ ] **Step 2: 运行 Temporal 集成矩阵**
 
 `cd backend && set KAIROS_RUN_INTEGRATION=1 && .venv/Scripts/python.exe -m pytest tests/integration/test_task_workflow.py tests/integration/test_worker_crash_restart.py -q`
-Expected: 全部 PASS（start / pause-resume / cancel / duplicate / crash-restart）。
+Expected: 全部 PASS（start / pause-resume / cancel / duplicate / crash-restart）。若 pause/cancel
+时序不稳定，可在 fixture adapter `execute_safe_unit` 里把 `asyncio.sleep(0.05)` 调大（如 0.2s）
+留出命令落点窗口，再重跑。
 
 - [ ] **Step 3: 后端 scoped 门禁**
 
@@ -2400,11 +2555,13 @@ Expected: PASS。
 - [ ] **Step 4: Commit**
 
 ```bash
-git add backend/tests/integration/test_task_workflow.py backend/tests/integration/conftest.py
+git add backend/tests/integration/test_task_workflow.py
 git commit -m "test(workflow): cover pause resume cancel and command idempotency
 
-Temporal 集成矩阵：pause/resume 无重复、cancel 保留已提交 batch、重复 signal 幂等；
-结合 crash/restart 与 start contract 形成 M-07 核心 Gate。关联模块：M-07"
+Temporal 集成矩阵走真实命令路径（TaskCommandService + OutboxTemporalDispatcher +
+fixture worker 子进程）：pause 协作式停止 PAUSING→PAUSED 无重复、cancel 保留已提交
+batch、重复命令同 key 幂等。结合 crash/restart 与 start contract 形成 M-07 核心 Gate。
+关联模块：M-07"
 ```
 
 ---
