@@ -94,7 +94,7 @@ class FetchNodeExecutor:
         self._retry_base_seconds = retry_base_seconds
         self._max_batch = max_batch
 
-    def _robots_cache(self) -> RobotsCache:
+    def robots_cache(self) -> RobotsCache:
         if self._robots is not None:
             return self._robots
         # 复用同一底层 transport 的 DiscoveryHttp（M-09 robots 语义），不新建第二套 client
@@ -163,9 +163,10 @@ class FetchNodeExecutor:
             body.duration_ms = int((time.monotonic() - started) * 1000)
             return body, None
 
-    async def _process_row(
+    async def process_row(
         self, run: Run, spec: Any, row: URLResource, robots: RobotsCache
     ) -> FetchResult:
+        """单 URL 静态层抓取（FetchNodeExecutor 与 ScrapyBatchFetcher 共享同一路径）。"""
         policy = await robots.get(row.url)
         decision = decide_access(
             row.url, spec=spec.payload, robots_policy=policy, user_agent=self._user_agent
@@ -508,11 +509,11 @@ class FetchNodeExecutor:
                 unit_index=unit.index, status="OK", committed_refs={"fetched": 0, "run_id": run.id}
             )
 
-        robots = self._robots_cache()
+        robots = self.robots_cache()
         results: list[FetchResult] = []
         credential_required_url: URLResource | None = None
         for row in ready:
-            result = await self._process_row(run, spec, row, robots)
+            result = await self.process_row(run, spec, row, robots)
             results.append(result)
             if result.status == "CREDENTIAL_REQUIRED" and credential_required_url is None:
                 credential_required_url = row
