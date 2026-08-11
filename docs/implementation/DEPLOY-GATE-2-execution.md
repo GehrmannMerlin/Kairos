@@ -1,16 +1,20 @@
 # DEPLOY-GATE-2 执行记录：可交互 Task Workflow Staging
 
-状态：**PASS（核心执行闭环）/ BLOCKED_STAGING_PROVIDER（真实 LLM 闭环）**
+状态：**PASS（完整，含真实 LLM 闭环；2026-08-11 补齐真实 DeepSeek Provider）**
 负责人/Agent：Claude Code — 2026-08-11
 Staging：https://staging.kairos.ac.cn（复用 DEPLOY-GATE-1 环境，服务器 47.238.145.24）
 Gate-1 rollback target：`kairos-{web,api,worker}:staging-0b8a42c31f8d`（已在服务器保留）
-本次 M-08 release：`kairos-{web,api,worker}:staging-4ad644349021`
+首轮 M-08 release：`kairos-{web,api,worker}:staging-4ad644349021`
+真实 LLM 补齐 release：`kairos-{web,api,worker}:staging-2c2c4edeaf4e`
 
 > 结论摘要：M-08 在 Staging 部署成功，**全部确定性执行核心（workflow/approval/pause/
-> resume/cancel/restart/rollback/SSE）PASS**。唯一未完成项是「真实 LLM 生成的
-> CollectionSpec / Plan」——Staging 无已配置 ModelConfig，当前 Session 也无用户授权的
-> DeepSeek API Key，按 Prompt §68 标记 BLOCKED_STAGING_PROVIDER，仅需用户在
-> `https://staging.kairos.ac.cn/models` 配置真实 Provider 即可补齐（M-08 LOCAL 保持 DONE）。
+> resume/cancel/restart/rollback/SSE）PASS**。此前唯一未完成项是「真实 LLM 生成的
+> CollectionSpec / Plan」——Staging 无已配置 ModelConfig。2026-08-11 用户授权真实
+> DeepSeek API Key，通过 Kairos 正常产品链（Auth → `/providers/models` →
+> ModelConfig → CredentialVault → CredentialVersion）配置 `deepseek/deepseek-chat`，
+> **真实 LLM 闭环全部 PASS**：Goal Understanding → Spec confirm → Plan Generation
+> （VALID）→ typed PlanGraph（规范 7 节点流水线）→ deterministic Validator → 不可变
+> PlanVersion → Task Workflow COMPLETED → Secret Leak PASS。DEPLOY-GATE-2 关闭。
 
 ## 1. 目标
 验证 M-05～M-08 在服务器 Staging 的可交互 Agent Task Workflow 闭环。
@@ -61,7 +65,7 @@ Gate-1 rollback target：`kairos-{web,api,worker}:staging-0b8a42c31f8d`（已在
 - HTTPS：PASS（root 200 Kairos SPA；health live/ready 200；HTTP→HTTPS 301）
 - health/live + ready：PASS（postgresql/temporal/object_storage 全 ok）
 - Auth：PASS（HTTPS register/login/me/logout/401）
-- Real Model Provider：**BLOCKED_STAGING_PROVIDER**
+- Real Model Provider：**PASS**（DeepSeek `test_connection` → AVAILABLE，207ms）
 - Task creation：PASS
 - CollectionSpec confirm：PASS（DomainService 路径）
 - Deterministic Plan Validation：PASS（真实 validate_plan）
@@ -77,12 +81,54 @@ Gate-1 rollback target：`kairos-{web,api,worker}:staging-0b8a42c31f8d`（已在
 - Rollback Readiness：PASS（Gate-1 `staging-0b8a42c31f8d` 镜像仍在；rollback-staging.sh 语法有效）
 - Deployment Record：PASS（本文件 + release manifest 待更新）
 
-## 6. 最终结论
-- **DEPLOY-GATE-2：PASS（确定性执行核心全通过）**，真实 LLM 闭环部分 = **BLOCKED_STAGING_PROVIDER**
-- M-08：**DEPLOYED（Staging）**；M-08 LOCAL = DONE
-- M-09：UNBLOCKED（Gate 核心通过；补齐真实 Provider 后 LLM 闭环即完整）
+## 6. 真实 LLM 闭环补齐（2026-08-11）
 
-### 补齐真实 Provider 后需复验
-在 `https://staging.kairos.ac.cn/models` 配置一个真实 ModelConfig（测试 AVAILABLE）后，
-复验：#4 Goal Understanding（真实 LLM 生成 CollectionSpec）、#6 Plan 生成（真实 LLM 生成
-PlanGraphDraft + 单次 repair），其余步骤（#7~#19）已在本轮 PASS。
+用户授权真实 DeepSeek API Key（Key 仅在会话内存/Session 使用，未写入 Git/日志/
+docs/执行记录；只记录脱敏引用）。通过 Kairos 正常产品链配置 Provider：
+
+- 注册 Gate-2 测试用户（用户 id=50），Session Cookie 认证
+- `POST /api/providers/models`：`provider_type=deepseek, model_name=deepseek-chat,
+  set_default=true, api_key` → **ModelConfig config_id=`5ab1abfd…` version=1**，
+  credential_configured=true（Key 经 CredentialVault 信封加密存入 CredentialVersion）
+- `POST /api/providers/models/{id}/test` → **AVAILABLE**（207ms，connection_status=available）
+
+### 真实 LLM Closure Task（task 28，SPECIFIED_SOURCE，seed=https://example.com）
+1. 创建 Task → Goal Understanding（真实 DeepSeek，2.43s）→ typed GoalUnderstandingResult
+   （SPECIFIED_SOURCE，字段：标题/URL，source_scope.seed_urls=[example.com]）
+2. CollectionSpec 确认 → spec v1 冻结，task QUEUED
+3. Plan Generation（真实 DeepSeek PlanGenerator）→ 确定性 Validator → **plan v3 VALID**
+   （7 节点规范流水线：access_rules_check → link_discovery → fetch → extract → normalize →
+   validate → generate_artifact；资源链 url→url→snapshot→record→record→record）
+4. PlanVersion v3 冻结（不可变，fingerprint + registry_versions）
+5. 自动启动 Task Workflow（run_id=18, workflow_id=task-workflow-28）→ **Task COMPLETED**
+   （M-09/M-10 未实现节点按 NODE_EXECUTOR_UNAVAILABLE block；fetch 走 fixture executor）
+6. **Secret Leak PASS**：pg_dump 全库 + api/worker 日志对 Key 精确匹配 0 次
+
+### 本轮修复的真实 LLM 执行缺陷（M-08，均有回归测试）
+| Commit | 缺陷 | 现象 |
+|---|---|---|
+| fac1f2a | plan_service api_key 被丢弃 | 真实 Provider 401 → 500 |
+| b3b78d0 | build_input 传 None user | `None.id` AttributeError → 500 |
+| 85482ef | validator 对 object-form extract fields 崩溃 | `dict not in set` unhashable → 500 |
+| 2c30332 | PlanGenerator 看不到节点参数契约 | LLM 发明契约外键名 → 全 PARAMETER_SCHEMA_INVALID |
+| 2c2c4ed | PlanGenerator 误解标准流水线 | fetch 排在 access check 前/snapshot 当 url → RESOURCE_EDGE_INCOMPATIBLE |
+
+> 注：这些缺陷全部只在真实 LLM 输出下暴露；M-08 既有 FakeInference fixture 使用了
+> 手工构造的合规 Plan，未覆盖真实自由输出边界。这正是 DEPLOY-GATE-2 真实 LLM 闭环的
+> 价值所在。
+
+## 7. 最终结论
+- **DEPLOY-GATE-2：PASS（确定性执行核心 + 真实 LLM 闭环全部通过）**
+- M-08：**DEPLOYED（Staging）**；M-08 LOCAL = DONE
+- M-09：**UNBLOCKED**
+
+### 复验证据
+- DeepSeek test_connection：AVAILABLE（config_id=`5ab1abfd…` version=1，deepseek/deepseek-chat）
+- Goal Understanding：真实 Provider PASS（typed GoalUnderstandingResult）
+- CollectionSpec：confirmed（spec v1 冻结）
+- Plan Generation：真实 Provider PASS（plan v3 VALID，7 节点规范流水线）
+- Validator：VALID（确定性，无 LLM）
+- PlanVersion：frozen（v3，不可变）
+- Task Workflow：COMPLETED（真实 LLM Plan 驱动）
+- Secret Leak：PASS（DB + 日志 0 匹配）
+- 本轮未重新执行 Approval/Pause/Resume/Cancel/Restart（前一轮已 PASS）
