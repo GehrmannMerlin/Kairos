@@ -73,3 +73,22 @@ def test_planning_metadata_is_serializable() -> None:
     assert len(meta) == len(NodeType)
     first = meta[0]
     assert set(first) >= {"node_type", "risk_level", "resource_class", "input", "output"}
+
+
+def test_planning_metadata_exposes_parameter_contract() -> None:
+    """Regression (Gate-2 real provider): PlanGenerator 必须能看到每个节点允许的
+    参数键名/类型/required；否则真实 LLM 发明契约外键名 → 全部 PARAMETER_SCHEMA_INVALID。"""
+    meta = {m["node_type"]: m for m in NodeRegistry().planning_metadata()}
+    fetch = meta["fetch"]
+    assert "parameters" in fetch
+    param_names = {p["name"] for p in fetch["parameters"]}
+    assert "url_template" in param_names
+    assert "max_redirects" in param_names
+    extract = meta["extract"]
+    fields_param = next(p for p in extract["parameters"] if p["name"] == "fields")
+    assert fields_param["type"] == "string[]"
+    assert fields_param["required"] is True
+    # 不暴露实现细节/内部类型路径
+    raw = str(meta)
+    assert "parameter_schema" not in raw
+    assert "ModuleType" not in raw

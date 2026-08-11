@@ -10,9 +10,10 @@ M-08 只注册标准节点的契约（参数 schema、input/output、timeout、r
 
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -285,6 +286,41 @@ _STANDARD_DEFINITIONS: tuple[NodeDefinition, ...] = (
 )
 
 
+def _annotation_label(annotation: Any) -> str:
+    """把 pydantic 字段注解渲染成 LLM 可读的紧凑类型名（不暴露 Python class path）。"""
+    if annotation is str:
+        return "string"
+    if annotation is int:
+        return "int"
+    if annotation is bool:
+        return "bool"
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is list:
+        inner = _annotation_label(args[0]) if args else "any"
+        return f"{inner}[]"
+    if origin in (Union, types.UnionType) and args:
+        non_none = [a for a in args if a is not type(None)]
+        if len(non_none) == 1:
+            return f"{_annotation_label(non_none[0])} (optional)"
+        return "any"
+    return "any"
+
+
+def _parameter_contract(schema_type: type[BaseModel]) -> list[dict[str, Any]]:
+    """节点参数契约：允许的键名 + 类型 + required（供 PlanGenerator 生成合规参数）。"""
+    out: list[dict[str, Any]] = []
+    for name, info in schema_type.model_fields.items():
+        out.append(
+            {
+                "name": name,
+                "type": _annotation_label(info.annotation),
+                "required": info.is_required(),
+            }
+        )
+    return out
+
+
 class NodeRegistry:
     """Code-registered static allowlist of standard nodes (D-008)."""
 
@@ -314,7 +350,12 @@ class NodeRegistry:
         return node_type in self._defs
 
     def planning_metadata(self) -> list[dict[str, Any]]:
-        """LLM 可读的允许节点清单（不含 Secret，不含实现细节）。"""
+        """LLM 可读的允许节点清单 + 参数契约（不含 Secret，不含实现细节）。
+
+        参数契约（键名/类型/required）必须暴露给 PlanGenerator：真实 LLM 在看不到
+        允许键名时会"发明"合理但契约外的参数（Gate-2 真实 LLM 关闭时发现），
+        导致 strict schema 全部 PARAMETER_SCHEMA_INVALID。
+        """
         return [
             {
                 "node_type": d.node_type.value,
@@ -323,6 +364,7 @@ class NodeRegistry:
                 "input": [k.value for k in d.input_contract],
                 "output": [k.value for k in d.output_contract],
                 "timeout_seconds": d.timeout_seconds,
+                "parameters": _parameter_contract(d.parameter_schema),
             }
             for d in self._defs.values()
         ]
