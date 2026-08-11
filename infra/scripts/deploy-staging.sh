@@ -15,8 +15,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPLOY_HOST="${DEPLOY_HOST:?DEPLOY_HOST required (e.g. 47.238.145.24)}"
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/kairos_staging_deploy_rsa}"
-SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}")
-SCP=(scp -i "$SSH_KEY" -o BatchMode=yes)
+SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "${DEPLOY_USER}@${DEPLOY_HOST}")
+SCP=(scp -i "$SSH_KEY" -o BatchMode=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
 SERVER_COMPOSE_DIR="/srv/kairos/compose"
 SERVER_OTEL_DIR="/srv/kairos/otel"
 SERVER_VHOST_DIR="/srv/kairos/deploy/nginx/conf.d"

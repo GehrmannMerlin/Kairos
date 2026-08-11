@@ -15,7 +15,7 @@ set -euo pipefail
 DEPLOY_HOST="${DEPLOY_HOST:?DEPLOY_HOST required}"
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/kairos_staging_deploy_rsa}"
-SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}")
+SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "${DEPLOY_USER}@${DEPLOY_HOST}")
 ENV_PATH="/srv/kairos/env/staging.env"
 
 "${SSH[@]}" 'bash -s' <<'EOF'
