@@ -109,10 +109,17 @@ class AccessRulesService:
                 unit_index=unit.index, status="OK", committed_refs={"checked": 0, "run_id": run.id}
             )
         blocked: list[str] = []
+        import logging
+
+        _log = logging.getLogger(__name__)
         for row in pending[:200]:
             policy = await self._robots.get(row.url) if respect_robots else RobotsPolicy()
             decision = decide_access(
                 row.url, spec=spec.payload, robots_policy=policy, user_agent=self._user_agent
+            )
+            _log.warning(
+                "access_rule url=%s decision=%s status=%s",
+                row.url, decision.value, row.status,
             )
             if decision == AccessDecision.ROBOTS_DENIED_PUBLIC and public_only:
                 probe = await self._probe_private(row.url)

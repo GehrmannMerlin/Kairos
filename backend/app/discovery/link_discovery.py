@@ -233,6 +233,11 @@ class LinkDiscoveryService:
         seeds = frontier.list_by_state(
             user_id=run.user_id, task_id=run.task_id, state=FrontierState.ACCESS_ALLOWED
         )
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "link_discovery seeds=%d for task %s run %s", len(seeds), run.task_id, run.id
+        )
         total_added = 0
         total_blocked = 0
         total_cross = 0
