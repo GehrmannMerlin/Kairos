@@ -40,6 +40,11 @@ async def run() -> None:
     print(
         "kairos worker: discovery executors installed (source_search/access_rules/link_discovery)"
     )
+    # M-10 真实 fetch/browser executor（Fetch / BrowserRender，含凭据访问与站点策略）
+    from app.crawling.executors import install_fetch_executors
+
+    install_fetch_executors()
+    print("kairos worker: fetch executors installed (fetch/browser_render)")
     print(
         f"kairos worker listening on {settings.temporal_address} "
         f"(smoke={settings.temporal_smoke_task_queue}, task={settings.temporal_task_queue})"

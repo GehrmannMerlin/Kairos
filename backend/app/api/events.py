@@ -34,6 +34,13 @@ _EVENT_TYPE_MAP = {
     "approval.expired": "APPROVAL_EXPIRED",
     "approval.revoked": "APPROVAL_REVOKED",
     "approval.consumed": "APPROVAL_CONSUMED",
+    # M-10 fetch 重要事件（D-039：只推用户重要事件，非每 URL 细粒度）
+    "fetch.started": "FETCH_STARTED",
+    "fetch.strategy_selected": "FETCH_STRATEGY_SELECTED",
+    "fetch.escalated": "BROWSER_ESCALATION",
+    "fetch.credential_required": "CREDENTIAL_REQUIRED",
+    "fetch.completed": "FETCH_COMPLETED",
+    "fetch.failed": "FETCH_FAILED",
 }
 
 
