@@ -51,6 +51,7 @@ addopts = "-q"
 testpaths = ["tests"]
 markers = [
     "integration: requires live local services (postgres/temporal/minio)",
+    "browser: requires playwright chromium (real browser render verification)",
 ]
 
 [tool.ruff]
