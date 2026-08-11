@@ -41,6 +41,14 @@ _EVENT_TYPE_MAP = {
     "fetch.credential_required": "CREDENTIAL_REQUIRED",
     "fetch.completed": "FETCH_COMPLETED",
     "fetch.failed": "FETCH_FAILED",
+    # M-11 extraction 重要事件（D-039：只推聚合事件，不逐字段推 Evidence snippet）
+    "extraction.started": "EXTRACTION_STARTED",
+    "extraction.progress": "EXTRACTION_PROGRESS",
+    "extraction.llm_fallback_used": "LLM_FALLBACK_USED",
+    "extraction.rule_promoted": "RULE_PROMOTED",
+    "extraction.completed": "EXTRACTION_COMPLETED",
+    "extraction.failed": "EXTRACTION_FAILED",
+    "normalize.completed": "NORMALIZE_COMPLETED",
 }
 
 

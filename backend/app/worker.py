@@ -45,6 +45,11 @@ async def run() -> None:
 
     install_fetch_executors()
     print("kairos worker: fetch executors installed (fetch/browser_render)")
+    # M-11 真实 extraction/normalize executor（Extract / Normalize，含 LLM fallback）
+    from app.extraction.executors import install_extraction_executors
+
+    install_extraction_executors()
+    print("kairos worker: extraction executors installed (extract/normalize)")
     print(
         f"kairos worker listening on {settings.temporal_address} "
         f"(smoke={settings.temporal_smoke_task_queue}, task={settings.temporal_task_queue})"
