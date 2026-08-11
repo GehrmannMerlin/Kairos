@@ -278,7 +278,17 @@ class URLResource(Base):
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     url_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     source_type: Mapped[str] = mapped_column(String(30), nullable=False, default="seed")
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="DISCOVERED")
+    # M-09 frontier metadata（migration 0007）
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    discovery_source: Mapped[str] = mapped_column(String(40), nullable=False, default="USER_SEED")
+    parent_url_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    discovery_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    discovery_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    robots_allowed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
