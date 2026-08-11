@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.domain.models import Run
 from app.providers.protocol import ResolvedModel
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractionModelResolver:
@@ -38,7 +41,13 @@ class ExtractionModelResolver:
                 config = self._provider_service.require_available_model_config(
                     run.user_id
                 )  # owner-safe default
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "extraction model resolve failed for run %s user %s: %s",
+                run.id,
+                run.user_id,
+                repr(exc),
+            )
             return None, None, {}
         from app.providers.registry import build_model_provider
 
