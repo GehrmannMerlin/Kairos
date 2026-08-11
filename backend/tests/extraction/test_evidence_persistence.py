@@ -182,3 +182,36 @@ def test_snapshot_already_extracted(ctx):
     )
     db.commit()
     assert repo.snapshot_already_extracted(user.id, task.id, snapshot_id=1) is True
+
+
+def test_mark_records_eligible_for_recompute_after_rollback(ctx):
+    """二十五：规则回退后，受影响记录标记 eligible for recompute，历史不静默改写。"""
+    db = ctx["db"]
+    user = ctx["user"]
+    task = ctx["task"]
+    run = ctx["run"]
+    repo = ExtractionRepository(db)
+    v2_record = repo.create_record(
+        user_id=user.id,
+        task_id=task.id,
+        run_id=run.id,
+        spec_version=1,
+        url_resource_id=None,
+        payload={"snapshot_id": 1, "values": {"公司名": "A"}, "rule_versions": {"公司名": 2}},
+    )
+    v1_record = repo.create_record(
+        user_id=user.id,
+        task_id=task.id,
+        run_id=run.id,
+        spec_version=1,
+        url_resource_id=None,
+        payload={"snapshot_id": 2, "values": {"公司名": "B"}, "rule_versions": {"公司名": 1}},
+    )
+    db.commit()
+    flagged = repo.mark_records_eligible_for_recompute(user.id, task.id, "公司名", rule_version=2)
+    assert flagged == 1
+    db.commit()
+    db.refresh(v2_record)
+    db.refresh(v1_record)
+    assert v2_record.payload["recompute_eligible"] is True
+    assert not v1_record.payload.get("recompute_eligible")

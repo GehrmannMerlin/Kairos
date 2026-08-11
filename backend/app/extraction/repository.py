@@ -231,7 +231,7 @@ class ExtractionRepository:
         records = self.records_for_task(user_id, task_id)
         count = 0
         for record in records:
-            payload = record.payload or {}
+            payload = dict(record.payload or {})  # 新 dict，确保 ORM 检测到 JSON 变更
             rules = payload.get("rule_versions") or {}
             if rules.get(field_name) == rule_version:
                 payload["recompute_eligible"] = True

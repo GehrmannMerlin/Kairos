@@ -209,7 +209,7 @@ class NormalizeNodeExecutor:
         repo = ExtractionRepository(self._db)
         normalized_count = 0
         for record in repo.records_for_task(run.user_id, run.task_id):
-            payload = record.payload or {}
+            payload = dict(record.payload or {})  # 新 dict，确保 ORM 检测到 JSON 变更
             values = dict(payload.get("values") or {})
             changed = False
             for field in fields:
