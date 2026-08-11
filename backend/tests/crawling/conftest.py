@@ -87,12 +87,14 @@ def default_routes() -> dict:
 
 
 class FakeRenderer:
-    """Fake Playwright renderer：记录调用次数，返回“JS 执行后”的真实内容。"""
+    """Fake Playwright renderer：返回 RenderedPage，记录调用次数。"""
 
     def __init__(
         self, rendered_html: bytes = b"<html><body><p>Rendered Dynamic</p></body></html>"
     ) -> None:
-        self.rendered_html = rendered_html
+        from app.crawling.browser import RenderedPage
+
+        self.rendered = RenderedPage(html=rendered_html, final_url="http://fixture.test/dynamic")
         self.invocation_count = 0
         self.last_url: str | None = None
 
@@ -101,7 +103,7 @@ class FakeRenderer:
     ):
         self.invocation_count += 1
         self.last_url = url
-        return self.rendered_html
+        return self.rendered
 
 
 class FakeStorage:

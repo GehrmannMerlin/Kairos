@@ -20,16 +20,7 @@ _STRUCTURED_TYPES = (
     "text/xml",
 )
 
-# 明显动态壳特征：正文只有这些 + script，无实质文本内容
-_APP_SHELL_MARKERS = (
-    '<div id="app"',
-    'id="root"',
-    "vue",
-    "react",
-    "nuxt",
-    "next data",
-    "window.__",
-)
+# 检测明确 captcha/challenge marker → CAPTCHA_REQUIRED
 _CAPTCHA_MARKERS = (
     "captcha",
     "recaptcha",
@@ -56,32 +47,45 @@ def _looks_structured(url: str, content_type: str | None) -> bool:
     return path.endswith(_STRUCTURED_SUFFIXES)
 
 
-def _text_present(body: bytes) -> bool:
-    """粗略判断是否存在实质 HTML 文本内容（忽略 script/style）。"""
+def _visible_text(body: bytes) -> str:
+    """去掉 script/style 与所有标签后的可读文本（attribute 值不算文本节点）。"""
     import re
 
     text = body.decode("utf-8", errors="ignore")
-    lowered = text.lower()
-    if len(text.strip()) == 0:
-        return False
-    # 去掉 script/style 块后是否还有可读文本
-    stripped = re.sub(r"<script.*?</script>|<style.*?</style>", "", lowered, flags=re.S)
-    return bool(re.search(r"[a-z一-鿿]{2,}", stripped))
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", text, flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _has_substantive_text(body: bytes) -> bool:
+    """存在 ≥2 个“词”才视为有实质内容（避免 id/class 属性值误判）。"""
+    import re
+
+    words = re.findall(r"[a-zA-Z0-9一-鿿]{2,}", _visible_text(body))
+    return len(words) >= 2
+
+
+_TEXT_MARKUP = r"<p\b|<h[1-6]\b|<li\b|<td\b|<article\b|<table\b"
+
+
+def _has_text_markup(body: bytes) -> bool:
+    """剥离 script/style 后仍存在真实文本标记（<p>/<li>/<td> 等）→ 静态内容。"""
+    import re
+
+    text = re.sub(
+        r"<script.*?</script>|<style.*?</style>", " ", body.decode("utf-8", errors="ignore"),
+        flags=re.S | re.I,
+    )
+    return re.search(_TEXT_MARKUP, text.lower()) is not None
 
 
 def classify_content(*, url: str, content_type: str | None, body: bytes) -> ContentClass:
-    import re
-
     if _looks_structured(url, content_type):
         return ContentClass.STRUCTURED
-    if not _text_present(body):
-        # 空 body 或纯 JS shell（无实质内容）→ 可能需浏览器渲染
-        return ContentClass.DYNAMIC_SHELL if body else ContentClass.EMPTY
-    lowered = body.decode("utf-8", errors="ignore").lower()
-    # 只有 app shell marker 且几乎无文本 → 动态壳（JS 渲染后才有真实内容）
-    if any(m in lowered for m in _APP_SHELL_MARKERS) and not re.search(
-        r"<p\b|<h[1-6]\b|<article\b|<li\b|<table\b|<td\b", lowered
-    ):
+    if not body:
+        return ContentClass.EMPTY
+    # 空壳：无文本标记、无可读正文 → 可能需浏览器渲染（DYNAMIC_APP_SHELL）
+    if not _has_text_markup(body) and not _has_substantive_text(body):
         return ContentClass.DYNAMIC_SHELL
     return ContentClass.HTML_STATIC
 

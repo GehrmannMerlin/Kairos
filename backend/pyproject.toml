@@ -30,6 +30,9 @@ dependencies = [
     # orchestration; the actual model call routes through app.providers (M-03),
     # never through pydantic-ai's own provider SDKs.
     "pydantic-ai>=2.27",
+    # M-10 BrowserRender（D-009 TIER2）。Chromium 浏览器二进制由 `playwright install chromium` 安装，
+    # 不引入第二套 browser framework。
+    "playwright>=1.45",
 ]
 
 [project.optional-dependencies]
