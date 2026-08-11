@@ -186,3 +186,12 @@ class PlanSummaryDto(BaseModel):
 class PlanListResponse(BaseModel):
     task_id: int
     plans: list[PlanSummaryDto]
+
+
+class ReplanCommand(BaseModel):
+    """Replan vN+1：执行策略层调整；改变 Spec 边界的 replan 被 Validator 拒绝。"""
+
+    graph: dict
+    trigger_reason: str
+    evidence_refs: list = []
+    expected_version: int

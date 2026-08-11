@@ -20,11 +20,12 @@ from app.api.schemas import (
     PlanGenerateResponse,
     PlanListResponse,
     PlanSummaryDto,
+    ReplanCommand,
 )
 from app.auth.deps import require_user
 from app.auth.models import User
 from app.domain.errors import DomainError, StaleVersionError
-from app.domain.repository import SpecVersionRepository, TaskRepository
+from app.domain.repository import PlanVersionRepository, SpecVersionRepository, TaskRepository
 from app.infra.deps import get_db
 from app.infra.temporal import get_temporal_client
 from app.plan.nodes import NodeRegistry
@@ -150,6 +151,58 @@ async def generate_plan(
         run_id=run_id,
         workflow_id=workflow_id,
     )
+
+
+@router.post("/{task_id}/plans/replan", response_model=PlanSummaryDto)
+def replan_plan(
+    task_id: int,
+    cmd: ReplanCommand,
+    user: User = Depends(require_user),
+    db: DbSession = Depends(get_db),
+) -> PlanSummaryDto:
+    """Replan vN+1（执行策略层）。改变 Spec 边界的 replan 被 Validator 拒绝为
+    REQUIRES_NEW_SPEC，不能仅 Approval 放行（D-007 审计要求）。"""
+    TaskRepository(db).get_owned(user.id, task_id)
+    task = TaskRepository(db).get_owned(user.id, task_id)
+    if task.version != cmd.expected_version:
+        raise StaleVersionError("任务已被其他操作修改")
+
+    from app.plan.diff import PlanDiff
+    from app.plan.schemas import PlanGraphDraft
+    from app.plan.validator import validate_plan
+
+    parent = PlanVersionRepository(db).latest_version(user.id, task_id)
+    if parent is None:
+        raise DomainError("没有可重规划的 PlanVersion")
+
+    new_graph = PlanGraphDraft.model_validate(cmd.graph)
+    spec = SpecVersionRepository(db).get_version(user.id, task_id, parent.spec_version)
+    outcome = validate_plan(
+        new_graph, spec.payload, NodeRegistry(), spec_version=parent.spec_version
+    )
+    if outcome.result == PlanValidationResult.REQUIRES_NEW_SPEC:
+        raise DomainError("重规划改变了 Spec 边界，需创建新的采集方案版本")
+
+    old_graph = PlanGraphDraft.model_validate((parent.payload or {}).get("graph", {}))
+    diff = PlanDiff.compute(old_graph, new_graph)
+
+    registry_versions = {d.node_type.value: d.definition_version for d in NodeRegistry().all()}
+    fingerprint = plan_fingerprint(new_graph.model_dump(mode="json"), registry_versions)
+
+    service = _summary_service(db)
+    row = service.create_replan(
+        user_id=user.id,
+        task_id=task_id,
+        spec_version=parent.spec_version,
+        graph=new_graph.model_dump(mode="json"),
+        fingerprint_value=fingerprint,
+        registry_versions=registry_versions,
+        trigger_reason=cmd.trigger_reason,
+        replan_evidence_refs=cmd.evidence_refs,
+        diff_summary=diff.model_dump(mode="json"),
+    )
+    summary = service.get_plan_summary(user_id=user.id, task_id=task_id, plan_version=row.version)
+    return PlanSummaryDto(**summary)
 
 
 @router.get("/{task_id}/plans", response_model=PlanListResponse)

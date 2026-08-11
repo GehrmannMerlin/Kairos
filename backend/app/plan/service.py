@@ -109,6 +109,70 @@ class PlanService:
         )
         return started.run_id, started.workflow_id
 
+    def create_replan(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        spec_version: int,
+        graph: dict,
+        fingerprint_value: str,
+        registry_versions: dict,
+        trigger_reason: str,
+        replan_evidence_refs: list | None,
+        diff_summary: dict | None,
+    ) -> PlanVersion:
+        """Replan 创建 vN+1 并保留 parent/diff/trigger/evidence；v1 永不修改。"""
+        repo = PlanVersionRepository(self._db)
+        parent = repo.latest_version(user_id, task_id)
+        if parent is None:
+            from app.domain.errors import DomainError
+
+            raise DomainError("没有可重规划的 PlanVersion")
+        version = parent.version + 1
+        row = repo.create(
+            user_id=user_id,
+            task_id=task_id,
+            spec_version=spec_version,
+            version=version,
+            payload={"graph": graph},
+            parent_plan_version_id=parent.id,
+            validation_status="replan",
+            plan_fingerprint=fingerprint_value,
+            registry_versions=registry_versions,
+            generation_policy="replan",
+            trigger_reason=trigger_reason,
+            replan_evidence_refs=replan_evidence_refs,
+            diff_summary=diff_summary,
+        )
+        task = TaskRepository(self._db).get_owned(user_id, task_id)
+        task.current_plan_version = version
+        task.version += 1
+        self._db.add(task)
+        payload = {"plan_version": version, "validation_status": "replan"}
+        append_domain_event(
+            self._db,
+            user_id=user_id,
+            aggregate_type="task",
+            aggregate_id=task_id,
+            event_type="task.plan_replanned",
+            aggregate_version=task.version,
+            payload=payload,
+            actor_type="system",
+        )
+        enqueue_outbox(
+            self._db,
+            user_id=user_id,
+            aggregate_type="task",
+            aggregate_id=task_id,
+            event_type="task.plan_replanned",
+            payload=payload,
+            dispatch_key=f"task:{task_id}:plan_replanned",
+        )
+        self._db.commit()
+        self._db.refresh(row)
+        return row
+
     def get_plan_summary(self, *, user_id: int, task_id: int, plan_version: int) -> dict:
         row = PlanVersionRepository(self._db).get_version(user_id, task_id, plan_version)
         graph = (row.payload or {}).get("graph", {}) if row.payload else {}
