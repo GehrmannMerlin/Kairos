@@ -25,7 +25,7 @@ class ExecutionUnit:
     approval_action_type: str | None = None
     approval_target: str | None = None
     approval_parameters: dict | None = None
-    credential_ref: dict | None = None
+    credential_ref: str | None = None  # 脱敏凭据引用（非明文）
 
 
 @dataclass

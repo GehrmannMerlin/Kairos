@@ -597,7 +597,7 @@ class ApprovalRepository:
         scope: str,
         approved_scope: str,
         reason: str | None,
-        credential_ref: dict | None,
+        credential_ref: dict | str | None,
         status_payload: dict | None,
         expires_at: Any,
     ) -> Approval:

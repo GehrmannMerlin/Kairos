@@ -56,7 +56,7 @@ class ApprovalService:
         parameters: dict,
         scope: ApprovalScope,
         reason: str | None = None,
-        credential_ref: dict | None = None,
+        credential_ref: dict | str | None = None,
         status_payload: dict | None = None,
         expires_at: datetime | None = None,
     ) -> Approval:
