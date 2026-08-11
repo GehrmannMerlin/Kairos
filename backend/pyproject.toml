@@ -33,6 +33,8 @@ dependencies = [
     # M-10 BrowserRender（D-009 TIER2）。Chromium 浏览器二进制由 `playwright install chromium` 安装，
     # 不引入第二套 browser framework。
     "playwright>=1.45",
+    # M-11 extraction（D-010）。Scrapy 的 selector 引擎：CSS + XPath 确定性提取与站点规则。
+    "parsel>=1.9",
 ]
 
 [project.optional-dependencies]

@@ -410,7 +410,18 @@ class Record(Base):
 
 
 class FieldEvidence(Base):
+    """Immutable field-level evidence chain (M-04 foundation + M-11 extension).
+
+    D-072: the bounded raw_snippet is kept so the evidence chain survives heavy-file
+    lifecycle cleanup; never relies on the raw snapshot existing forever.
+    """
+
     __tablename__ = "field_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "record_id", "field_name", "extract_method", name="uq_fe_record_field_method"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     record_id: Mapped[int] = mapped_column(
@@ -426,6 +437,60 @@ class FieldEvidence(Base):
     extract_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
     extractor_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # ---- M-11 evidence-chain extension (all set by M-11; nullable for expand compat) ----
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    url_resource_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    normalized_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    source_locator: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    raw_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rule_version_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    model_config_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    validation_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    issue_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    evidence_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ExtractorRuleVersion(Base):
+    """Immutable validated site rule version (D-010 / 二十：规则版本不可变、可回滚).
+
+    A rule version is never mutated; structure change creates vN+1. Only
+    schema-validated + representative-validated + threshold-passed rules become
+    ACTIVE. Rollback sets the target version ACTIVE and the previous one STALE.
+    """
+
+    __tablename__ = "extractor_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "site_host", "field_name", "version", name="uq_er_site_field_version"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    site_host: Mapped[str] = mapped_column(String(255), nullable=False)
+    field_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    schema_identity: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rule_type: Mapped[str] = mapped_column(String(10), nullable=False, default="css")
+    selector: Mapped[str] = mapped_column(String(1000), nullable=False)
+    value_transform: Mapped[str] = mapped_column(String(50), nullable=False, default="identity")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="draft"
+    )  # DRAFT|VALIDATED|ACTIVE|STALE|NEEDS_REVALIDATION|REJECTED
+    quality: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    supersedes_version_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
