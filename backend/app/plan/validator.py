@@ -237,15 +237,24 @@ def validate_plan(
                     )
                 )
         if n.node_type == NodeType.EXTRACT:
-            for f in n.parameters.get("fields", []):
-                if f not in spec_fields:
-                    spec_boundary_issues.append(
-                        PlanValidationIssue(
-                            code="SPEC_FIELD_SEMANTICS",
-                            message=f"计划引入未确认字段 {f}",
-                            node_id=n.node_id,
+            raw_fields = n.parameters.get("fields", [])
+            if isinstance(raw_fields, list):
+                for raw_f in raw_fields:
+                    # 真实 LLM 可能把 fields 输出成对象数组（[{"name": "..."}]）。
+                    # 参数 schema 校验会以 PARAMETER_SCHEMA_INVALID 拦截该形态；
+                    # 这里对 dict 元素取 name 参与边界检查，避免 `dict not in set`
+                    # 触发 unhashable TypeError → 500（Gate-2 真实 Provider 发现）。
+                    f = raw_f.get("name") if isinstance(raw_f, dict) else raw_f
+                    if not isinstance(f, str):
+                        continue
+                    if f not in spec_fields:
+                        spec_boundary_issues.append(
+                            PlanValidationIssue(
+                                code="SPEC_FIELD_SEMANTICS",
+                                message=f"计划引入未确认字段 {f}",
+                                node_id=n.node_id,
+                            )
                         )
-                    )
         if n.node_type == NodeType.VALIDATE and n.parameters.get("min_required_fields", 1) < 1:
             spec_boundary_issues.append(
                 PlanValidationIssue(

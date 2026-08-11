@@ -245,3 +245,43 @@ CASES = [
 def test_plan_fixture_contracts(name, draft, expected) -> None:
     outcome = validate_plan(draft, _SPEC, NodeRegistry(), spec_version=1)
     assert outcome.result == expected, f"{name}: {[i.model_dump() for i in outcome.issues]}"
+
+
+def test_extract_fields_object_form_does_not_crash() -> None:
+    """Regression (Gate-2 real provider): 真实 LLM 可能把 EXTRACT parameters.fields
+    输出为对象数组（[{"name": "..."}]）。此前 spec_fields 检查对 dict 元素做
+    `f not in set` 触发 unhashable TypeError → 500。正确行为：不崩溃，且由参数
+    schema 校验判为 INVALID（PARAMETER_SCHEMA_INVALID），repair 循环再修正。"""
+    draft = _draft(
+        [
+            _node(
+                "n1",
+                "extract",
+                parameters={"fields": [{"name": "公司名", "type": "text"}]},
+                depends_on=["seed"],
+            ),
+            _node("seed", "fetch", parameters={"url_template": "https://example.com/x"}),
+        ],
+        edges=[_edge("seed", "n1", kind="snapshot", ref="snap:1")],
+    )
+    outcome = validate_plan(draft, _SPEC, NodeRegistry(), spec_version=1)
+    assert outcome.result == PlanValidationResult.INVALID
+    assert any(i.code == "PARAMETER_SCHEMA_INVALID" for i in outcome.issues)
+
+
+def test_extract_fields_string_list_passes_field_semantics() -> None:
+    """EXTRACT parameters.fields 为字符串数组且落在已确认字段内 → 不产生字段语义 issue。"""
+    draft = _draft(
+        [
+            _node(
+                "n1",
+                "extract",
+                parameters={"fields": ["公司名"]},
+                depends_on=["seed"],
+            ),
+            _node("seed", "fetch", parameters={"url_template": "https://example.com/x"}),
+        ],
+        edges=[_edge("seed", "n1", kind="snapshot", ref="snap:1")],
+    )
+    outcome = validate_plan(draft, _SPEC, NodeRegistry(), spec_version=1)
+    assert not any(i.code == "SPEC_FIELD_SEMANTICS" for i in outcome.issues)
