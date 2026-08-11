@@ -53,6 +53,7 @@ Extract / Normalize / Record Dedup / Quality / CSV / 凭据访问。资源池调
 cd backend
 .venv/Scripts/python.exe -m pytest tests/discovery -q
 # 38 passed（url/ssrf/robots/frontier/source_search/access_rules/link_discovery/e2e/executor_binding）
+# 含 SSE 聚合事件断言（discovery.access_checked / discovery.expanded / candidates_found）
 .venv/Scripts/python.exe -m pytest tests/integration/test_m09_discovery_workflow.py -q
 # executor 绑定无栈验证 PASS；2 条 Temporal 场景收集跳过（本地栈未启动，与 M-08 先例一致）
 ```

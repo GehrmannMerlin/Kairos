@@ -172,6 +172,21 @@ async def test_scenario_a_specified_source_to_ready_for_fetch(ctx, http) -> None
     assert f"{SITE}/detail/1" in ready
     # 跨域 other.com 不作为 Frontier 直接消费项
     assert not any("other.com" in r for r in ready)
+    # SSE 聚合事件（M-07 复用）：只发用户重要发现事件
+    from app.domain.models import DomainEvent
+
+    events = [
+        e.event_type
+        for e in db.query(DomainEvent)
+        .filter(
+            DomainEvent.aggregate_type == "task",
+            DomainEvent.aggregate_id == task.id,
+            DomainEvent.event_type.like("discovery.%"),
+        )
+        .all()
+    ]
+    assert "discovery.access_checked" in events
+    assert "discovery.expanded" in events
 
 
 @pytest.mark.asyncio

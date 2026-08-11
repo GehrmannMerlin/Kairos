@@ -154,6 +154,27 @@ class SearchService:
                     ),
                 )
                 hashes.append(h)
+        # SSE 聚合事件（M-07 SSETaskEvent 复用）：只发用户重要发现事件，不逐 URL
+        from app.state.events import append_domain_event
+
+        append_domain_event(
+            self._db,
+            user_id=run.user_id,
+            aggregate_type="task",
+            aggregate_id=run.task_id,
+            event_type="discovery.candidates_found",
+            aggregate_version=1,
+            payload={
+                "candidate_sites": len(sites),
+                "candidates": len(hashes),
+                "query": query,
+                "provider": cfg.provider_type,
+            },
+            actor_type="system",
+            run_id=run.id,
+            node_run_id=None,
+        )
+        self._db.commit()
         return ExecuteUnitResult(
             unit_index=unit.index,
             status="OK",

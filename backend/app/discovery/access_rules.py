@@ -155,6 +155,20 @@ class AccessRulesService:
                 frontier.mark_state(
                     user_id=run.user_id, url_hash=row.url_hash, state=FrontierState.WAITING_APPROVAL
                 )
+                from app.state.events import append_domain_event
+
+                append_domain_event(
+                    self._db,
+                    user_id=run.user_id,
+                    aggregate_type="task",
+                    aggregate_id=run.task_id,
+                    event_type="discovery.approval_required",
+                    aggregate_version=1,
+                    payload={"approval_id": approval.id, "url": row.url},
+                    actor_type="system",
+                    run_id=run.id,
+                    node_run_id=None,
+                )
                 self._db.commit()
                 return ExecuteUnitResult(
                     unit_index=unit.index,
@@ -177,6 +191,20 @@ class AccessRulesService:
                     user_id=run.user_id, url_hash=row.url_hash, reason=f"access_{decision.value}"
                 )
                 blocked.append(row.url_hash)
+        from app.state.events import append_domain_event
+
+        append_domain_event(
+            self._db,
+            user_id=run.user_id,
+            aggregate_type="task",
+            aggregate_id=run.task_id,
+            event_type="discovery.access_checked",
+            aggregate_version=1,
+            payload={"checked": len(pending[:200]), "blocked": len(blocked)},
+            actor_type="system",
+            run_id=run.id,
+            node_run_id=None,
+        )
         self._db.commit()
         return ExecuteUnitResult(
             unit_index=unit.index,

@@ -245,6 +245,26 @@ class LinkDiscoveryService:
             total_added += added
             total_blocked += blocked
             total_cross += cross
+        from app.state.events import append_domain_event
+
+        append_domain_event(
+            self._db,
+            user_id=run.user_id,
+            aggregate_type="task",
+            aggregate_id=run.task_id,
+            event_type="discovery.expanded",
+            aggregate_version=1,
+            payload={
+                "seeds": len(seeds),
+                "added": total_added,
+                "blocked": total_blocked,
+                "cross_domain_hints": total_cross,
+            },
+            actor_type="system",
+            run_id=run.id,
+            node_run_id=None,
+        )
+        self._db.commit()
         return ExecuteUnitResult(
             unit_index=unit.index,
             status="OK",
