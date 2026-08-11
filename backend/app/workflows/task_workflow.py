@@ -15,8 +15,10 @@ with workflow.unsafe.imports_passed_through():
     from app.activities.approval import (
         BlockHighRiskNodeInput,
         RequestApprovalInput,
+        ResumeFromApprovalInput,
         block_high_risk_node,
         request_approval,
+        resume_from_approval,
     )
     from app.activities.execution_seam import (
         ExecuteUnitInput,
@@ -208,6 +210,12 @@ class TaskWorkflow:
                         )
                         self._last_index = unit.index
                         continue
+                    # 批准后先回到 RUNNING（WAITING_APPROVAL → RUNNING），再继续执行
+                    await workflow.execute_activity(
+                        resume_from_approval,
+                        ResumeFromApprovalInput(task_id=inp.task_id, user_id=inp.user_id),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
 
                 exec_result: ExecuteUnitResult = await workflow.execute_activity(
                     execute_safe_unit,

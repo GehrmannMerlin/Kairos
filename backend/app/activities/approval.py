@@ -90,6 +90,38 @@ async def request_approval(inp: RequestApprovalInput) -> RequestApprovalResult:
 
 
 @dataclass
+class ResumeFromApprovalInput:
+    task_id: int
+    user_id: int
+
+
+@activity.defn
+async def resume_from_approval(inp: ResumeFromApprovalInput) -> None:
+    """Approval 批准后：Task WAITING_APPROVAL → RUNNING（状态机 resume 允许该边）。
+
+    Workflow 继续执行前必须先回到 RUNNING，否则后续 complete 等 RUNNING-only 命令会被
+    状态机拒绝。幂等：已在 RUNNING 视为成功。
+    """
+    session = get_session_factory()()
+    try:
+        task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
+        if task.state == "WAITING_APPROVAL":
+            from app.domain.service import DomainService
+
+            DomainService(TaskRepository(session)).transition_task(
+                user_id=inp.user_id,
+                task_id=inp.task_id,
+                command="resume",
+                expected_version=task.version,
+                actor_type="system",
+                reason="approval_approved",
+            )
+        session.commit()
+    finally:
+        session.close()
+
+
+@dataclass
 class BlockHighRiskNodeInput:
     task_id: int
     user_id: int

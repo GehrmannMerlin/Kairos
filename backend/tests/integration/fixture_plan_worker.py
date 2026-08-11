@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import asyncio
 
-from app.activities.approval import block_high_risk_node, request_approval
+from app.activities.approval import (
+    block_high_risk_node,
+    request_approval,
+    resume_from_approval,
+)
 from app.activities.plan_execution import execute_safe_unit, fetch_next_execution_unit
 from app.activities.task_execution import (
     commit_checkpoint,
@@ -46,6 +50,7 @@ async def run(queue: str) -> None:
             execute_safe_unit,
             request_approval,
             block_high_risk_node,
+            resume_from_approval,
         ],
     )
     await worker.run()
