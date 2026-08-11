@@ -4,8 +4,9 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import { mapApiError } from '@/app/error/apiErrorMapper'
 import { authStore } from '@/features/auth/useAuth'
-import * as authApi from '@/features/auth/auth.api'
 import type { SessionDto } from '@/features/auth/auth.api'
+import * as authApi from '@/features/auth/auth.api'
+import * as credentialsApi from '@/features/tasks/credentials.api'
 import * as providersApi from '@/features/providers/providers.api'
 
 // 设置四区（D-052）。账户资料/安全/采集默认值接入 M-02/M-03 真实能力；
@@ -104,9 +105,30 @@ async function loadDefaultModel(): Promise<void> {
   }
 }
 
+// ② 已保存网站凭据（D-059 设置 → 安全）：只显示域名/类型/时间/删除入口，无明文
+const savedCredentials = ref<credentialsApi.WebsiteCredentialDto[]>([])
+const savedLoading = ref(false)
+
+async function loadSavedCredentials(): Promise<void> {
+  savedLoading.value = true
+  try {
+    savedCredentials.value = (await credentialsApi.listSavedCredentials()).credentials
+  } catch {
+    savedCredentials.value = []
+  } finally {
+    savedLoading.value = false
+  }
+}
+
+async function onDeleteSavedCredential(credentialId: number): Promise<void> {
+  await credentialsApi.deleteSavedCredential(credentialId)
+  await loadSavedCredentials()
+}
+
 onMounted(() => {
   void loadSessions()
   void loadDefaultModel()
+  void loadSavedCredentials()
 })
 </script>
 
@@ -179,7 +201,15 @@ onMounted(() => {
 
       <div class="settings__block">
         <h3>已保存网站凭据</h3>
-        <p class="muted">网站登录凭据管理将在后续模块接入</p>
+        <p v-if="savedLoading" class="muted">加载中…</p>
+        <ul v-else-if="savedCredentials.length" class="settings__sessions">
+          <li v-for="c in savedCredentials" :key="c.credential_id">
+            <span>{{ c.domain }} · {{ c.type }}</span>
+            <span v-if="c.created_at" class="muted">{{ c.created_at }}</span>
+            <button type="button" @click="onDeleteSavedCredential(c.credential_id)">删除</button>
+          </li>
+        </ul>
+        <p v-else class="muted">暂无已保存网站凭据</p>
       </div>
     </section>
 

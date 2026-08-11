@@ -583,6 +583,24 @@ class FetchNodeExecutor:
                 run_id=run.id,
                 node_run_id=None,
             )
+            # D-059：Chat 出现“需要凭据”卡片（ref_type=credential_required，meta 带 domain）
+            from app.domain.models import ChatMessage
+
+            self._db.add(
+                ChatMessage(
+                    user_id=run.user_id,
+                    task_id=run.task_id,
+                    role="assistant",
+                    content="该页面需要网站凭据才能访问，请提供凭据。",
+                    ref_type="credential_required",
+                    ref_id=row.id,
+                    meta={
+                        "url": row.url,
+                        "domain": self._site_host(row.url),
+                        "task_id": run.task_id,
+                    },
+                )
+            )
         elif result.status == "BROWSER_PENDING" and result.escalation_evidence is not None:
             payload["evidence"] = result.escalation_evidence.model_dump(mode="json")
             append_domain_event(

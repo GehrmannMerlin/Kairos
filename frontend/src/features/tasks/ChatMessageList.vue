@@ -1,10 +1,20 @@
 <script setup lang="ts">
 import ChatApprovalCard from '@/features/tasks/ChatApprovalCard.vue'
+import ChatCredentialCard from '@/features/tasks/ChatCredentialCard.vue'
 import type { ChatMessageDto } from '@/features/tasks/chat.api'
 
-// 纯展示：append-only 消息列表。结构化消息（goal_result / error / plan / approval 等）
-// 保留 ref_type/ref_id/meta 供上层按需渲染卡片，不把业务事实压成纯文本。
+// 纯展示：append-only 消息列表。结构化消息（goal_result / error / plan / approval /
+// credential_required 等）保留 ref_type/ref_id/meta 供上层按需渲染卡片，不把业务事实压成纯文本。
 defineProps<{ messages: ChatMessageDto[]; loading?: boolean }>()
+
+function taskIdOf(m: ChatMessageDto): string | number {
+  const t = m.meta?.task_id
+  return typeof t === 'number' || typeof t === 'string' ? t : ''
+}
+
+function domainOf(m: ChatMessageDto): string | undefined {
+  return m.meta?.domain ? String(m.meta.domain) : undefined
+}
 </script>
 
 <template>
@@ -13,6 +23,9 @@ defineProps<{ messages: ChatMessageDto[]; loading?: boolean }>()
     <div v-for="m in messages" :key="m.id" class="msg" :class="`msg--${m.role}`">
       <div v-if="m.ref_type === 'approval' && m.ref_id" class="msg__bubble">
         <ChatApprovalCard :approval-id="m.ref_id" />
+      </div>
+      <div v-else-if="m.ref_type === 'credential_required'" class="msg__bubble">
+        <ChatCredentialCard :task-id="taskIdOf(m)" :domain="domainOf(m)" />
       </div>
       <div v-else class="msg__bubble">
         <span v-if="m.ref_type" class="msg__tag">{{ m.ref_type }}</span>
