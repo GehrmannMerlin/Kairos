@@ -89,10 +89,9 @@ def parse_robots(text: str) -> RobotsPolicy:
     return RobotsPolicy(rules=list(groups.items()), sitemaps=sitemaps)
 
 
-def _robots_url_for(host_or_url: str) -> str:
-    if "://" not in host_or_url:
-        return f"https://{host_or_url}/robots.txt"
-    return f"{host_or_url.rstrip('/')}/robots.txt"
+def _robots_url_for(origin: str) -> str:
+    """origin 形如 http://host:port（含端口）；robots.txt 必须请求同一 origin。"""
+    return f"{origin.rstrip('/')}/robots.txt"
 
 
 async def fetch_robots(http: DiscoveryHttp, robots_url: str) -> RobotsPolicy:
@@ -107,18 +106,25 @@ async def fetch_robots(http: DiscoveryHttp, robots_url: str) -> RobotsPolicy:
 
 @dataclass
 class RobotsCache:
-    """按 host/origin 缓存，TTL 内不重复下载（避免逐 URL 请求 robots.txt）。"""
+    """按 site origin 缓存，TTL 内不重复下载（避免逐 URL 请求 robots.txt）。
+
+    origin 形如 http://host:port（从 seed URL 推导，保证与目标站点同 scheme/端口）。
+    """
 
     http: DiscoveryHttp
     ttl_seconds: int = 3600
     user_agent: str = DEFAULT_USER_AGENT
     _cache: dict[str, tuple[float, RobotsPolicy]] = field(default_factory=dict)
 
-    async def get(self, host: str) -> RobotsPolicy:
+    async def get(self, seed_url: str) -> RobotsPolicy:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(seed_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
         now = monotonic()
-        cached = self._cache.get(host)
+        cached = self._cache.get(origin)
         if cached and now - cached[0] < self.ttl_seconds:
             return cached[1]
-        policy = await fetch_robots(self.http, _robots_url_for(host))
-        self._cache[host] = (now, policy)
+        policy = await fetch_robots(self.http, _robots_url_for(origin))
+        self._cache[origin] = (now, policy)
         return policy

@@ -33,6 +33,13 @@ async def run() -> None:
 
         install_staging_fixture()
         print("kairos worker: plan_fixture_mode enabled (staging fixture executor)")
+    # M-09 真实 discovery executor（SourceSearch / AccessRulesCheck / LinkDiscovery）
+    from app.discovery.executors import install_discovery_executors
+
+    install_discovery_executors()
+    print(
+        "kairos worker: discovery executors installed (source_search/access_rules/link_discovery)"
+    )
     print(
         f"kairos worker listening on {settings.temporal_address} "
         f"(smoke={settings.temporal_smoke_task_queue}, task={settings.temporal_task_queue})"

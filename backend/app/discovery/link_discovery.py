@@ -112,13 +112,15 @@ class LinkDiscoveryService:
             FrontierState,
         )
 
-        host = (urlsplit(seed.url).hostname or "").lower()
+        parsed_seed = urlsplit(seed.url)
+        host = (parsed_seed.hostname or "").lower()
+        origin = f"{parsed_seed.scheme}://{parsed_seed.netloc}"
         frontier = UrlFrontierRepository(self._db)
-        policy = await self._robots.get(host)
+        policy = await self._robots.get(seed.url)
         discovered: list[tuple[str, DiscoverySource]] = []
 
-        # sitemap：robots Sitemap directive + /sitemap.xml fallback
-        sitemaps = policy.sitemap_urls() or [f"https://{host}/sitemap.xml"]
+        # sitemap：robots Sitemap directive + /sitemap.xml fallback（同 origin，含端口）
+        sitemaps = policy.sitemap_urls() or [f"{origin}/sitemap.xml"]
         for sm_url in sitemaps[:2]:
             try:
                 resp = await self._http.get_text(sm_url, timeout_seconds=15.0)
@@ -132,8 +134,8 @@ class LinkDiscoveryService:
             except LinkDiscoveryError:
                 continue
 
-        # RSS/Atom：常见路径 fallback
-        for feed_url in (f"https://{host}/rss.xml", f"https://{host}/feed.xml"):
+        # RSS/Atom：常见路径 fallback（同 origin）
+        for feed_url in (f"{origin}/rss.xml", f"{origin}/feed.xml"):
             try:
                 resp = await self._http.get_text(feed_url, timeout_seconds=10.0)
             except Exception:

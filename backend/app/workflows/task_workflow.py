@@ -20,6 +20,10 @@ with workflow.unsafe.imports_passed_through():
         request_approval,
         resume_from_approval,
     )
+    from app.activities.discovery_approval import (
+        ResolveRobotsOverrideInput,
+        resolve_robots_override,
+    )
     from app.activities.execution_seam import (
         ExecuteUnitInput,
         ExecuteUnitResult,
@@ -236,6 +240,59 @@ class TaskWorkflow:
                     )
                     self._last_index = unit.index
                     continue
+                if exec_result.status == "WAITING_APPROVAL":
+                    # M-09 robots override JIT 审批：executor 已创建 Approval（复用 M-08
+                    # ApprovalService + outbox → approval_resolution Signal）。此处等待同一
+                    # approval_id 的 Signal，然后 consume 复验 fingerprint 并迁移 Frontier。
+                    refs = exec_result.committed_refs or {}
+                    approval_id = refs.get("approval_id")
+                    if approval_id is not None:
+                        self._waiting_approval_id = int(approval_id)
+                        self._latest_approval = None
+                        try:
+                            await workflow.wait_condition(
+                                lambda: (
+                                    self._latest_approval is not None
+                                    and self._latest_approval.approval_id
+                                    == self._waiting_approval_id
+                                ),
+                                timeout=timedelta(seconds=inp.pause_timeout_seconds),
+                            )
+                        except TimeoutError:
+                            continue  # 仍等待，不失败
+                        latest = self._latest_approval
+                        decision = latest.decision.upper() if latest else ""
+                        await workflow.execute_activity(
+                            resolve_robots_override,
+                            ResolveRobotsOverrideInput(
+                                user_id=inp.user_id,
+                                approval_id=int(approval_id),
+                                url_hash=str(refs.get("url_hash", "")),
+                                parameters=refs.get("parameters") or {},
+                                decision=(
+                                    decision if decision in ("APPROVED", "REJECTED") else "REJECTED"
+                                ),
+                            ),
+                            start_to_close_timeout=timedelta(seconds=30),
+                        )
+                        await workflow.execute_activity(
+                            commit_checkpoint,
+                            CommitCheckpointInput(
+                                task_id=inp.task_id,
+                                user_id=inp.user_id,
+                                run_id=inp.run_id,
+                                spec_version=inp.spec_version,
+                                plan_version=inp.plan_version,
+                                batch_identity=f"unit-{unit.index}",
+                                node_run_id=None,
+                                input_fingerprint=unit.input_fingerprint,
+                                committed_refs=exec_result.committed_refs,
+                                content_hash=None,
+                            ),
+                            start_to_close_timeout=timedelta(seconds=60),
+                        )
+                        self._last_index = unit.index
+                        continue
                 await workflow.execute_activity(
                     commit_checkpoint,
                     CommitCheckpointInput(

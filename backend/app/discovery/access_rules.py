@@ -110,7 +110,7 @@ class AccessRulesService:
             )
         blocked: list[str] = []
         for row in pending[:200]:
-            policy = await self._robots.get(_host_of(row.url)) if respect_robots else RobotsPolicy()
+            policy = await self._robots.get(row.url) if respect_robots else RobotsPolicy()
             decision = decide_access(
                 row.url, spec=spec.payload, robots_policy=policy, user_agent=self._user_agent
             )
