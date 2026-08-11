@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.domain.task_types import TaskType
-from app.plan.nodes import NodeType, ResourceKind
+from app.plan.nodes import ResourceKind
 
 
 class ResourceRef(BaseModel):
@@ -22,7 +22,9 @@ class ResourceRef(BaseModel):
 
 class PlanNodeInstance(BaseModel):
     node_id: str
-    node_type: NodeType
+    # node_type 存注册名（字符串），由 NodeRegistry + Validator 判定是否注册；
+    # 不能让未注册类型在 pydantic 层被静默吞掉或自动注册（D-008 规则校验器是类型权威）。
+    node_type: str
     definition_version: str
     parameters: dict = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)

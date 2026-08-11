@@ -288,13 +288,23 @@ class NodeRegistry:
     def register(self, definition: NodeDefinition) -> None:
         self._defs[definition.node_type] = definition
 
-    def get(self, node_type: NodeType) -> NodeDefinition | None:
+    def get(self, node_type: NodeType | str) -> NodeDefinition | None:
+        if isinstance(node_type, str):
+            try:
+                node_type = NodeType(node_type)
+            except ValueError:
+                return None
         return self._defs.get(node_type)
 
     def all(self) -> list[NodeDefinition]:
         return list(self._defs.values())
 
-    def is_registered(self, node_type: NodeType) -> bool:
+    def is_registered(self, node_type: NodeType | str) -> bool:
+        if isinstance(node_type, str):
+            try:
+                node_type = NodeType(node_type)
+            except ValueError:
+                return False
         return node_type in self._defs
 
     def planning_metadata(self) -> list[dict[str, Any]]:
