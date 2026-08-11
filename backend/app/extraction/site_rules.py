@@ -41,6 +41,13 @@ def apply_value_transform(value: str, transform: str) -> str:
     return fn(value)
 
 
+def text_value(raw: str) -> str:
+    """确定性提取文本内容：selector 命中元素（HTML）时去掉标签，文本/attr 原样返回。"""
+    if "<" not in raw:
+        return raw
+    return " ".join(Selector(text=raw).xpath("//text()").getall()).strip()
+
+
 class SiteRuleExtractor:
     name = "site_rule"
     version = "1.0.0"
@@ -49,13 +56,6 @@ class SiteRuleExtractor:
         self._db = db
         self._settings = settings or ExtractionSettings()
         self._repo = ExtractorRuleRepository(db)
-
-    @staticmethod
-    def _text_value(raw: str) -> str:
-        """确定性提取文本内容：selector 命中元素（HTML）时去掉标签，文本/attr 原样返回。"""
-        if "<" not in raw:
-            return raw
-        return " ".join(Selector(text=raw).xpath("//text()").getall()).strip()
 
     async def extract(self, ctx: ExtractionContext, *, unresolved: list[str]) -> ExtractionResult:
         started = perf_counter()
@@ -99,7 +99,7 @@ class SiteRuleExtractor:
                 )
                 continue
             raw_value = normalize_text(
-                apply_value_transform(self._text_value(parts[0]), rule.value_transform)
+                apply_value_transform(text_value(parts[0]), rule.value_transform)
             )
             if not raw_value:
                 continue
