@@ -401,6 +401,10 @@ class Record(Base):
     partition: Mapped[str] = mapped_column(String(30), nullable=False, default="passed")
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # ---- M-12 validation/partition（migration 0010，nullable 兼容）----
+    review_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -637,6 +641,168 @@ class Checkpoint(Base):
     input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     committed_object_refs: Mapped[dict] = mapped_column(JSON, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ValidationResult(Base):
+    """M-12 canonical 单条 Record 验证结果（D-014）。
+
+    （record_id, validation_version）唯一：验证规则升级时允许新的 ValidationAttempt，
+    不允许静默修改旧 validation history（D-014 / 模块需求 11）。
+    """
+
+    __tablename__ = "validation_results"
+    __table_args__ = (
+        UniqueConstraint("record_id", "validation_version", name="uq_vr_record_version"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("records.id", ondelete="CASCADE"), nullable=False
+    )
+    spec_version_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    validation_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    structural_issues: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    required_field_issues: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    evidence_issues: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    business_rule_issues: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    dedupe_group_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    dedupe_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    conflict_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    partition: Mapped[str] = mapped_column(String(30), nullable=False)
+    review_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    allowed_actions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    quality_contribution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DedupeCluster(Base):
+    """M-12 确定性去重簇（D-014 / 模块需求 22-23）。
+
+    相同 task + business_key_fingerprint 唯一；Evidence/ExtractionCandidate 全部保留，
+    dedupe 合并业务视图、不删除证据历史。
+    """
+
+    __tablename__ = "dedupe_clusters"
+    __table_args__ = (UniqueConstraint("task_id", "business_key_fingerprint", name="uq_dc_task_fp"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    business_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    business_key_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    dedupe_policy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    approximate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    record_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="grouped")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class FieldConflict(Base):
+    """M-12 跨来源字段冲突（D-014 冲突规则）。
+
+    未裁决冲突 state=unresolved；保留全部 candidate_values，绝不静默选值（模块需求 23/26）。
+    """
+
+    __tablename__ = "field_conflicts"
+    __table_args__ = (
+        UniqueConstraint("record_id", "field_name", "state", name="uq_fc_record_field_state"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("records.id", ondelete="CASCADE"), nullable=False
+    )
+    field_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    dedupe_group_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    candidate_values: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    resolution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="unresolved")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class QualitySnapshot(Base):
+    """M-12 不可变质量快照（D-014 / 模块需求 54）。
+
+    绑定 task/run/spec/validation/sampling policy/dataset version；后续数据变化不
+    静默改写历史 Quality 报告。
+    """
+
+    __tablename__ = "quality_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    validation_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    dataset_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    sampling_policy_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    metrics: Mapped[dict] = mapped_column(JSON, nullable=False)
+    denominators: Mapped[dict] = mapped_column(JSON, nullable=False)
+    sample_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CompletionDecision(Base):
+    """M-12 完成判定（D-006 / 模块需求 43-52）。
+
+    不含任何人民币/美元/费用/token 金额字段（D-036）。「任务停止采集」与「数据质量
+    高」分开表达：status 只描述范围/饱和/限制完成，quality 由 QualitySnapshot 表达。
+    """
+
+    __tablename__ = "completion_decisions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    is_partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    completion_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    qualified_record_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    saturation_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    runtime_limit_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    scope_completion_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
