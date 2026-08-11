@@ -65,11 +65,12 @@ CompletionDecision / 分层抽样 / CSV / Record Review UI / Evidence Viewer / �
 ### scoped tests
 ```bash
 .venv/Scripts/python.exe -m pytest tests/extraction -q
-# 37 passed：contracts / evidence_persistence / schema_validator / structured（JSON-LD/Meta/Table）/
-#   site_rules（CSS/XPath + transform + RULE_MISMATCH）/ llm_fallback（typed + grounding +
-#   4 类 invalid LLM 拒绝）/ rule_learning（promote PASS + threshold FAIL）/ pipeline（字段级 fallback +
-#   结构化无 LLM）/ idempotency（双跑无重复）/ fixtures（A structured no-LLM / B site rule + rollback /
-#   C LLM fallback unresolved-only / 证据在快照清理后保留）/ normalize / executor_binding /
+# 38 passed：contracts / evidence_persistence（含 rule rollback recompute contract）/
+#   schema_validator / structured（JSON-LD/Meta/Table）/ site_rules（CSS/XPath + transform +
+#   RULE_MISMATCH）/ llm_fallback（typed + grounding + 4 类 invalid LLM 拒绝）/ rule_learning
+#   （promote PASS + threshold FAIL）/ pipeline（字段级 fallback + 结构化无 LLM）/ idempotency
+#   （双跑无重复）/ fixtures（A structured no-LLM / B site rule + rollback / C LLM fallback
+#   unresolved-only / 证据在快照清理后保留）/ normalize / executor_binding /
 #   M-10→M-11 handoff（READY_FOR_FETCH→Fetch→Snapshot→Extract）
 ```
 ### ruff / mypy / import
@@ -88,7 +89,7 @@ CompletionDecision / 分层抽样 / CSV / Record Review UI / Evidence Viewer / �
 固定测试 secret 未出现在 app/extraction；模型 API Key 仅经 CredentialVault 执行期临时解密，
 `model_config_id` 只是引用，不进入 prompt/日志/Evidence/DomainEvent。
 
-## 6. Git 证据（feature/M-11-extraction-evidence，基线 9e82191，pushed NO）
+## 6. Git 证据（feature/M-11-extraction-evidence，基线 9e82191，pushed NO，12 commits）
 | Commit | 内容 |
 |---|---|
 | b9873f1 | feat(extraction): add typed extraction contracts and evidence persistence（migration 0009） |
@@ -99,7 +100,10 @@ CompletionDecision / 分层抽样 / CSV / Record Review UI / Evidence Viewer / �
 | aabd295 | feat(extraction): add grounded llm typed fallback and rule learning |
 | 908d653 | feat(workflow): bind extract and normalize activities with pipeline and sse |
 | e6a02e5 | test(extraction): cover three fixture classes and m10 handoff |
-| （+ normalize test / docs） | test(extraction): cover normalize executor；docs(extraction): record M-11 execution（本记录） |
+| d67d2c3 | test(extraction): cover normalize executor field-level canonicalization |
+| 8ef7552 | style(extraction): apply ruff format to extraction modules |
+| e4e5aba | docs(extraction): record M-11 execution（本记录 + writing-plans 计划文件） |
+| 880c613 | test(extraction): cover rule rollback recompute contract |
 
 ## 7. 跨模块联动结果
 - 上游 M-03 ModelInferenceClient / CredentialVault：PASS（SemanticExtractionAgent 复用
