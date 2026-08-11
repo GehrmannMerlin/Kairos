@@ -4,7 +4,9 @@ import { useRoute } from 'vue-router'
 
 import { ApiError } from '@/app/error/ApiError'
 import { mapApiError } from '@/app/error/apiErrorMapper'
+import { openDrawer } from '@/app/overlay/drawer.store'
 import { openModal } from '@/app/overlay/modal.store'
+import { parseTaskQuery } from '@/app/router/deepLinks'
 import ChatComposer from '@/features/tasks/ChatComposer.vue'
 import ChatMessageList from '@/features/tasks/ChatMessageList.vue'
 import {
@@ -16,6 +18,8 @@ import {
   sendMessage,
   type ChatMessageDto,
 } from '@/features/tasks/chat.api'
+import { generatePlan, getPlanSummary, type PlanSummaryDto } from '@/features/tasks/plans.api'
+import PlanSummaryCard from '@/features/tasks/PlanSummaryCard.vue'
 import { asSpecDraftPayload, type SpecDraftPayload } from '@/features/tasks/spec.types'
 import { getTask } from '@/features/tasks/tasks.api'
 import { createTemplateFromTask } from '@/features/templates/templates.api'
@@ -34,10 +38,12 @@ const loading = ref(false)
 const sending = ref(false)
 const understanding = ref(false)
 const confirming = ref(false)
+const planning = ref(false)
 const urlInput = ref('')
 const draft = ref<SpecDraftPayload | null>(null)
 const taskVersion = ref<number | null>(null)
 const currentSpecVersion = ref<number | null>(null)
+const planSummary = ref<PlanSummaryDto | null>(null)
 const errorMsg = ref<string | null>(null)
 const noticeMsg = ref<string | null>(null)
 
@@ -60,6 +66,9 @@ async function refreshTaskMeta(): Promise<void> {
     const shell = await getTask(taskId.value)
     taskVersion.value = shell.version
     currentSpecVersion.value = shell.current_spec_version
+    if (shell.current_plan_version) {
+      planSummary.value = await getPlanSummary(taskId.value, shell.current_plan_version)
+    }
   } catch {
     /* keep last known values */
   }
@@ -67,6 +76,32 @@ async function refreshTaskMeta(): Promise<void> {
 
 async function reloadAll(): Promise<void> {
   await Promise.all([loadChat(), refreshTaskMeta()])
+}
+
+// Deep Link：/tasks/:taskId/chat?approval=:approvalId → 打开同一个 Approval Drawer（D-057）。
+function openApprovalDeepLink(): void {
+  const query = parseTaskQuery(route.query)
+  if (query.approval) {
+    openDrawer('APPROVAL', { approvalId: query.approval })
+  }
+}
+
+async function runPlanGeneration(): Promise<void> {
+  if (!currentSpecVersion.value || taskVersion.value === null) return
+  planning.value = true
+  errorMsg.value = null
+  try {
+    await generatePlan(taskId.value, {
+      spec_version: currentSpecVersion.value,
+      expected_version: taskVersion.value,
+    })
+    await refreshTaskMeta()
+    void loadChat()
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    planning.value = false
+  }
 }
 
 async function loadChat(): Promise<void> {
@@ -171,6 +206,8 @@ async function onConfirmSpec(): Promise<void> {
     currentSpecVersion.value = result.spec_version
     await refreshTaskMeta()
     void loadChat()
+    // D-038：Spec 确认后自动生成 Plan 并启动合法低风险执行，无二次「确认 Plan」。
+    await runPlanGeneration()
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -183,8 +220,14 @@ watch(
   () => {
     void refreshTaskMeta()
     void loadChat()
+    openApprovalDeepLink()
   },
   { immediate: true },
+)
+
+watch(
+  () => route.query.approval,
+  () => openApprovalDeepLink(),
 )
 </script>
 
@@ -200,6 +243,8 @@ watch(
         @confirm="onConfirmSpec"
         @save-template="onSaveAsTemplate"
       />
+      <p v-if="planning" class="muted">正在生成执行计划…</p>
+      <PlanSummaryCard v-if="planSummary" :summary="planSummary" />
       <ChatMessageList :messages="messages" :loading="loading" />
       <p v-if="errorMsg" class="chat__error">{{ errorMsg }}</p>
       <p v-if="noticeMsg" class="chat__notice">{{ noticeMsg }}</p>

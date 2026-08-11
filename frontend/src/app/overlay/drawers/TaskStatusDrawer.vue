@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useTaskShell } from '@/features/tasks/useTaskShell'
-import { useTaskEvents } from '@/features/tasks/useTaskEvents'
+import { listPendingTaskApprovals } from '@/features/tasks/approvals.api'
 import { cancelTask, pauseTask, resumeTask } from '@/features/tasks/commands.api'
 import type { TaskSseEvent } from '@/features/tasks/events.api'
+import { useTaskShell } from '@/features/tasks/useTaskShell'
+import { useTaskEvents } from '@/features/tasks/useTaskEvents'
 
 export interface TaskStatusPayload {
   taskId: number | string
@@ -22,6 +23,20 @@ const { connection, latestEvent, connect, disconnect } = useTaskEvents(taskId)
 
 const busy = ref(false)
 const notice = ref('')
+const pendingApprovals = ref(0)
+
+async function loadPendingApprovals(): Promise<void> {
+  if (!taskId.value) return
+  try {
+    const data = await listPendingTaskApprovals(taskId.value)
+    pendingApprovals.value = data.approvals.length
+  } catch {
+    pendingApprovals.value = 0
+  }
+}
+
+// 审批或任务状态变化后刷新待审批计数
+watch(latestEvent, () => void loadPendingApprovals())
 
 const connectionLabel = computed(() => {
   const map: Record<string, string> = {
@@ -62,6 +77,7 @@ watch(connection, (next, prev) => {
 
 onMounted(() => {
   void load()
+  void loadPendingApprovals()
   connect()
 })
 onBeforeUnmount(disconnect)
@@ -87,6 +103,10 @@ const importantEvent = computed<TaskSseEvent | null>(() => latestEvent.value)
       <div class="status-row">
         <dt>Plan 版本</dt>
         <dd>{{ summary.current_plan_version ?? '—' }}</dd>
+      </div>
+      <div class="status-row">
+        <dt>待审批</dt>
+        <dd data-test="pending-approvals">{{ pendingApprovals }}</dd>
       </div>
       <div class="status-row">
         <dt>事件流</dt>

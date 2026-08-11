@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import ChatApprovalCard from '@/features/tasks/ChatApprovalCard.vue'
 import type { ChatMessageDto } from '@/features/tasks/chat.api'
 
-// 纯展示：append-only 消息列表。结构化消息（goal_result / error 等）保留
-// ref_type/ref_id/meta 供上层按需渲染卡片，不把业务事实压成纯文本。
+// 纯展示：append-only 消息列表。结构化消息（goal_result / error / plan / approval 等）
+// 保留 ref_type/ref_id/meta 供上层按需渲染卡片，不把业务事实压成纯文本。
 defineProps<{ messages: ChatMessageDto[]; loading?: boolean }>()
 </script>
 
@@ -10,7 +11,10 @@ defineProps<{ messages: ChatMessageDto[]; loading?: boolean }>()
   <div class="chat-messages" role="log" aria-live="polite">
     <div v-if="loading" class="muted">加载中…</div>
     <div v-for="m in messages" :key="m.id" class="msg" :class="`msg--${m.role}`">
-      <div class="msg__bubble">
+      <div v-if="m.ref_type === 'approval' && m.ref_id" class="msg__bubble">
+        <ChatApprovalCard :approval-id="m.ref_id" />
+      </div>
+      <div v-else class="msg__bubble">
         <span v-if="m.ref_type" class="msg__tag">{{ m.ref_type }}</span>
         <p class="msg__content">{{ m.content }}</p>
         <p v-if="m.role === 'assistant' && m.meta?.duration_ms" class="msg__meta">

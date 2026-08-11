@@ -69,6 +69,20 @@ async def request_approval(inp: RequestApprovalInput) -> RequestApprovalResult:
             )
         except (IllegalTransitionError, StaleVersionError):
             pass  # 已在 WAITING_APPROVAL 视为幂等成功
+
+        # Chat 时间线审批卡（D-039/D-042）：只追加 ref_type=approval 的指针消息，
+        # 事实源始终是 Approval DB Object，不复制为第二条事实。
+        from app.domain.repository import ChatMessageRepository
+
+        ChatMessageRepository(session).create(
+            user_id=inp.user_id,
+            task_id=inp.task_id,
+            role="system",
+            content="该步骤需要审批后才能执行",
+            ref_type="approval",
+            ref_id=approval.id,
+            meta={"action_type": approval.action_type, "state": approval.state},
+        )
         session.commit()
         return RequestApprovalResult(approval_id=approval.id, state=approval.state)
     finally:

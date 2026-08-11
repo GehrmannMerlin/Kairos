@@ -22,6 +22,11 @@ const _EVENT_TYPES: TaskEventType[] = [
   'TASK_PARTIALLY_COMPLETED',
   'TASK_FAILED',
   'APPROVAL_REQUIRED',
+  'APPROVAL_APPROVED',
+  'APPROVAL_REJECTED',
+  'APPROVAL_EXPIRED',
+  'APPROVAL_REVOKED',
+  'APPROVAL_CONSUMED',
 ]
 
 /** 统一 Task 事件订阅。断线自动重连（带 cursor），恢复后由调用方重新拉取 Task Snapshot。 */

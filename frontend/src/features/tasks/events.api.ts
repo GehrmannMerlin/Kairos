@@ -11,6 +11,11 @@ export type TaskEventType =
   | 'TASK_PARTIALLY_COMPLETED'
   | 'TASK_FAILED'
   | 'APPROVAL_REQUIRED'
+  | 'APPROVAL_APPROVED'
+  | 'APPROVAL_REJECTED'
+  | 'APPROVAL_EXPIRED'
+  | 'APPROVAL_REVOKED'
+  | 'APPROVAL_CONSUMED'
 
 export interface TaskSseEvent {
   event_id: number
