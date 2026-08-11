@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     task_pause_timeout_seconds: int = 300
     task_cancel_timeout_seconds: int = 300
 
+    # --- Plan fixture harness (M-08, Staging/test only) ---
+    # 默认关闭；只有显式开启的 Staging/测试环境才注册 fixture Node Executor。
+    # Production 强制关闭（部署规范覆盖）。无真实外部网络/第三方写入/凭据外传。
+    plan_fixture_mode: bool = False
+
     # --- Object storage (S3-compatible) ---
     s3_endpoint: str = "localhost:9000"
     s3_access_key: str = "kairos_minio"

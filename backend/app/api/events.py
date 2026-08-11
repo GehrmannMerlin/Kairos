@@ -28,6 +28,12 @@ _EVENT_TYPE_MAP = {
     "task.mark_partial": "TASK_PARTIALLY_COMPLETED",
     "task.fail": "TASK_FAILED",
     "task.mark_waiting_approval": "APPROVAL_REQUIRED",
+    "approval.requested": "APPROVAL_REQUIRED",
+    "approval.approved": "APPROVAL_APPROVED",
+    "approval.rejected": "APPROVAL_REJECTED",
+    "approval.expired": "APPROVAL_EXPIRED",
+    "approval.revoked": "APPROVAL_REVOKED",
+    "approval.consumed": "APPROVAL_CONSUMED",
 }
 
 

@@ -19,6 +19,11 @@ _TASK_SIGNALS = {
     "task.pause": "pause",
     "task.resume": "resume",
     "task.cancel": "cancel",
+    # Approval 决议 → M-07 ApprovalResolutionSignal（M-08）
+    "approval.approved": "approval_resolution",
+    "approval.rejected": "approval_resolution",
+    "approval.revoked": "approval_resolution",
+    "approval.expired": "approval_resolution",
 }
 
 
@@ -41,7 +46,22 @@ class OutboxTemporalDispatcher:
             workflow_id = f"task-workflow-{task_id}"
             handle = self._client.get_workflow_handle(workflow_id)
             try:
-                await handle.signal(signal)
+                if signal == "approval_resolution":
+                    from app.workflows.task_workflow import ApprovalResolutionSignal
+
+                    payload = event.payload or {}
+                    decision = (payload.get("state") or "").upper()
+                    await handle.signal(
+                        signal,
+                        ApprovalResolutionSignal(
+                            approval_id=int(payload.get("approval_id") or 0),
+                            decision=decision,
+                            parameter_fingerprint=str(payload.get("parameter_fingerprint") or ""),
+                            spec_version=int(payload.get("spec_version") or 0),
+                        ),
+                    )
+                else:
+                    await handle.signal(signal)
                 repo.mark_dispatched(event)
                 sent += 1
             except RPCError as exc:

@@ -60,6 +60,8 @@ async def create_smoke_worker(client: Client, settings: Settings) -> Worker:
 
 
 async def create_task_worker(client: Client, settings: Settings) -> Worker:
+    from app.activities.approval import block_high_risk_node, request_approval
+    from app.activities.plan_execution import execute_safe_unit, fetch_next_execution_unit
     from app.activities.task_execution import (
         commit_checkpoint,
         complete_run,
@@ -81,6 +83,10 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
             fail_run,
             complete_run,
             commit_checkpoint,
+            fetch_next_execution_unit,
+            execute_safe_unit,
+            request_approval,
+            block_high_risk_node,
         ],
         interceptors=_interceptors(),
     )

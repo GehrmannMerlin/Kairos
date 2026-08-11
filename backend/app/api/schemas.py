@@ -195,3 +195,31 @@ class ReplanCommand(BaseModel):
     trigger_reason: str
     evidence_refs: list = []
     expected_version: int
+
+
+class ApprovalDto(BaseModel):
+    approval_id: int
+    task_id: int
+    state: str
+    action_type: str
+    node_id: str | None
+    node_type: str | None
+    target: str | None
+    reason: str | None
+    approved_scope: str
+    credential_ref: dict | None
+    status_payload: dict | None
+    expires_at: datetime | None
+    created_at: datetime
+
+
+class ApprovalListResponse(BaseModel):
+    task_id: int
+    approvals: list[ApprovalDto]
+
+
+class ApprovalResolutionCommand(BaseModel):
+    """approve/reject/revoke 命令体。不含 Secret。"""
+
+    expected_version: int
+    idempotency_key: str | None = None

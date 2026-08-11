@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.auth.errors import NotFoundError
 from app.domain.models import (
+    Approval,
     ChatMessage,
     Checkpoint,
     CollectionSpecDraft,
@@ -577,6 +578,86 @@ class RecordRepository:
         return _owned(self._db, Record, user_id, record_id)
 
 
+class ApprovalRepository:
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def create(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        spec_version: int,
+        plan_version: int | None,
+        node_id: str | None,
+        node_type: str | None,
+        action_type: str,
+        target: str | None,
+        parameter_fingerprint: str,
+        scope: str,
+        approved_scope: str,
+        reason: str | None,
+        credential_ref: dict | None,
+        status_payload: dict | None,
+        expires_at: Any,
+    ) -> Approval:
+        row = Approval(
+            user_id=user_id,
+            task_id=task_id,
+            spec_version=spec_version,
+            plan_version=plan_version,
+            node_id=node_id,
+            node_type=node_type,
+            action_type=action_type,
+            target=target,
+            parameter_fingerprint=parameter_fingerprint,
+            scope=scope,
+            approved_scope=approved_scope,
+            state="PENDING",
+            reason=reason,
+            credential_ref=credential_ref,
+            status_payload=status_payload,
+            expires_at=expires_at,
+        )
+        self._db.add(row)
+        self._db.flush()
+        return row
+
+    def get_owned(self, user_id: int, approval_id: int) -> Approval:
+        return _owned(self._db, Approval, user_id, approval_id)
+
+    def list_for_task(self, user_id: int, task_id: int) -> list[Approval]:
+        return list(
+            self._db.scalars(
+                select(Approval)
+                .where(Approval.user_id == user_id, Approval.task_id == task_id)
+                .order_by(Approval.created_at.desc())
+            )
+        )
+
+    def list_pending_for_task(self, user_id: int, task_id: int) -> list[Approval]:
+        return list(
+            self._db.scalars(
+                select(Approval)
+                .where(
+                    Approval.user_id == user_id,
+                    Approval.task_id == task_id,
+                    Approval.state == "PENDING",
+                )
+                .order_by(Approval.created_at.desc())
+            )
+        )
+
+    def list_pending_by_user(self, user_id: int) -> list[Approval]:
+        return list(
+            self._db.scalars(
+                select(Approval)
+                .where(Approval.user_id == user_id, Approval.state == "PENDING")
+                .order_by(Approval.created_at.desc())
+            )
+        )
+
+
 # 有界重试上限：Signal 分发失败后先保留 retryable（pending，attempts+1），
 # 达到上限后才终态 failed。终态 failed 不再被 claim，由后续 API 命令重新触发新事件。
 OUTBOX_MAX_ATTEMPTS = 3
@@ -723,6 +804,7 @@ __all__ = [
     "NodeRunRepository",
     "NodeAttemptRepository",
     "RecordRepository",
+    "ApprovalRepository",
     "OutboxRepository",
     "IdempotencyRepository",
     "CheckpointRepository",

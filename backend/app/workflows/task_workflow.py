@@ -12,6 +12,12 @@ from datetime import timedelta
 from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
+    from app.activities.approval import (
+        BlockHighRiskNodeInput,
+        RequestApprovalInput,
+        block_high_risk_node,
+        request_approval,
+    )
     from app.activities.execution_seam import (
         ExecuteUnitInput,
         ExecuteUnitResult,
@@ -76,6 +82,7 @@ class TaskWorkflow:
         self._cancel_requested = False
         self._last_index = 0
         self._latest_approval: ApprovalResolutionSignal | None = None
+        self._waiting_approval_id: int | None = None
 
     @workflow.signal
     async def pause(self, reason: str | None = None) -> None:
@@ -156,11 +163,71 @@ class TaskWorkflow:
                 if unit is None:
                     break
 
+                if unit.requires_approval:
+                    # JIT 审批（D-017 / 三十三）：Workflow 到达高风险 Node 才 request_approval，
+                    # 任务进入 WAITING_APPROVAL，等待 M-07 approval_resolution Signal。
+                    req = await workflow.execute_activity(
+                        request_approval,
+                        RequestApprovalInput(
+                            task_id=inp.task_id,
+                            user_id=inp.user_id,
+                            run_id=inp.run_id,
+                            spec_version=inp.spec_version,
+                            plan_version=inp.plan_version,
+                            unit=unit,
+                        ),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    self._waiting_approval_id = req.approval_id
+                    self._latest_approval = None
+                    try:
+                        await workflow.wait_condition(
+                            lambda: (
+                                self._latest_approval is not None
+                                and self._latest_approval.approval_id == self._waiting_approval_id
+                            ),
+                            timeout=timedelta(seconds=inp.pause_timeout_seconds),
+                        )
+                    except TimeoutError:
+                        # 等待超时：任务保持 WAITING_APPROVAL，下一轮循环继续等待
+                        # （与 pause 语义一致，不进入 fail_run）。
+                        continue
+                    latest = self._latest_approval
+                    decision = latest.decision.upper() if latest else ""
+                    if decision != "APPROVED":
+                        # Reject/Revoke/Expired：block 高风险 Node，绝不执行（三十五）。
+                        await workflow.execute_activity(
+                            block_high_risk_node,
+                            BlockHighRiskNodeInput(
+                                task_id=inp.task_id,
+                                user_id=inp.user_id,
+                                run_id=inp.run_id,
+                                node_id=unit.node_id,
+                            ),
+                            start_to_close_timeout=timedelta(seconds=60),
+                        )
+                        self._last_index = unit.index
+                        continue
+
                 exec_result: ExecuteUnitResult = await workflow.execute_activity(
                     execute_safe_unit,
                     ExecuteUnitInput(run_id=inp.run_id, unit=unit),
                     start_to_close_timeout=timedelta(seconds=120),
                 )
+                if exec_result.status == "NODE_EXECUTOR_UNAVAILABLE":
+                    # 生产运行时 M-09+ 尚未实现该 Node Activity：稳定错误，不冒充能力（四十七）。
+                    await workflow.execute_activity(
+                        block_high_risk_node,
+                        BlockHighRiskNodeInput(
+                            task_id=inp.task_id,
+                            user_id=inp.user_id,
+                            run_id=inp.run_id,
+                            node_id=unit.node_id,
+                        ),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    self._last_index = unit.index
+                    continue
                 await workflow.execute_activity(
                     commit_checkpoint,
                     CommitCheckpointInput(
