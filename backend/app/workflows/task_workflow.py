@@ -20,6 +20,11 @@ with workflow.unsafe.imports_passed_through():
         request_approval,
         resume_from_approval,
     )
+    from app.activities.completion import (
+        ResolveCompletionInput,
+        ResolveCompletionResult,
+        resolve_completion,
+    )
     from app.activities.credential_approval import (
         ResolveCredentialAccessInput,
         resolve_credential_access,
@@ -43,12 +48,14 @@ with workflow.unsafe.imports_passed_through():
         EnsureRunStartedInput,
         FailRunInput,
         MarkCancelledInput,
+        MarkPartialInput,
         MarkPausedInput,
         commit_checkpoint,
         complete_run,
         ensure_run_started,
         fail_run,
         mark_cancelled,
+        mark_partial,
         mark_paused,
     )
 
@@ -377,6 +384,26 @@ class TaskWorkflow:
                 )
                 return TaskWorkflowResult(inp.task_id, inp.run_id, "FAILED")
 
+        # M-12 完成判定（D-006）：无更多单元时计算 CompletionDecision，区分正常/部分完成。
+        # 业务状态与数据可用性分开表达（模块需求 50/52）。
+        completion: ResolveCompletionResult = await workflow.execute_activity(
+            resolve_completion,
+            ResolveCompletionInput(
+                task_id=inp.task_id,
+                user_id=inp.user_id,
+                run_id=inp.run_id,
+                spec_version=inp.spec_version,
+                plan_version=inp.plan_version,
+            ),
+            start_to_close_timeout=timedelta(seconds=60),
+        )
+        if completion.partial:
+            await workflow.execute_activity(
+                mark_partial,
+                MarkPartialInput(task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id),
+                start_to_close_timeout=timedelta(seconds=60),
+            )
+            return TaskWorkflowResult(inp.task_id, inp.run_id, "PARTIALLY_COMPLETED")
         await workflow.execute_activity(
             complete_run,
             CompleteRunInput(task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id),

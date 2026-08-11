@@ -49,6 +49,11 @@ _EVENT_TYPE_MAP = {
     "extraction.completed": "EXTRACTION_COMPLETED",
     "extraction.failed": "EXTRACTION_FAILED",
     "normalize.completed": "NORMALIZE_COMPLETED",
+    # M-12 validation/quality 聚合事件（D-039：只推聚合事件，不逐 Record 推）
+    "validation.started": "VALIDATION_STARTED",
+    "validation.progress": "VALIDATION_PROGRESS",
+    "validation.dedupe_completed": "DEDUPE_COMPLETED",
+    "validation.completed": "VALIDATION_COMPLETED",
 }
 
 

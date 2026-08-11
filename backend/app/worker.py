@@ -50,6 +50,11 @@ async def run() -> None:
 
     install_extraction_executors()
     print("kairos worker: extraction executors installed (extract/normalize)")
+    # M-12 真实 validation/quality/completion executor（Deduplicate / Validate）
+    from app.validation.executors import install_validation_executors
+
+    install_validation_executors()
+    print("kairos worker: validation executors installed (deduplicate/validate)")
     print(
         f"kairos worker listening on {settings.temporal_address} "
         f"(smoke={settings.temporal_smoke_task_queue}, task={settings.temporal_task_queue})"

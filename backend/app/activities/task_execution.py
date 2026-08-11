@@ -241,3 +241,38 @@ async def commit_checkpoint(inp: CommitCheckpointInput) -> CommitCheckpointResul
         return CommitCheckpointResult(row.id, reused=False)
     finally:
         session.close()
+
+
+@dataclass
+class MarkPartialInput:
+    task_id: int
+    user_id: int
+    run_id: int
+
+
+@activity.defn
+async def mark_partial(inp: MarkPartialInput) -> None:
+    """M-12 部分完成收尾：RUNNING → PARTIALLY_COMPLETED（D-006 部分完成）。
+
+    已提交数据保留（模块需求 50）；不把已 CANCELLED Run 改 COMPLETED，业务状态与
+    数据可用性分开表达。
+    """
+    session = get_session_factory()()
+    try:
+        task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
+        with contextlib.suppress(IllegalTransitionError):
+            # 已在终态（如 PARTIALLY_COMPLETED）时视为幂等成功
+            DomainService(TaskRepository(session)).transition_task(
+                user_id=inp.user_id,
+                task_id=inp.task_id,
+                command="mark_partial",
+                expected_version=task.version,
+                actor_type="system",
+                reason="partial_completion",
+            )
+        run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
+        run.state = "partially_completed"
+        run.finished_at = _utcnow()
+        session.commit()
+    finally:
+        session.close()
