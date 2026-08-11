@@ -90,7 +90,9 @@ def ctx():
     db.close()
 
 
-def seed_snapshot(ctx, body: bytes, url: str = "http://fixture.test/") -> int:
+def seed_snapshot(
+    ctx, body: bytes, storage: FakeStorage | None = None, url: str = "http://fixture.test/"
+) -> int:
     """Insert a PageSnapshot row + object in FakeStorage; returns the snapshot id."""
     from app.crawling.repository import PageSnapshotRepository
 
@@ -98,6 +100,8 @@ def seed_snapshot(ctx, body: bytes, url: str = "http://fixture.test/") -> int:
     run = ctx["run"]
     digest = hashlib.sha256(body).hexdigest()
     key = f"snapshots/u{ctx['user'].id}/{digest}/http-abc.html"
+    if storage is not None:
+        storage._objects[key] = body
     row = PageSnapshotRepository(db).create(
         user_id=ctx["user"].id,
         task_id=ctx["task"].id,

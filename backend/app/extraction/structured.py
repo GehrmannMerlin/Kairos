@@ -9,8 +9,9 @@ it is never auto-fantasized into multiple business fields.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from time import perf_counter
-from typing import Any, Iterable
+from typing import Any
 
 from parsel import Selector
 
@@ -20,8 +21,8 @@ from app.extraction.contracts import (
     ExtractionCandidate,
     ExtractionIssue,
     ExtractionResult,
-    ExtractorMethod,
     ExtractionSettings,
+    ExtractorMethod,
 )
 from app.extraction.normalize import normalize_text, normalize_value
 from app.extraction.protocol import ExtractionContext
@@ -175,7 +176,7 @@ class JsonLdExtractor:
         started = perf_counter()
         candidates: list[ExtractionCandidate] = []
         issues: list[ExtractionIssue] = []
-        remaining = [f for f in unresolved]
+        remaining = list(unresolved)
         documents: list[Any] = []
         try:
             scripts = (
@@ -237,7 +238,7 @@ class MetaExtractor:
     async def extract(self, ctx: ExtractionContext, *, unresolved: list[str]) -> ExtractionResult:
         started = perf_counter()
         candidates: list[ExtractionCandidate] = []
-        remaining = [f for f in unresolved]
+        remaining = list(unresolved)
         sel = Selector(text=ctx.html)
         for field in ctx.fields:
             if field.name not in remaining:
@@ -276,7 +277,7 @@ class TableExtractor:
     async def extract(self, ctx: ExtractionContext, *, unresolved: list[str]) -> ExtractionResult:
         started = perf_counter()
         candidates: list[ExtractionCandidate] = []
-        remaining = [f for f in unresolved]
+        remaining = list(unresolved)
         sel = Selector(text=ctx.html)
         all_rows = sel.xpath("//table//tr")
         # header-row tables: a row whose cells are mostly known field labels
