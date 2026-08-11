@@ -16,6 +16,16 @@ class ExecutionUnit:
     index: int
     unit_type: str
     input_fingerprint: str
+    # M-08 plan-driven fields（默认 None，兼容 M-07 fixture 单元）
+    node_id: str | None = None
+    node_type: str | None = None
+    definition_version: str | None = None
+    parameters: dict | None = None
+    requires_approval: bool = False
+    approval_action_type: str | None = None
+    approval_target: str | None = None
+    approval_parameters: dict | None = None
+    credential_ref: dict | None = None
 
 
 @dataclass
@@ -39,6 +49,8 @@ class ExecuteUnitInput:
 class ExecuteUnitResult:
     unit_index: int
     committed_refs: dict
+    status: str = "OK"  # OK | NODE_EXECUTOR_UNAVAILABLE
+    error_code: str | None = None
 
 
 @activity.defn

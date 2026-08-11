@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class NodeType(StrEnum):
@@ -65,7 +65,13 @@ class RetryPolicy:
     backoff_seconds: int = 2
 
 
-class _FetchParams(BaseModel):
+class _NodeParams(BaseModel):
+    """Strict typed parameter base: unknown keys are rejected (D-008 typed contract)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _FetchParams(_NodeParams):
     url_template: str
     max_redirects: int = 5
     render_if_empty: bool = False
@@ -76,46 +82,46 @@ class _FetchParams(BaseModel):
     bypass_captcha: bool = False
 
 
-class _SourceSearchParams(BaseModel):
+class _SourceSearchParams(_NodeParams):
     query: str
     max_results: int = 20
     locale: str | None = None
 
 
-class _AccessRulesParams(BaseModel):
+class _AccessRulesParams(_NodeParams):
     respect_robots: bool = True
     public_only: bool = True
 
 
-class _LinkDiscoveryParams(BaseModel):
+class _LinkDiscoveryParams(_NodeParams):
     allow_outside_scope: bool = False
     max_links: int = 200
 
 
-class _BrowserRenderParams(BaseModel):
+class _BrowserRenderParams(_NodeParams):
     wait_selector: str | None = None
     full_page: bool = False
 
 
-class _ExtractParams(BaseModel):
+class _ExtractParams(_NodeParams):
     fields: list[str]
     prefer_rules: bool = True
 
 
-class _NormalizeParams(BaseModel):
+class _NormalizeParams(_NodeParams):
     trim_whitespace: bool = True
 
 
-class _DeduplicateParams(BaseModel):
+class _DeduplicateParams(_NodeParams):
     keys: list[str] = Field(default_factory=list)
 
 
-class _ValidateParams(BaseModel):
+class _ValidateParams(_NodeParams):
     check_evidence: bool = True
     min_required_fields: int = 1
 
 
-class _GenerateArtifactParams(BaseModel):
+class _GenerateArtifactParams(_NodeParams):
     format: str = "csv"
     dataset_version: str = "v1"
 

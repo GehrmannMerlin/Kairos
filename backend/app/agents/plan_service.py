@@ -1,8 +1,9 @@
 """PlanGenerationService — 生成 + 确定性校验 + 有界单次 repair（M-08）。
 
-Provider 解析（require_available_model_config + CredentialVault 解密）在 API/路由层
-完成并把已解密的 ``resolved`` + ``api_key`` 传入本服务；本服务不接触 Secret，也不做
-第二套模型 SDK 调用。测试直接注入 Fake ``inference`` 并传任意 ``resolved``。
+复用 M-06 GoalUnderstandingService 的 provider/vault 解析模式：API 层注入
+``ProviderService`` + ``CredentialVault``，本服务在调用时解密真实用户模型的 API Key
+并只在调用路径内存活；audit 元数据只保存 config_id/version、provider、model、duration，
+不保存 key。测试注入 Fake ``inference``（不解析真实 provider）。
 """
 
 from __future__ import annotations
@@ -12,11 +13,15 @@ from time import perf_counter
 from typing import Any
 
 from app.agents.plan_generator import PlanGeneratorAgent, PlanInput
+from app.auth.models import User
+from app.domain.task_types import TaskType
 from app.plan.nodes import NodeRegistry
 from app.plan.schemas import PlanGraphDraft, PlanValidationIssue, PlanValidationResult
 from app.plan.validator import validate_plan
 from app.providers.inference import ModelInferenceClient
 from app.providers.protocol import ResolvedModel
+from app.providers.registry import build_model_provider
+from app.providers.service import ProviderService
 
 
 @dataclass
@@ -32,11 +37,42 @@ class PlanGenerationService:
     def __init__(
         self,
         *,
+        provider_service: ProviderService | None = None,
+        vault: Any = None,
         registry: NodeRegistry | None = None,
         inference: ModelInferenceClient | None = None,
     ) -> None:
+        self._provider = provider_service
+        self._vault = vault
         self._registry = registry or NodeRegistry()
         self._agent = PlanGeneratorAgent(inference=inference or ModelInferenceClient())
+
+    def _resolve_model(self, user: User) -> tuple[ResolvedModel, str | None, Any]:
+        if self._provider is None or self._vault is None:
+            # 测试路径：不解析真实 provider，调用方需自行注入 Fake inference
+            return ResolvedModel("deepseek", "placeholder", None, None), None, None
+        config = self._provider.require_available_model_config(user)
+        provider = build_model_provider(config.provider_type)
+        resolved = provider.resolve_model(
+            model=config.model_name,
+            base_url=config.base_url,
+            credential_version_id=config.credential_version_id,
+        )
+        api_key = None
+        if config.credential_version_id is not None:
+            api_key = self._vault.read_for_execution(
+                user_id=user.id, credential_version_id=config.credential_version_id
+            )
+        return resolved, api_key, config
+
+    def build_input(self, spec_payload: dict, task_type: TaskType) -> PlanInput:
+        has_search = bool(self._provider and self._provider.list_search_configs(None))
+        return PlanInput(
+            spec_payload=spec_payload,
+            task_type=task_type,
+            registry_metadata=self._registry.planning_metadata(),
+            execution_constraints={"has_search_provider": has_search},
+        )
 
     async def _run_with_graph(
         self, spec_payload: dict, inp: PlanInput, resolved: ResolvedModel | None
@@ -85,4 +121,21 @@ class PlanGenerationService:
             outcome.repair_used = True
         outcome.audit["duration_ms"] = int((perf_counter() - started) * 1000)
         outcome.repair_used = repair_used
+        return outcome
+
+    async def generate_for_task(
+        self, *, user: User, spec_payload: dict, task_type: TaskType
+    ) -> PlanGenerationOutcome:
+        resolved, api_key, config = self._resolve_model(user)
+        inp = self.build_input(spec_payload, task_type)
+        outcome = await self._repair_loop(inp, resolved, api_key, max_repairs=1)
+        if config is not None:
+            outcome.audit.update(
+                {
+                    "model_config_id": config.config_id,
+                    "model_config_version": config.version,
+                    "provider": config.provider_type,
+                    "model": config.model_name,
+                }
+            )
         return outcome
