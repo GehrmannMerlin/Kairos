@@ -193,6 +193,9 @@ class AccessRulesService:
                 frontier.mark_state(
                     user_id=run.user_id, url_hash=row.url_hash, state=FrontierState.ACCESS_ALLOWED
                 )
+                _log.warning(
+                    "access_rule marked ALLOW url=%s hash=%s", row.url, row.url_hash
+                )
             else:
                 frontier.mark_blocked(
                     user_id=run.user_id, url_hash=row.url_hash, reason=f"access_{decision.value}"
