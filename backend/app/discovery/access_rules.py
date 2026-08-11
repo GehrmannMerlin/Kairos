@@ -13,7 +13,6 @@ from urllib.parse import urlsplit
 
 from app.discovery.http import DiscoveryHttp
 from app.discovery.robots import DEFAULT_USER_AGENT, RobotsCache, RobotsPolicy
-from app.domain.models import URLResource
 
 ALLOWED_SCHEMES = {"http", "https"}
 
@@ -110,17 +109,10 @@ class AccessRulesService:
                 unit_index=unit.index, status="OK", committed_refs={"checked": 0, "run_id": run.id}
             )
         blocked: list[str] = []
-        import logging
-
-        _log = logging.getLogger(__name__)
         for row in pending[:200]:
             policy = await self._robots.get(row.url) if respect_robots else RobotsPolicy()
             decision = decide_access(
                 row.url, spec=spec.payload, robots_policy=policy, user_agent=self._user_agent
-            )
-            _log.warning(
-                "access_rule url=%s decision=%s status=%s",
-                row.url, decision.value, row.status,
             )
             if decision == AccessDecision.ROBOTS_DENIED_PUBLIC and public_only:
                 probe = await self._probe_private(row.url)
@@ -193,11 +185,6 @@ class AccessRulesService:
             if decision == AccessDecision.ALLOW:
                 frontier.mark_state(
                     user_id=run.user_id, url_hash=row.url_hash, state=FrontierState.ACCESS_ALLOWED
-                )
-                _reread = self._db.get(URLResource, row.id)
-                _log.warning(
-                    "access_rule marked ALLOW url=%s hash=%s reread_status=%s",
-                    row.url, row.url_hash, _reread.status if _reread else "none",
                 )
             else:
                 frontier.mark_blocked(
