@@ -65,7 +65,9 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
         request_approval,
         resume_from_approval,
     )
+    from app.activities.completion import resolve_completion
     from app.activities.credential_approval import resolve_credential_access
+    from app.activities.discovery_approval import resolve_robots_override
     from app.activities.plan_execution import execute_safe_unit, fetch_next_execution_unit
     from app.activities.task_execution import (
         commit_checkpoint,
@@ -73,6 +75,7 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
         ensure_run_started,
         fail_run,
         mark_cancelled,
+        mark_partial,
         mark_paused,
     )
     from app.workflows.task_workflow import TaskWorkflow
@@ -85,6 +88,7 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
             ensure_run_started,
             mark_paused,
             mark_cancelled,
+            mark_partial,
             fail_run,
             complete_run,
             commit_checkpoint,
@@ -94,6 +98,8 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
             block_high_risk_node,
             resume_from_approval,
             resolve_credential_access,
+            resolve_robots_override,
+            resolve_completion,
         ],
         interceptors=_interceptors(),
     )
