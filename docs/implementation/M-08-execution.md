@@ -1,6 +1,6 @@
 # M-08 模块执行记录
 
-状态：IN_PROGRESS → **DONE_LOCAL**（本地闭环验证通过；DEPLOY-GATE-2 待执行）
+状态：IN_PROGRESS → **DONE_LOCAL → DEPLOYED**（Staging 部署完成；DEPLOY-GATE-2 核心执行闭环 PASS，真实 LLM 闭环 BLOCKED_STAGING_PROVIDER）
 负责人/Agent：Claude Code — 2026-08-11
 Baseline（M-07 DONE）SHA：`0116e78e08f562c15b4915fefff73cc69feb6d5f`
 依赖模块：M-04（DEPLOYED）、M-06（DONE）、M-07（DONE）
