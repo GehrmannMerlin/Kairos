@@ -13,6 +13,7 @@ from app.providers.adapters.custom_compatible_search import CustomCompatibleSear
 from app.providers.adapters.gemini import GeminiModelProvider
 from app.providers.adapters.ollama import OllamaModelProvider
 from app.providers.adapters.openai_compatible import OpenAICompatibleModelProvider
+from app.providers.adapters.tavily_search import TavilySearchProvider
 from app.providers.protocol import ModelProvider, ProviderDefinition
 from app.providers.search_protocol import SearchProvider
 from app.providers.transport import HttpClient
@@ -92,11 +93,12 @@ def build_model_provider(provider_type: str, http: HttpClient | None = None) -> 
 
 _SEARCH_PROVIDER_BUILDERS: dict[str, type] = {
     "custom_compatible_search": CustomCompatibleSearchProvider,
+    "tavily": TavilySearchProvider,
 }
 
 
 def list_search_provider_definitions() -> list[ProviderDefinition]:
-    return [CustomCompatibleSearchProvider.definition]
+    return [CustomCompatibleSearchProvider.definition, TavilySearchProvider.definition]
 
 
 def validate_search_provider_type(provider_type: str) -> None:
