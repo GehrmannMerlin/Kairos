@@ -137,6 +137,29 @@ async def test_one_repair_then_pass() -> None:
 
 
 @pytest.mark.asyncio
+async def test_api_key_is_forwarded_to_inference() -> None:
+    """Regression (Gate-2 real provider): 真实 ModelConfig 解密出的 api_key 必须
+    贯穿 repair 循环到达推理调用；否则 DeepSeek 无 Authorization header → 401 → 500。"""
+
+    class RecordingInference(ModelInferenceClient):
+        def __init__(self) -> None:
+            self.api_key_seen: str | None = None
+
+        async def generate(self, *, resolved, api_key, system, user) -> InferenceResult:
+            self.api_key_seen = api_key
+            return InferenceResult(text=VALID_PLAN_JSON, provider_type="deepseek", duration_ms=1)
+
+    fake = RecordingInference()
+    service = PlanGenerationService(inference=fake)
+    outcome = await service._repair_loop(_input(), RESOLVED, api_key="sk-gate2-test", max_repairs=1)
+    assert fake.api_key_seen == "sk-gate2-test"
+    assert outcome.validation_result in (
+        PlanValidationResult.VALID,
+        PlanValidationResult.REQUIRES_APPROVAL,
+    )
+
+
+@pytest.mark.asyncio
 async def test_second_failure_is_blocked() -> None:
     always_bad = (
         '{"schema_version":"m08.1","task_id":1,"spec_version":1,'

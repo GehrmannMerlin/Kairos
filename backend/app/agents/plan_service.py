@@ -75,12 +75,21 @@ class PlanGenerationService:
         )
 
     async def _run_with_graph(
-        self, spec_payload: dict, inp: PlanInput, resolved: ResolvedModel | None
+        self,
+        spec_payload: dict,
+        inp: PlanInput,
+        resolved: ResolvedModel | None,
+        api_key: str | None = None,
     ) -> PlanGenerationOutcome:
-        """单次生成 + 确定性校验（供 repair 循环与测试复用）。"""
+        """单次生成 + 确定性校验（供 repair 循环与测试复用）。
+
+        api_key 必须从调用方传入：generate_for_task 已从 CredentialVault 解密出真实
+        ModelConfig 的 key，若在此处丢弃，推理请求会无 Authorization header（真实
+        Provider → 401），这是 Gate-2 真实 Provider 关闭时发现的回归。
+        """
         started = perf_counter()
         resolved_model = resolved or ResolvedModel("deepseek", "placeholder", None, None)
-        graph = await self._agent.generate(inp, resolved_model, api_key=None)
+        graph = await self._agent.generate(inp, resolved_model, api_key=api_key)
         outcome = validate_plan(
             graph,
             spec_payload,
@@ -104,7 +113,7 @@ class PlanGenerationService:
         max_repairs: int = 1,
     ) -> PlanGenerationOutcome:
         started = perf_counter()
-        outcome = await self._run_with_graph(inp.spec_payload, inp, resolved)
+        outcome = await self._run_with_graph(inp.spec_payload, inp, resolved, api_key=api_key)
         repair_used = False
         if outcome.validation_result == PlanValidationResult.INVALID and max_repairs > 0:
             repair_used = True
@@ -117,7 +126,9 @@ class PlanGenerationService:
                     }
                 }
             )
-            outcome = await self._run_with_graph(inp.spec_payload, repair_input, resolved)
+            outcome = await self._run_with_graph(
+                inp.spec_payload, repair_input, resolved, api_key=api_key
+            )
             outcome.repair_used = True
         outcome.audit["duration_ms"] = int((perf_counter() - started) * 1000)
         outcome.repair_used = repair_used
