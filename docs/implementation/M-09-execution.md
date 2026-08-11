@@ -85,7 +85,8 @@ C robots denied 公共 URL → JIT Approval → approve → resolve → READY_FO
 | 6405a88 | feat(discovery): add access rules check with robots approval boundary |
 | 9617d47 | feat(discovery): add sitemap rss atom and html link expansion |
 | b6276cf | feat(workflow): connect discovery node executors to temporal |
-| （待） | docs(discovery): record M-09 execution |
+| ef60443 | feat(discovery): emit aggregated sse discovery events via m07 |
+| 5a7c3ab | docs(discovery): record M-09 execution |
 
 ## 7. 跨模块联动结果
 - 上游 M-03 SearchProvider/SearchConfig/CredentialVault：PASS（SourceSearch 复用，无第二套 Search）
