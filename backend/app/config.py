@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     api_port: int = 8000
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # --- M-10 crawling / fetch（集中配置，禁止散落 magic number）---
+    fetch_timeout_seconds: float = 30.0
+    fetch_max_download_bytes: int = 5_000_000
+    fetch_max_redirects: int = 5
+    fetch_internal_retries: int = 2  # 网络/5xx/429 有界内部重试
+    fetch_internal_retry_base_seconds: float = 1.0
+    site_strategy_ttl_seconds: int = 86400
+    browser_render_timeout_seconds: float = 60.0
+
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _parse_cors_origins(cls, value: object) -> object:

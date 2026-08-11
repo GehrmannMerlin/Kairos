@@ -289,12 +289,59 @@ class URLResource(Base):
     discovery_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     robots_allowed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # M-10 fetch 审计（migration 0008）
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fetch_error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 
+class SiteFetchStrategy(Base):
+    """站点级成功抓取策略（D-009 策略复用 / 六十四 TTL 失效重探测）。
+
+    owner-safe：user_id + site_host 唯一；可被同用户后续任务复用，但**不能成为
+    永久 bypass authorization**（二十二）——每个 URL 执行时仍重新校验
+    AccessDecision/robots/scope，策略只决定“用什么工具”，不决定“能否访问”。
+    """
+
+    __tablename__ = "site_fetch_strategies"
+    __table_args__ = (UniqueConstraint("user_id", "site_host", name="uq_sfs_user_site"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    site_host: Mapped[str] = mapped_column(String(255), nullable=False)
+    preferred_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="static")
+    tool: Mapped[str] = mapped_column(String(30), nullable=False, default="http")
+    tool_version: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown")
+    structure_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    credential_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    credential_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="probing")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class PageSnapshot(Base):
+    """Immutable 网页抓取观察（M-04 foundation + M-10 fetch metadata）。
+
+    每次真实抓取形成一行 observation：同一内容重抓复用 content Blob（content-addressable），
+    但仍保留新 observation 行 + snapshot_version 递增 + prior_snapshot_id 链，
+    从而保留“何时再次抓取”的审计事实（十三）。工具调用/原始内容只读，绝不被覆盖。
+    """
+
     __tablename__ = "page_snapshots"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -308,9 +355,24 @@ class PageSnapshot(Base):
     url_resource_id: Mapped[int | None] = mapped_column(
         ForeignKey("url_resources.id"), nullable=True
     )
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     storage_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
     mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    tool: Mapped[str] = mapped_column(String(30), nullable=False, default="http")
+    tool_version: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown")
+    final_url: Mapped[str] = mapped_column(String(2048), nullable=False, default="")
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    download_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    redirect_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    escalation_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 相同内容重抓：observation 链（version 递增 + prior 指向上一 observation）
+    snapshot_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    prior_snapshot_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    credential_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 脱敏，无明文
+    http_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # allowlist 摘要
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="stored")
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
