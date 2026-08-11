@@ -80,7 +80,7 @@ M-13 数据页 Tabs/Record Drawer/人工审核/批量操作 UI、M-14 Quality �
 | 706016d | feat(quality): add stratified sampling and quality metrics |
 | 53b35d1 | feat(workflow): bind deduplicate and validate executors with completion |
 | 2baf083 | test(validation): cover completion decision contracts |
-| docs commit | docs(validation): record M-12 execution + writing-plans 计划文件 |
+| 1fed998 | docs(validation): record M-12 execution + writing-plans 计划文件 |
 
 ## 7. 跨模块联动结果
 - 上游 M-04 Record/FieldEvidence/幂等/Checkpoint：PASS（复用 Record 增量扩展，ValidationResult 唯一约束 (record_id, validation_version) 幂等兜底；单事务 + Workflow checkpoint）
