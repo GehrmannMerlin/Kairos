@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from app.discovery.http import DiscoveryHttp
 from app.discovery.robots import DEFAULT_USER_AGENT, RobotsCache, RobotsPolicy
+from app.domain.models import URLResource
 
 ALLOWED_SCHEMES = {"http", "https"}
 
@@ -193,8 +194,10 @@ class AccessRulesService:
                 frontier.mark_state(
                     user_id=run.user_id, url_hash=row.url_hash, state=FrontierState.ACCESS_ALLOWED
                 )
+                _reread = self._db.get(URLResource, row.id)
                 _log.warning(
-                    "access_rule marked ALLOW url=%s hash=%s", row.url, row.url_hash
+                    "access_rule marked ALLOW url=%s hash=%s reread_status=%s",
+                    row.url, row.url_hash, _reread.status if _reread else "none",
                 )
             else:
                 frontier.mark_blocked(
