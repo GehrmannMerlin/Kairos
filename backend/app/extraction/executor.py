@@ -72,9 +72,7 @@ class ExtractNodeExecutor:
             )
 
         pipeline = self._pipeline or self._build_pipeline(run)
-        emit_event(
-            self._db, run, "extraction.started", {"snapshots": len(pending)}
-        )
+        emit_event(self._db, run, "extraction.started", {"snapshots": len(pending)})
         extracted = 0
         for snapshot in pending:
             try:

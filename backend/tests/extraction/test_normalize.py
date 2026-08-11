@@ -36,7 +36,8 @@ async def test_normalize_executor_canonicalizes_field_values(ctx, storage):
     )
     await ExtractNodeExecutor(db, storage, pipeline=pipeline).execute(make_unit(run, 1, "extract"))
     records = ExtractionRepository(db).records_for_task(user.id, ctx["task"].id)
-    assert records[0].payload["values"]["官网"] == "https://example.com/PATH"  # extract 已 canonical（host 小写）
+    # extract 已 canonical（host 小写）
+    assert records[0].payload["values"]["官网"] == "https://example.com/PATH"
 
     # 模拟未规范化数据：改回大写 host，再由 Normalize 节点做字段级 canonicalization
     records[0].payload["values"]["官网"] = "https://EXAMPLE.COM/PATH"

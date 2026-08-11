@@ -77,8 +77,6 @@ class ExtractionContextBuilder:
         if not html:
             return ""
         sel = Selector(text=html)
-        parts = sel.xpath(
-            "//text()[not(ancestor::script) and not(ancestor::style)]"
-        ).getall()
+        parts = sel.xpath("//text()[not(ancestor::script) and not(ancestor::style)]").getall()
         text = " ".join(" ".join(parts).split())
         return text[: self._settings.max_context_chars]

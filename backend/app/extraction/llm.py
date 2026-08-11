@@ -40,9 +40,9 @@ EXTRACTION_SYSTEM_PROMPT = (
     "6. 可选：proposed_selector 提供一个你认为可靠的 CSS 选择器（用于规则学习候选），"
     "不确定就留空；你只提出候选，是否生效由程序验证决定。\n"
     "7. 无法提取的字段在 missing_reason 说明原因。\n"
-    "只输出一个 JSON 对象：{\"fields\": [{\"field_name\": string, \"value\": string, "
-    "\"evidence_quote\": string, \"source_locator\": string|null, \"confidence\": number, "
-    "\"missing_reason\": string|null, \"proposed_selector\": string|null}]}。"
+    '只输出一个 JSON 对象：{"fields": [{"field_name": string, "value": string, '
+    '"evidence_quote": string, "source_locator": string|null, "confidence": number, '
+    '"missing_reason": string|null, "proposed_selector": string|null}]}。'
     "不要输出 JSON 之外的任何文字。"
 )
 

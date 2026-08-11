@@ -84,8 +84,7 @@ _META_SELECTORS: dict[str, str] = {
     "telephone": 'meta[name="telephone"]::attr(content), meta[name="tel"]::attr(content)',
     "email": 'meta[name="email"]::attr(content), meta[property="og:email"]::attr(content)',
     "description": (
-        'meta[name="description"]::attr(content), '
-        'meta[property="og:description"]::attr(content)'
+        'meta[name="description"]::attr(content), meta[property="og:description"]::attr(content)'
     ),
     "address": 'meta[name="address"]::attr(content), meta[property="og:locality"]::attr(content)',
 }
@@ -309,8 +308,11 @@ class TableExtractor:
                         if value:
                             candidates.append(
                                 _make_candidate(
-                                    field, value, ExtractorMethod.TABLE,
-                                    f"table[0]/{header}", ctx.settings,
+                                    field,
+                                    value,
+                                    ExtractorMethod.TABLE,
+                                    f"table[0]/{header}",
+                                    ctx.settings,
                                 )
                             )
                             remaining.remove(field.name)
@@ -332,8 +334,11 @@ class TableExtractor:
                 if self._label_matches_field(label, [field]):
                     candidates.append(
                         _make_candidate(
-                            field, value, ExtractorMethod.TABLE,
-                            f"table[0]/row{r_idx}", ctx.settings,
+                            field,
+                            value,
+                            ExtractorMethod.TABLE,
+                            f"table[0]/row{r_idx}",
+                            ctx.settings,
                         )
                     )
                     remaining.remove(field.name)

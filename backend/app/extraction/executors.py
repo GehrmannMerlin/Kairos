@@ -34,9 +34,7 @@ def install_extraction_executors() -> None:
             model_configs=ModelConfigRepository(session),
             search_configs=SearchConfigRepository(session),
         )
-        return ExtractionModelResolver(
-            session, provider_service=provider_service, vault=vault
-        )
+        return ExtractionModelResolver(session, provider_service=provider_service, vault=vault)
 
     async def _extract(unit):
         session = get_session_factory()()
