@@ -25,6 +25,14 @@ async def run() -> None:
     client = await create_temporal_client(settings)
     smoke_worker = await create_smoke_worker(client, settings)
     task_worker = await create_task_worker(client, settings)
+    # Staging Gate fixture harness（DEPLOY-GATE-2 / M-08 §48）：
+    # 仅 plan_fixture_mode=true 时注册 fixture executor（真实 NodeDefinition，
+    # 无外部网络副作用）。Production 默认关闭且部署强制关闭。
+    if settings.plan_fixture_mode:
+        from app.plan.staging_fixture import install_staging_fixture
+
+        install_staging_fixture()
+        print("kairos worker: plan_fixture_mode enabled (staging fixture executor)")
     print(
         f"kairos worker listening on {settings.temporal_address} "
         f"(smoke={settings.temporal_smoke_task_queue}, task={settings.temporal_task_queue})"
