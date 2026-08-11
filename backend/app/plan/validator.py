@@ -94,6 +94,7 @@ def validate_plan(
     registry: NodeRegistry | None = None,
     *,
     available_search: bool = True,
+    spec_version: int | None = None,
 ) -> PlanValidationOutcome:
     registry = registry or NodeRegistry()
     issues: list[PlanValidationIssue] = []
@@ -143,6 +144,8 @@ def validate_plan(
     adj: dict[str, list[str]] = {nid: [] for nid in known}
     for n in graph.nodes:
         for dep in n.depends_on:
+            if dep not in known:
+                continue  # 依赖缺失已在 #5 记录；避免 ghost key
             adj[dep].append(n.node_id)
             indegree[n.node_id] += 1
     queue = [nid for nid in known if indegree[nid] == 0]
@@ -207,12 +210,12 @@ def validate_plan(
                         )
                     )
 
-    # 10. Spec Version exact match
-    if graph.spec_version != spec_payload.get("__spec_version", graph.spec_version):
+    # 10. Spec Version exact match（spec_version 由调用方传入真实已确认版本号）
+    if spec_version is not None and graph.spec_version != spec_version:
         issues.append(
             PlanValidationIssue(
                 code="SPEC_VERSION_MISMATCH",
-                message=f"Spec Version 不匹配: 计划 {graph.spec_version}",
+                message=f"Spec Version 不匹配: 计划 {graph.spec_version} != 已确认 {spec_version}",
             )
         )
 
@@ -222,6 +225,9 @@ def validate_plan(
         if n.node_type == NodeType.FETCH:
             url_template = str(n.parameters.get("url_template", ""))
             host = _host_of(url_template)
+            # 主机本身含 {site} 模板占位符时（探索式站点模板），执行期才解析，不判越界
+            if "{" in host:
+                host = ""
             if allowed_hosts and host and host not in allowed_hosts:
                 spec_boundary_issues.append(
                     PlanValidationIssue(

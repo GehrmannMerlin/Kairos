@@ -152,3 +152,37 @@ class TaskCommandResponse(BaseModel):
     command: str
     state: str
     version: int
+
+
+class PlanGenerateCommand(BaseModel):
+    """Generate + validate + (if legal) auto-start a plan for a confirmed spec."""
+
+    spec_version: int
+    expected_version: int
+
+
+class PlanGenerateResponse(BaseModel):
+    task_id: int
+    plan_version: int
+    validation_status: str
+    node_count: int
+    run_id: int | None
+    workflow_id: str | None
+
+
+class PlanSummaryDto(BaseModel):
+    task_id: int
+    plan_version: int
+    spec_version: int
+    validation_status: str
+    plan_fingerprint: str
+    node_count: int
+    node_types: list[str | None]
+    diff_summary: dict | None
+    trigger_reason: str | None
+    created_at: datetime
+
+
+class PlanListResponse(BaseModel):
+    task_id: int
+    plans: list[PlanSummaryDto]

@@ -385,7 +385,23 @@ class PlanVersionRepository:
         self._db = db
 
     def create(
-        self, *, user_id: int, task_id: int, spec_version: int, version: int, payload: dict
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        spec_version: int,
+        version: int,
+        payload: dict,
+        parent_plan_version_id: int | None = None,
+        validation_status: str = "pending",
+        plan_fingerprint: str = "",
+        model_config_id: str | None = None,
+        model_config_version: int | None = None,
+        registry_versions: dict | None = None,
+        generation_policy: str = "auto",
+        trigger_reason: str | None = None,
+        replan_evidence_refs: list | None = None,
+        diff_summary: dict | None = None,
     ) -> PlanVersion:
         row = PlanVersion(
             user_id=user_id,
@@ -393,6 +409,16 @@ class PlanVersionRepository:
             spec_version=spec_version,
             version=version,
             payload=payload,
+            parent_plan_version_id=parent_plan_version_id,
+            validation_status=validation_status,
+            plan_fingerprint=plan_fingerprint,
+            model_config_id=model_config_id,
+            model_config_version=model_config_version,
+            registry_versions=registry_versions or {},
+            generation_policy=generation_policy,
+            trigger_reason=trigger_reason,
+            replan_evidence_refs=replan_evidence_refs or [],
+            diff_summary=diff_summary,
         )
         self._db.add(row)
         self._db.commit()
@@ -413,6 +439,27 @@ class PlanVersionRepository:
         if row is None:
             raise NotFoundError("资源不存在")
         return row
+
+    def list_for_task(self, user_id: int, task_id: int) -> list[PlanVersion]:
+        return list(
+            self._db.scalars(
+                select(PlanVersion)
+                .where(PlanVersion.user_id == user_id, PlanVersion.task_id == task_id)
+                .order_by(PlanVersion.version.desc())
+            )
+        )
+
+    def latest_version(self, user_id: int, task_id: int) -> PlanVersion | None:
+        return self._db.scalar(
+            select(PlanVersion)
+            .where(PlanVersion.user_id == user_id, PlanVersion.task_id == task_id)
+            .order_by(PlanVersion.version.desc())
+            .limit(1)
+        )
+
+    def next_version(self, user_id: int, task_id: int) -> int:
+        latest = self.latest_version(user_id, task_id)
+        return (latest.version + 1) if latest is not None else 1
 
 
 class RunRepository:

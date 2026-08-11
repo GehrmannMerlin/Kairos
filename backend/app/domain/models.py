@@ -162,6 +162,8 @@ class CollectionSpecVersion(Base):
 
 
 class PlanVersion(Base):
+    """Immutable plan version (M-08). v1 is never modified; replan creates vN+1."""
+
     __tablename__ = "plan_versions"
     __table_args__ = (UniqueConstraint("task_id", "version", name="uq_pv_task_version"),)
 
@@ -174,6 +176,20 @@ class PlanVersion(Base):
     )
     spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
+    parent_plan_version_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    validation_status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="pending"
+    )
+    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_config_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    registry_versions: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    generation_policy: Mapped[str] = mapped_column(String(30), nullable=False, default="auto")
+    trigger_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    replan_evidence_refs: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
+    diff_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -344,6 +360,12 @@ class FieldEvidence(Base):
 
 
 class Approval(Base):
+    """Scoped, expiring, fingerprint-bound human approval (M-08 / D-017).
+
+    No GLOBAL_FOREVER / ANY_PARAMETERS. Binding: owner + spec_version +
+    plan_version + node identity + parameter_fingerprint + approved_scope + expiry.
+    """
+
     __tablename__ = "approvals"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -354,16 +376,25 @@ class Approval(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    node_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    node_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    target: Mapped[str | None] = mapped_column(String(500), nullable=True)
     parameter_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    approved_scope: Mapped[str] = mapped_column(String(30), nullable=False, default="this_action")
     scope: Mapped[str] = mapped_column(String(30), nullable=False, default="single")
-    state: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    state: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING")
     reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    credential_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Artifact(Base):
