@@ -91,6 +91,20 @@ async def test_generator_passes_registry_metadata_to_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generator_prompt_teaches_pipeline_order() -> None:
+    """Regression (Gate-2 real provider): 真实 LLM 会误解标准流水线（把 fetch 排在
+    access_rules_check 前、跳过 link_discovery、snapshot 当 url 传递），导致
+    RESOURCE_EDGE_INCOMPATIBLE。prompt 必须给出规范流水线与资源链语义。"""
+    fake = FakeInference(VALID_PLAN_JSON)
+    agent = PlanGeneratorAgent(inference=fake)
+    await agent.generate(_input(), RESOLVED, api_key=None)
+    assert "access_rules_check" in fake.system_seen
+    assert "link_discovery" in fake.system_seen
+    assert "fetch" in fake.system_seen
+    assert "output_contract" in fake.system_seen
+
+
+@pytest.mark.asyncio
 async def test_unknown_node_is_rejected_by_validator() -> None:
     bad = (
         '{"schema_version":"m08.1","task_id":1,"spec_version":1,'

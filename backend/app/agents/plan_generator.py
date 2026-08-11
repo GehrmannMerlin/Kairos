@@ -39,15 +39,35 @@ PLAN_SYSTEM_PROMPT = (
     "不得发明契约之外的键名，不得把数组字段写成对象。\n"
     "5. 只输出一个 JSON 对象，不要输出任何 JSON 之外的文字、markdown 或注释。\n"
     "6. reasoning_summary 只写可审计的执行思路摘要，不要暴露推理内部过程。\n"
+    "7. 标准流水线（两阶段来源发现，D-068）：指定来源任务顺序为 "
+    "access_rules_check → link_discovery → fetch → extract → normalize → validate → "
+    "generate_artifact；探索/混合任务在流水线最前加 source_search。"
+    "fetch 之前必须是 URL 资源（种子/站点扩展），fetch 产出 snapshot，"
+    "extract 消费 snapshot 产出 record。\n"
+    "8. 资源边语义：每条边 resource_refs 的 kind 必须被 from 节点的 output_contract 产出、"
+    "且被 to 节点的 input_contract 消费；常见资源链为 url → snapshot → record → artifact。"
+    "不要把 fetch 排在 access_rules_check 之前，也不要把 snapshot 当 url 传递。\n"
     "\n允许节点清单：{registry_json}\n"
     "执行约束：{constraints_json}\n"
     "Spec 内容：{spec_json}\n"
-    "\n输出契约：\n"
+    "\n输出契约（示例资源链）：\n"
     '{{"schema_version": "m08.1", "task_id": 1, "spec_version": 1, '
-    '"task_type": "SPECIFIED_SOURCE|EXPLORATORY|HYBRID", "nodes": [{{"node_id": "n1", '
-    '"node_type": "fetch", "definition_version": "1.0.0", "parameters": {{}}, '
-    '"depends_on": [], "optional": false, "fail_policy": "block"}}], '
+    '"task_type": "SPECIFIED_SOURCE|EXPLORATORY|HYBRID", "nodes": ['
+    '{{"node_id": "n1", "node_type": "access_rules_check", "definition_version": "1.0.0", '
+    '"parameters": {{}}, "depends_on": [], "optional": false, "fail_policy": "block"}}, '
+    '{{"node_id": "n2", "node_type": "link_discovery", "definition_version": "1.0.0", '
+    '"parameters": {{}}, "depends_on": ["n1"], "optional": false, "fail_policy": "block"}}, '
+    '{{"node_id": "n3", "node_type": "fetch", "definition_version": "1.0.0", '
+    '"parameters": {{"url_template": "https://example.com"}}, "depends_on": ["n2"], '
+    '"optional": false, "fail_policy": "block"}}, '
+    '{{"node_id": "n4", "node_type": "extract", "definition_version": "1.0.0", '
+    '"parameters": {{"fields": ["标题"]}}, "depends_on": ["n3"], '
+    '"optional": false, "fail_policy": "block"}}], '
     '"edges": [{{"from_node_id": "n1", "to_node_id": "n2", '
+    '"resource_refs": [{{"kind": "url", "ref_key": "url:1"}}]}}, '
+    '{{"from_node_id": "n2", "to_node_id": "n3", '
+    '"resource_refs": [{{"kind": "url", "ref_key": "url:2"}}]}}, '
+    '{{"from_node_id": "n3", "to_node_id": "n4", '
     '"resource_refs": [{{"kind": "snapshot", "ref_key": "snap:1"}}]}}], '
     '"reasoning_summary": "..."}}'
 )
