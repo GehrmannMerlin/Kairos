@@ -59,7 +59,8 @@ Record candidate 交给 M-12（不做去重/冲突/最终分区）。
 ## 4. 明确不做（M-12+）
 业务去重 / 跨来源最终冲突裁决 / PASSED / NEEDS_REVIEW / REJECTED 最终分区 / QualityMetrics /
 CompletionDecision / 分层抽样 / CSV / Record Review UI / Evidence Viewer / 浏览器 Agent。
-未部署 Staging（DEPLOY-GATE-3 NOT_REACHED）。真实外部 LLM 不在本地门禁内（Fake 模型验证）。
+未执行正式 DEPLOY-GATE-3（NOT_REACHED；需 M-09～M-12 全完成）。真实外部 LLM 不在本地门禁内（Fake 模型验证）。
+（注：2026-08-11 用户另行要求做了中间 staging 更新，见 5A。）
 
 ## 5. 验收证据
 ### scoped tests
@@ -88,6 +89,19 @@ CompletionDecision / 分层抽样 / CSV / Record Review UI / Evidence Viewer / �
 ### secret scan
 固定测试 secret 未出现在 app/extraction；模型 API Key 仅经 CredentialVault 执行期临时解密，
 `model_config_id` 只是引用，不进入 prompt/日志/Evidence/DomainEvent。
+
+## 5A. Staging 中间更新（用户明确要求，2026-08-11）
+在 DEPLOY-GATE-3 前，用户要求把本地 M-09/M-10/M-11 更新同步到 staging（`https://staging.kairos.ac.cn`，
+服务器 47.238.145.24）。执行 `deploy-staging.sh`（本地 buildx 构建 → docker save/load → compose up）+
+迁移 0007/0008/0009 + smoke。过程中发现并修复两个真实回归：
+- `fix(worker)`: `pydantic-ai` 元包 mcp extra 激活 beartype claw hook 与 Temporal sandbox 冲突，
+  worker 无法执行 workflow；改用 `pydantic-ai-slim>=2.27`（仅用 slim 核心）。
+- `fix(infra)`: MSYS ssh 非 ASCII 用户名主目录编码错误导致误报 host key verification failed；
+  部署脚本显式传 `UserKnownHostsFile=$HOME/.ssh/known_hosts`。
+另处理：服务器磁盘 100% 满（删除 37 个旧 kairos 镜像 + 清理 37GB build cache）、Temporal shard 卡死
+（重启 kairos-staging temporal 恢复）。验证通过：HTTPS 200、API ready ok、auth register 201、
+M-01 smoke workflow PASS（PG/MinIO 回读）、alembic=0009。该 staging 更新不影响 M-11=DONE_LOCAL 状态，
+正式 DEPLOY-GATE-3 仍需 M-12 完成后执行。
 
 ## 6. Git 证据（feature/M-11-extraction-evidence，基线 9e82191，pushed NO，12 commits）
 | Commit | 内容 |
