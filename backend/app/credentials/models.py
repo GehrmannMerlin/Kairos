@@ -15,6 +15,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -40,8 +41,16 @@ class Credential(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    kind: Mapped[str] = mapped_column(String(50), nullable=False)  # model_api_key | search_api_key
+    # model_api_key | search_api_key | cookie | username_password
+    kind: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 网站凭据（M-10 / D-059）：domain 范围；CURRENT_TASK 绑定 task_id；
+    # SAVED_DOMAIN 供同用户后续任务复用
+    domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scope: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )  # CURRENT_TASK | SAVED_DOMAIN
+    task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

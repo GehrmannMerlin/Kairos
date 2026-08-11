@@ -42,7 +42,9 @@ class CredentialResolver(Protocol):
 
     def resolve_ref(self, *, user_id: int, task_id: int, domain: str) -> dict | None: ...
 
-    def build_headers(self, *, credential_ref: dict, url: str) -> dict | None: ...
+    def build_headers(
+        self, *, user_id: int, credential_ref: dict, url: str
+    ) -> dict | None: ...
 
 
 class _DiscoveryFromFetchTransport:
@@ -220,7 +222,7 @@ class FetchNodeExecutor:
             if cred:
                 credential_ref = cred
                 headers = self._credential_resolver.build_headers(
-                    credential_ref=cred, url=row.url
+                    user_id=run.user_id, credential_ref=cred, url=row.url
                 )
 
         body, err = await self._http_with_retry(row.url, headers=headers)
@@ -528,7 +530,12 @@ class FetchNodeExecutor:
                 committed_refs={
                     "url_hash": credential_required_url.url_hash,
                     "domain": host,
-                    "parameters": {"url": credential_required_url.url, "domain": host},
+                    "task_id": run.task_id,
+                    "parameters": {
+                        "url": credential_required_url.url,
+                        "domain": host,
+                        "task_id": run.task_id,
+                    },
                     "run_id": run.id,
                     "node_id": unit.node_id,
                     "node_type": unit.node_type,

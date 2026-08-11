@@ -20,6 +20,10 @@ with workflow.unsafe.imports_passed_through():
         request_approval,
         resume_from_approval,
     )
+    from app.activities.credential_approval import (
+        ResolveCredentialAccessInput,
+        resolve_credential_access,
+    )
     from app.activities.discovery_approval import (
         ResolveRobotsOverrideInput,
         resolve_robots_override,
@@ -293,6 +297,58 @@ class TaskWorkflow:
                         )
                         self._last_index = unit.index
                         continue
+                if exec_result.status == "CREDENTIAL_REQUIRED":
+                    # M-10 凭据访问：保存凭据 → credential_access Approval → 批准后
+                    # resolve_credential_access consume + WAITING_CREDENTIAL → READY_FOR_FETCH。
+                    # 不推进 _last_index → 重新执行同一 Fetch 节点完成凭据访问。
+                    refs = exec_result.committed_refs or {}
+                    self._latest_approval = None
+                    try:
+                        await workflow.wait_condition(
+                            lambda: self._latest_approval is not None or self._cancel_requested,
+                            timeout=timedelta(seconds=inp.pause_timeout_seconds),
+                        )
+                    except TimeoutError:
+                        continue  # 用户未提供/未批准凭据前，节点保持当前 index，不失败
+                    if self._cancel_requested:
+                        continue  # 循环顶处理 cancel
+                    latest = self._latest_approval
+                    decision = latest.decision.upper() if latest else "REJECTED"
+                    await workflow.execute_activity(
+                        resolve_credential_access,
+                        ResolveCredentialAccessInput(
+                            user_id=inp.user_id,
+                            approval_id=int(latest.approval_id) if latest else 0,
+                            url_hash=str(refs.get("url_hash", "")),
+                            parameters=refs.get("parameters") or {},
+                            decision=(
+                                decision if decision in ("APPROVED", "REJECTED") else "REJECTED"
+                            ),
+                        ),
+                        start_to_close_timeout=timedelta(seconds=30),
+                    )
+                    await workflow.execute_activity(
+                        resume_from_approval,
+                        ResumeFromApprovalInput(task_id=inp.task_id, user_id=inp.user_id),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    await workflow.execute_activity(
+                        commit_checkpoint,
+                        CommitCheckpointInput(
+                            task_id=inp.task_id,
+                            user_id=inp.user_id,
+                            run_id=inp.run_id,
+                            spec_version=inp.spec_version,
+                            plan_version=inp.plan_version,
+                            batch_identity=f"unit-{unit.index}",
+                            node_run_id=None,
+                            input_fingerprint=unit.input_fingerprint,
+                            committed_refs=exec_result.committed_refs,
+                            content_hash=None,
+                        ),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    continue
                 await workflow.execute_activity(
                     commit_checkpoint,
                     CommitCheckpointInput(

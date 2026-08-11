@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -223,3 +224,37 @@ class ApprovalResolutionCommand(BaseModel):
 
     expected_version: int
     idempotency_key: str | None = None
+
+
+class WebsiteCredentialCommand(BaseModel):
+    """网站凭据存储命令（D-059）。payload 含 Cookie/用户名密码；API 不回读明文。
+
+    from_saved_credential_id：选择已保存 SAVED_DOMAIN 凭据复制为本任务 CURRENT_TASK 凭据。
+    """
+
+    type: Literal["cookie", "username_password"]
+    payload: dict = {}
+    scope: Literal["CURRENT_TASK", "SAVED_DOMAIN"] = "CURRENT_TASK"
+    domain: str = ""
+    from_saved_credential_id: int | None = None
+
+
+class WebsiteCredentialDto(BaseModel):
+    """脱敏凭据 metadata：只显示 type/domain/scope/masked，永不回读明文。"""
+
+    credential_id: int
+    type: str
+    domain: str | None
+    scope: str | None
+    task_id: int | None
+    masked: str
+    created_at: datetime | None
+
+
+class WebsiteCredentialResponse(BaseModel):
+    credential: WebsiteCredentialDto
+    approval_id: int | None = None
+
+
+class WebsiteCredentialListResponse(BaseModel):
+    credentials: list[WebsiteCredentialDto]

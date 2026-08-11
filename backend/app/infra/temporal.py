@@ -65,6 +65,7 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
         request_approval,
         resume_from_approval,
     )
+    from app.activities.credential_approval import resolve_credential_access
     from app.activities.plan_execution import execute_safe_unit, fetch_next_execution_unit
     from app.activities.task_execution import (
         commit_checkpoint,
@@ -92,6 +93,7 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
             request_approval,
             block_high_risk_node,
             resume_from_approval,
+            resolve_credential_access,
         ],
         interceptors=_interceptors(),
     )

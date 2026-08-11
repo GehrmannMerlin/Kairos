@@ -11,6 +11,9 @@ from app.auth.errors import NotFoundError
 from app.credentials import crypto
 from app.credentials.repository import CredentialRepository
 
+# 网站凭据类型（D-059）：Cookie / Username-Password。Secret 仍走 vault 加密，无第二套 Secrets DB。
+WEBSITE_CREDENTIAL_KINDS = frozenset({"cookie", "username_password"})
+
 
 class CredentialInfo:
     def __init__(self, credential_id: int, version: int, version_id: int) -> None:
@@ -34,6 +37,33 @@ class CredentialVault:
     def store_secret(self, *, user_id: int, kind: str, name: str, secret: str) -> CredentialInfo:
         cred = self._repo.create(user_id, kind, name)
         return self._encrypt_new_version(user_id, cred.id, secret)
+
+    def store_website_secret(
+        self,
+        *,
+        user_id: int,
+        kind: str,
+        name: str,
+        secret_json: str,
+        domain: str,
+        scope: str,
+        task_id: int | None,
+    ) -> CredentialInfo:
+        """网站凭据（Cookie / Username-Password）：secret 为 JSON 字符串，vault 加密存储。
+
+        scope 约束：CURRENT_TASK 必须绑定 task_id（三十七）；
+        SAVED_DOMAIN 供同用户后续任务复用（三十八）。
+        """
+        if kind not in WEBSITE_CREDENTIAL_KINDS:
+            raise crypto.CredentialError(f"不支持的网站凭据类型: {kind}")
+        if not domain:
+            raise crypto.CredentialError("网站凭据必须指定 domain")
+        if scope == "CURRENT_TASK" and task_id is None:
+            raise crypto.CredentialError("CURRENT_TASK 凭据必须绑定 task_id")
+        cred = self._repo.create_website(
+            user_id, kind, name, domain=domain, scope=scope, task_id=task_id
+        )
+        return self._encrypt_new_version(user_id, cred.id, secret_json)
 
     def rotate(self, *, user_id: int, credential_id: int, secret: str) -> CredentialInfo:
         cred = self._repo.get_owned(user_id, credential_id)
