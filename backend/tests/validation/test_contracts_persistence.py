@@ -51,9 +51,7 @@ def vctx():
         schema_version="m06.1",
         payload=_spec_payload(),
     )
-    record = RecordRepository(
-        db
-    ).create(
+    record = RecordRepository(db).create(
         user_id=user.id,
         task_id=task.id,
         run_id=run.id,
@@ -138,9 +136,7 @@ def test_owner_isolation_rejects_foreign_record(vctx):
     repo = ValidationRepository(vctx["db"])
     # find_* 是 owner-safe find：越权查询返回 None（不泄漏存在性），等价 owner-safe 404
     assert (
-        repo.find_result(
-            user_id=other.id, record_id=vctx["record"].id, validation_version="m12.1"
-        )
+        repo.find_result(user_id=other.id, record_id=vctx["record"].id, validation_version="m12.1")
         is None
     )
     assert (

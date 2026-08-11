@@ -97,7 +97,12 @@ def test_evidence_system_derived_exception_is_explicit_and_auditable():
 
 def test_business_rule_operator_matrix():
     rules = [
-        {"code": "MUST_EQUAL", "field_name": "官网", "operator": "equals", "value": "https://a.com"},
+        {
+            "code": "MUST_EQUAL",
+            "field_name": "官网",
+            "operator": "equals",
+            "value": "https://a.com",
+        },
         {"code": "NOT_EMPTY", "field_name": "公司名", "operator": "not_empty", "value": None},
         {
             "code": "PHONE_PATTERN",
