@@ -48,6 +48,14 @@ class CrawlingError(Exception):
     """M-10 crawling 错误基类（分类到 M-03 错误分类体系）。"""
 
 
+class HttpFetchError(CrawlingError):
+    """HTTP/transport 层错误，携带 canonical FetchErrorCode（供 executor 分类）。"""
+
+    def __init__(self, code: FetchErrorCode, message: str = "") -> None:
+        super().__init__(message or code.value)
+        self.code = code
+
+
 class SnapshotCommitError(CrawlingError):
     """PageSnapshot 对象/DB 提交失败（业务上 Fetch 未成功提交）。"""
 

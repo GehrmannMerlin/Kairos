@@ -7,6 +7,8 @@ discovery_count 与 evidence，不创建第二个有效 Frontier Entry。每个�
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from app.discovery.errors import DiscoveryError
 from app.discovery.models import DiscoveryEvidence, DiscoverySource, FrontierState, priority_for
 from app.discovery.url import canonicalize_and_hash
@@ -128,3 +130,23 @@ class UrlFrontierRepository:
             .limit(limit)
             .all()
         )
+
+    def mark_fetch_outcome(
+        self,
+        *,
+        user_id: int,
+        url_hash: str,
+        state: FrontierState,
+        error_code: str | None = None,
+    ) -> URLResource:
+        """M-10 Fetch 结果落库（同一状态机，migration 0008 追加 fetched_at/error_code）。
+
+        fetched_at 表示“最近一次抓取尝试完成时间”；失败记录 error_code 供审计/重试判断。
+        """
+        row = self._owned(user_id, url_hash)
+        row.status = state.value
+        row.fetched_at = datetime.now(UTC)
+        row.fetch_error_code = error_code
+        self._db.add(row)
+        self._db.commit()
+        return row
