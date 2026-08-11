@@ -160,6 +160,30 @@ async def test_api_key_is_forwarded_to_inference() -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_input_passes_user_to_search_config_check() -> None:
+    """Regression (Gate-2 real provider): build_input 必须把真实 user 传给
+    list_search_configs；否则传 None → user.id AttributeError → plan 生成 500。"""
+
+    class _FakeUser:
+        id = 7
+
+    class _FakeProvider:
+        def __init__(self) -> None:
+            self.seen_user: object | None = None
+
+        def list_search_configs(self, user):
+            self.seen_user = user
+            return []
+
+    provider = _FakeProvider()
+    service = PlanGenerationService(provider_service=provider)
+    inp = service.build_input(_input().spec_payload, TaskType.SPECIFIED_SOURCE, user=_FakeUser())
+    assert provider.seen_user is not None
+    assert provider.seen_user.id == 7
+    assert inp.execution_constraints["has_search_provider"] is False
+
+
+@pytest.mark.asyncio
 async def test_second_failure_is_blocked() -> None:
     always_bad = (
         '{"schema_version":"m08.1","task_id":1,"spec_version":1,'

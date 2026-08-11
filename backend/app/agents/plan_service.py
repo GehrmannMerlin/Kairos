@@ -65,8 +65,16 @@ class PlanGenerationService:
             )
         return resolved, api_key, config
 
-    def build_input(self, spec_payload: dict, task_type: TaskType) -> PlanInput:
-        has_search = bool(self._provider and self._provider.list_search_configs(None))
+    def build_input(
+        self, spec_payload: dict, task_type: TaskType, user: Any | None = None
+    ) -> PlanInput:
+        # list_search_configs 需要真实 user.id；传 None 会 AttributeError（Gate-2 真实
+        # provider 发现）。测试路径 provider 为 None 时短路为 has_search=False。
+        has_search = bool(
+            self._provider is not None
+            and user is not None
+            and self._provider.list_search_configs(user)
+        )
         return PlanInput(
             spec_payload=spec_payload,
             task_type=task_type,
@@ -138,7 +146,7 @@ class PlanGenerationService:
         self, *, user: User, spec_payload: dict, task_type: TaskType
     ) -> PlanGenerationOutcome:
         resolved, api_key, config = self._resolve_model(user)
-        inp = self.build_input(spec_payload, task_type)
+        inp = self.build_input(spec_payload, task_type, user=user)
         outcome = await self._repair_loop(inp, resolved, api_key, max_repairs=1)
         if config is not None:
             outcome.audit.update(
