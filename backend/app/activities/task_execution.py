@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -56,6 +57,9 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
         )
         if spec.confirmed_at is None:
             raise RunSpecNotFrozenError("采集方案尚未确认，不能启动执行")
+        # 摄入 Spec seed_urls 到 URL Frontier（D-068：指定来源基于用户提供 URL 运行）。
+        # 放在 run.state 早返回之前：重放/re-run 幂等 upsert 保证 seed 始终存在（D-016）。
+        _ingest_seed_urls(session, inp, spec)
         run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
         if run.state != "pending":
             return EnsureRunStartedResult(inp.run_id, started=False)
@@ -80,6 +84,26 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
         return EnsureRunStartedResult(inp.run_id, started=True)
     finally:
         session.close()
+
+
+def _ingest_seed_urls(session, inp: EnsureRunStartedInput, spec: Any) -> None:
+    from app.discovery.frontier import UrlFrontierRepository
+    from app.discovery.models import DiscoveryEvidence, DiscoverySource
+
+    seed_urls = ((spec.payload or {}).get("source_scope") or {}).get("seed_urls") or []
+    if not seed_urls:
+        return
+    frontier = UrlFrontierRepository(session)
+    for url in seed_urls:
+        frontier.upsert_discovery(
+            task_id=inp.task_id,
+            user_id=inp.user_id,
+            run_id=inp.run_id,
+            spec_version=inp.spec_version,
+            raw_url=url,
+            source=DiscoverySource.USER_SEED,
+            evidence=DiscoveryEvidence(source=DiscoverySource.USER_SEED, note="spec_seed"),
+        )
 
 
 @dataclass

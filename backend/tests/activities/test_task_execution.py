@@ -140,3 +140,82 @@ async def test_commit_checkpoint_same_batch_different_fingerprint_raises(
         await commit_checkpoint(
             _commit_input(user_id=user_id, task_id=task_id, batch="unit-1", fp="fp-DIFFERENT")
         )
+
+
+def _spec_with_seeds(seed_urls: list[str]) -> dict:
+    return {
+        "schema_version": "m06.1",
+        "task_type": "SPECIFIED_SOURCE",
+        "goal": "seed ingest",
+        "fields": [{"name": "标题", "type": "text", "required": True}],
+        "auto_expand_fields": False,
+        "source_scope": {"mode": "SPECIFIED_SOURCE", "seed_urls": seed_urls, "source_hints": []},
+        "completion_conditions": [],
+        "advanced_settings": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_ensure_run_started_ingests_spec_seeds_into_frontier(monkeypatch, tmp_path) -> None:
+    """DEPLOY-GATE-3 暴露的缺口：spec seed_urls 必须摄入 URL Frontier（DISCOVERED）。"""
+    from app.activities.task_execution import EnsureRunStartedInput, ensure_run_started
+    from app.discovery.models import FrontierState
+    from app.domain.models import URLResource
+    from app.domain.repository import SpecVersionRepository
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'seeds.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(task_execution, "get_session_factory", lambda: factory)
+
+    session = factory()
+    try:
+        from datetime import UTC, datetime
+
+        user = User(email="seed@kairos.test", password_hash="hash")
+        session.add(user)
+        session.commit()
+        task = TaskRepository(session).create(
+            user_id=user.id, title="seed task", task_type="SPECIFIED_SOURCE"
+        )
+        run = RunRepository(session).create(
+            user_id=user.id, task_id=task.id, spec_version=1, plan_version=1
+        )
+        spec = SpecVersionRepository(session).create(
+            user_id=user.id,
+            task_id=task.id,
+            version=1,
+            spec_type="collection",
+            schema_version="m06.1",
+            payload=_spec_with_seeds(["https://example.com"]),
+        )
+        spec.confirmed_at = datetime.now(UTC)
+        spec.confirmed_by = user.id
+        session.add(spec)
+        task.state = "QUEUED"  # spec confirm 后任务进入 QUEUED（真实流经 confirm_spec）
+        session.add(task)
+        session.commit()
+        task_id, run_id, user_id = task.id, run.id, user.id
+    finally:
+        session.close()
+
+    await ensure_run_started(
+        EnsureRunStartedInput(
+            task_id=task_id, user_id=user_id, run_id=run_id, spec_version=1, plan_version=1
+        )
+    )
+
+    session = factory()
+    try:
+        urls = session.query(URLResource).filter_by(task_id=task_id).all()
+        assert len(urls) == 1
+        assert urls[0].url == "https://example.com"
+        assert urls[0].status == FrontierState.DISCOVERED.value
+        assert urls[0].source_type == "USER_SEED"
+        # 幂等：re-run 不产生重复 Frontier Entry
+        task = session.get(Task, task_id)
+        assert task.state == "RUNNING"
+    finally:
+        session.close()
