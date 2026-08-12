@@ -55,13 +55,15 @@ def _payload_ok(
     field: str | None,
     value: str | None,
     source_type: str | None,
+    effective_source: str | None,
     extract_method: str | None,
     min_confidence: float | None,
     needle: str | None,
 ) -> bool:
     if field and value is not None and str(payload.get(field)) != value:
         return False
-    if source_type and payload.get("source_type") != source_type:
+    # source_type 由调用方解析为 effective_source（URLResource 优先，payload 兜底）
+    if source_type is not None and effective_source != source_type:
         return False
     if extract_method and payload.get("extract_method") != extract_method:
         return False
@@ -76,6 +78,21 @@ def _payload_ok(
     if needle:
         return _payload_matches(payload, needle)
     return True
+
+
+def _effective_source(record: Record, url_source_map: dict[int, str]) -> str | None:
+    """记录来源：payload.source_type（fixture/旧数据）或 URLResource.source_type（真实）。
+
+    真实采集记录（M-11）payload 不含 source_type，因此必须解析 url_resource_id →
+    URLResource.source_type，否则 D-062 的来源下钻对真实数据永远返回空。
+    """
+    payload = record.payload or {}
+    payload_source = payload.get("source_type")
+    if payload_source:
+        return str(payload_source)
+    if record.url_resource_id is not None:
+        return url_source_map.get(record.url_resource_id)
+    return None
 
 
 class ReviewRepository:
@@ -115,6 +132,17 @@ class ReviewRepository:
                     select(Record).where(Record.user_id == user_id, Record.task_id == task_id)
                 )
             )
+            # source_type 真实解析：URLResource.source_type（owner-safe 范围）
+            url_source_map: dict[int, str] = {}
+            if params.source_type:
+                url_source_map = {
+                    r.id: r.source_type
+                    for r in self._db.scalars(
+                        select(URLResource).where(
+                            URLResource.user_id == user_id, URLResource.task_id == task_id
+                        )
+                    )
+                }
             ids = [
                 r.id
                 for r in records
@@ -123,6 +151,7 @@ class ReviewRepository:
                     field=params.field,
                     value=params.value,
                     source_type=params.source_type,
+                    effective_source=_effective_source(r, url_source_map),
                     extract_method=params.extract_method,
                     min_confidence=params.min_confidence,
                     needle=params.q.lower() if params.q else None,
