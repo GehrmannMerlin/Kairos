@@ -9,6 +9,9 @@ import { openModal } from '@/app/overlay/modal.store'
 import { parseTaskQuery } from '@/app/router/deepLinks'
 import ChatComposer from '@/features/tasks/ChatComposer.vue'
 import ChatMessageList from '@/features/tasks/ChatMessageList.vue'
+import { getCompletion } from '@/features/artifacts/artifacts.api'
+import CompletionCard from '@/features/artifacts/CompletionCard.vue'
+import type { CompletionCardView } from '@/features/artifacts/types'
 import {
   addSeedUrl,
   confirmSpec,
@@ -46,6 +49,10 @@ const currentSpecVersion = ref<number | null>(null)
 const planSummary = ref<PlanSummaryDto | null>(null)
 const errorMsg = ref<string | null>(null)
 const noticeMsg = ref<string | null>(null)
+const taskState = ref<string | null>(null)
+const completionCard = ref<CompletionCardView | null>(null)
+
+const TERMINAL_STATES = new Set(['COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED'])
 
 function hasUserMessage(): boolean {
   return messages.value.some((m) => m.role === 'user')
@@ -66,8 +73,15 @@ async function refreshTaskMeta(): Promise<void> {
     const shell = await getTask(taskId.value)
     taskVersion.value = shell.version
     currentSpecVersion.value = shell.current_spec_version
+    taskState.value = shell.state
     if (shell.current_plan_version) {
       planSummary.value = await getPlanSummary(taskId.value, shell.current_plan_version)
+    }
+    // Completion Card 由稳定 completion_id 派生渲染（幂等，不追加 Chat 消息）
+    if (TERMINAL_STATES.has(shell.state)) {
+      completionCard.value = await getCompletion(taskId.value)
+    } else {
+      completionCard.value = null
     }
   } catch {
     /* keep last known values */
@@ -245,6 +259,11 @@ watch(
       />
       <p v-if="planning" class="muted">正在生成执行计划…</p>
       <PlanSummaryCard v-if="planSummary" :summary="planSummary" />
+      <CompletionCard
+        v-if="completionCard"
+        :card="completionCard"
+        :task-id="taskId"
+      />
       <ChatMessageList :messages="messages" :loading="loading" />
       <p v-if="errorMsg" class="chat__error">{{ errorMsg }}</p>
       <p v-if="noticeMsg" class="chat__notice">{{ noticeMsg }}</p>

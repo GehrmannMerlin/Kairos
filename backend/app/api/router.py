@@ -8,6 +8,7 @@ from app.api.routes import (
     approvals,
     artifacts,
     auth,
+    completion,
     credentials,
     events,
     evidence,
@@ -38,3 +39,4 @@ api_router.include_router(quality.router)
 api_router.include_router(execution.router)
 api_router.include_router(evidence.router)
 api_router.include_router(artifacts.router)
+api_router.include_router(completion.router)
