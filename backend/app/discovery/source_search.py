@@ -22,8 +22,12 @@ from app.discovery.models import (
     SearchResultRef,
 )
 from app.providers.search_protocol import SearchResult
+from app.reliability.provider_limit import ProviderLimiter
 
 SEARCH_PROVIDER_NOT_CONFIGURED = "SEARCH_PROVIDER_NOT_CONFIGURED"
+
+# M-16 进程内 provider 限流缓存（key = 安全 metadata hash，非明文 Key）
+_SEARCH_LIMITERS: dict[str, ProviderLimiter] = {}
 
 
 class SourceSearchError(DiscoveryError):
@@ -59,11 +63,13 @@ def merge_into_candidate_sites(results: list[SearchResult]) -> list[CandidateSit
 
 
 class SearchService:
-    def __init__(self, db, *, vault=None, search_configs=None, provider_builder=None) -> None:
+    def __init__(self, db, *, vault=None, search_configs=None, provider_builder=None,
+                 retry_base_delay_seconds: float = 2.0) -> None:
         self._db = db
         self._vault = vault
         self._search_configs = search_configs
         self._provider_builder = provider_builder
+        self._retry_base_delay = retry_base_delay_seconds
 
     # ---- 依赖解析（生产从 settings 构建；测试可注入） ----
 
@@ -130,8 +136,36 @@ class SearchService:
         params = unit.parameters or {}
         query = str(params.get("query") or "")
         limit = int(params.get("max_results") or 20)
-        results = await provider.search(
-            query=query, limit=limit, api_key=api_key, base_url=cfg.base_url
+        # M-16 Provider 限流 + 有界重试（429/bounded backoff+jitter；auth/quota 不重试）
+        from app.config import get_settings
+        from app.reliability.capacity import capacity_from_settings
+        from app.reliability.errors import classify_provider_error
+        from app.reliability.provider_limit import (
+            ThrottleKey,
+            call_with_provider_retry,
+        )
+
+        cap = capacity_from_settings(get_settings())
+        key = ThrottleKey(
+            family=cfg.provider_type, config_id=cfg.credential_version_id or 0,
+            user_id=run.user_id,
+        )
+        limiter = _SEARCH_LIMITERS.setdefault(
+            key.fingerprint(),
+            ProviderLimiter(
+                min_interval_seconds=cap.provider_throttle_min_interval_seconds,
+                max_burst=cap.provider_throttle_max_burst,
+                key=key.fingerprint(),
+            ),
+        )
+        results = await call_with_provider_retry(
+            limiter=limiter,
+            fn=lambda: provider.search(
+                query=query, limit=limit, api_key=api_key, base_url=cfg.base_url
+            ),
+            max_attempts=cap.default_retry_max_attempts,
+            error_class_fn=classify_provider_error,
+            base_delay_seconds=self._retry_base_delay,
         )
         sites = merge_into_candidate_sites(results)
         frontier = UrlFrontierRepository(self._db)

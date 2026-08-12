@@ -78,7 +78,8 @@ def classify_provider_error(exc: Exception) -> ErrorClass:
     if isinstance(exc, provider_errors.ProviderNetworkError):
         return ErrorClass.NETWORK_TIMEOUT
     if isinstance(exc, provider_errors.ProviderInferenceError):
-        return ErrorClass.TRANSIENT_SERVICE_ERROR
+        # 调用成功但无可用输出 → 语义失败，需纠错变化而非盲目重试（D-013 §13）
+        return ErrorClass.EXTRACTION_FAILED
     if isinstance(exc, provider_errors.ProviderModelNotFoundError):
         return ErrorClass.NON_RETRYABLE
     if isinstance(

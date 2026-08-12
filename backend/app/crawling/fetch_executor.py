@@ -66,6 +66,18 @@ class _DiscoveryFromFetchTransport:
         )
 
 
+def _retry_after_from_body(body: Any) -> float | None:
+    """解析 Retry-After 响应头（整数/秒）；不存在或不可解析返回 None。"""
+    try:
+        headers = getattr(body, "headers", None) or {}
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        if raw is None:
+            return None
+        return max(0.0, float(str(raw).strip()))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 class FetchNodeExecutor:
     """Fetch 执行器：对 READY_FOR_FETCH 批次做静态层抓取 + 证据升级标记。"""
 
@@ -129,39 +141,77 @@ class FetchNodeExecutor:
     async def _http_with_retry(
         self, url: str, *, headers: dict[str, str] | None = None
     ) -> tuple[Any | None, HttpFetchError | None]:
-        """网络/5xx/429 有界内部重试；其余错误立即返回（不重试、不升级）。"""
+        """M-16 有界重试走 RetryDecision（分类 + Retry-After + jitter）+ Domain Breaker 门禁。
+
+        D-013：先分类错误再选恢复策略；RETRYABLE 类才重试，auth/quota/404 等不重试不升级。
+        非 retryable 异常保留原始 FetchErrorCode（SIZE_LIMIT/SSRF 等），不丢失分类。
+        """
+        from app.config import get_settings
+        from app.reliability.breaker import CircuitBreakerRepository, CircuitBreakerService
+        from app.reliability.capacity import capacity_from_settings
+        from app.reliability.errors import (
+            classify_fetch_error_code,
+            classify_http_error,
+            is_domain_breaker_error,
+        )
+        from app.reliability.retry import decide_retry
+
+        breaker = CircuitBreakerService(
+            CircuitBreakerRepository(self._db), capacity_from_settings(get_settings())
+        )
         attempts = 0
+        max_attempts = self._max_internal_retries + 1
         while True:
+            allowed, _ = breaker.allow_request(url)
+            if not allowed:
+                # 域名熔断 OPEN：停止无意义请求（不把 404/凭据类计入，见 is_domain_breaker_error）
+                return None, HttpFetchError(FetchErrorCode.SERVER_ERROR, "domain circuit open")
             started = time.monotonic()
+            body: Any | None = None
+            original: HttpFetchError | None = None
             try:
                 body = await self._http.get_bytes(url, headers=headers)
             except HttpFetchError as exc:
-                if exc.code in (
-                    FetchErrorCode.TIMEOUT,
-                    FetchErrorCode.DNS_ERROR,
-                    FetchErrorCode.CONNECTION_ERROR,
-                ) and attempts < self._max_internal_retries:
-                    attempts += 1
-                    await asyncio.sleep(self._retry_base_seconds * (2 ** (attempts - 1)))
-                    continue
-                if exc.code in (FetchErrorCode.SERVER_ERROR, FetchErrorCode.RATE_LIMITED):
-                    # HTTP 状态码 5xx/429 由下方 status 判断进入同一有界重试
-                    return None, exc
-                return None, exc
+                original = exc
+                error_class = classify_fetch_error_code(exc.code)
             except Exception as exc:  # transport 异常 → canonical 分类
-                return None, map_transport_error(exc)
-            # 状态码驱动重试：429 / 5xx
-            if body.status_code == 429 or 500 <= body.status_code < 600:
-                if attempts < self._max_internal_retries:
-                    attempts += 1
-                    await asyncio.sleep(self._retry_base_seconds * (2 ** (attempts - 1)))
-                    continue
-                code = (
-                    FetchErrorCode.RATE_LIMITED
-                    if body.status_code == 429
-                    else FetchErrorCode.SERVER_ERROR
+                mapped = map_transport_error(exc)
+                original = mapped
+                error_class = classify_fetch_error_code(mapped.code)
+            if body is None:
+                if is_domain_breaker_error(error_class):
+                    breaker.record_failure(url, error_class, "fetch failed")
+                d = decide_retry(
+                    error_class=error_class, attempt=attempts, max_attempts=max_attempts
                 )
-                return None, HttpFetchError(code, f"http {body.status_code}")
+                if not d.should_retry:
+                    # 保留原始错误码（SIZE_LIMIT/SSRF/STORAGE 等），不丢失分类
+                    return None, original
+                await asyncio.sleep(d.delay_seconds)
+                attempts += 1
+                continue
+            if body.status_code == 429 or 500 <= body.status_code < 600:
+                ec = classify_http_error(body.status_code)
+                if is_domain_breaker_error(ec):
+                    breaker.record_failure(url, ec, f"http {body.status_code}")
+                d = decide_retry(
+                    error_class=ec,
+                    attempt=attempts,
+                    max_attempts=max_attempts,
+                    retry_after_seconds=_retry_after_from_body(body),
+                )
+                if not d.should_retry:
+                    code = (
+                        FetchErrorCode.RATE_LIMITED
+                        if body.status_code == 429
+                        else FetchErrorCode.SERVER_ERROR
+                    )
+                    return None, HttpFetchError(code, f"http {body.status_code}")
+                await asyncio.sleep(d.delay_seconds)
+                attempts += 1
+                continue
+            if 200 <= body.status_code < 300:
+                breaker.record_success(url)  # 仅 2xx 记为成功；401/404 不计数（不计入 domain 崩溃）
             body.duration_ms = int((time.monotonic() - started) * 1000)
             return body, None
 

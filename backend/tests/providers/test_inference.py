@@ -13,7 +13,7 @@ USER = "帮我搜集供应商"
 
 
 async def _run(fake, resolved, api_key="sk-test") -> str:
-    client = ModelInferenceClient(http=fake)
+    client = ModelInferenceClient(http=fake, retry_base_delay_seconds=0.001)
     result = await client.generate(resolved=resolved, api_key=api_key, system=SYSTEM, user=USER)
     return result.text
 

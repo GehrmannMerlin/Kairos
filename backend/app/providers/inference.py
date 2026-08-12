@@ -18,9 +18,13 @@ from time import perf_counter
 from app.providers import errors
 from app.providers.protocol import ResolvedModel
 from app.providers.transport import HttpClient, HttpxTransport
+from app.reliability.provider_limit import ProviderLimiter
 
 ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_TIMEOUT_SECONDS = 30.0
+
+# M-16 进程内 provider 限流缓存（key = 安全 metadata hash，非明文 Key）
+_LIMITERS: dict[str, ProviderLimiter] = {}
 
 
 @dataclass(frozen=True)
@@ -42,10 +46,14 @@ def _map_http_error(http_status: int) -> errors.ProviderError:
 
 class ModelInferenceClient:
     def __init__(
-        self, http: HttpClient | None = None, timeout_seconds: float | None = None
+        self,
+        http: HttpClient | None = None,
+        timeout_seconds: float | None = None,
+        retry_base_delay_seconds: float = 2.0,
     ) -> None:
         self._http = http or HttpxTransport()
         self._timeout = timeout_seconds or _DEFAULT_TIMEOUT_SECONDS
+        self._retry_base_delay = retry_base_delay_seconds
 
     async def generate(
         self,
@@ -58,14 +66,8 @@ class ModelInferenceClient:
         started = perf_counter()
         family = resolved.provider_type
         try:
-            if family in ("openai", "deepseek", "openrouter", "custom_openai_compatible", "ollama"):
-                text = await self._openai_compatible(resolved, api_key, system, user)
-            elif family == "anthropic":
-                text = await self._anthropic(resolved, api_key, system, user)
-            elif family == "gemini":
-                text = await self._gemini(resolved, api_key, system, user)
-            else:
-                raise errors.ProviderInferenceError(f"不支持的推理 Provider: {family}")
+            # M-16：Provider 限流 + 有界重试（429/bounded backoff+jitter；auth/quota 不重试）
+            text = await self._dispatch_with_retry(resolved, api_key, system, user)
         except errors.ProviderError:
             raise
         except Exception as exc:
@@ -75,6 +77,52 @@ class ModelInferenceClient:
         return InferenceResult(
             text=text, provider_type=family, duration_ms=int((perf_counter() - started) * 1000)
         )
+
+    async def _dispatch_with_retry(
+        self, resolved: ResolvedModel, api_key: str | None, system: str, user: str
+    ) -> str:
+        from app.config import get_settings
+        from app.reliability.capacity import capacity_from_settings
+        from app.reliability.errors import classify_provider_error
+        from app.reliability.provider_limit import (
+            ProviderLimiter,
+            ThrottleKey,
+            call_with_provider_retry,
+        )
+
+        cap = capacity_from_settings(get_settings())
+        key = ThrottleKey(
+            family=resolved.provider_type,
+            config_id=resolved.credential_version_id or 0,
+            user_id=0,
+        )
+        limiter = _LIMITERS.setdefault(
+            key.fingerprint(),
+            ProviderLimiter(
+                min_interval_seconds=cap.provider_throttle_min_interval_seconds,
+                max_burst=cap.provider_throttle_max_burst,
+                key=key.fingerprint(),
+            ),
+        )
+        family = resolved.provider_type
+        return await call_with_provider_retry(
+            limiter=limiter,
+            fn=lambda: self._dispatch(family, resolved, api_key, system, user),
+            max_attempts=cap.default_retry_max_attempts,
+            error_class_fn=classify_provider_error,
+            base_delay_seconds=self._retry_base_delay,
+        )
+
+    async def _dispatch(
+        self, family: str, resolved: ResolvedModel, api_key: str | None, system: str, user: str
+    ) -> str:
+        if family in ("openai", "deepseek", "openrouter", "custom_openai_compatible", "ollama"):
+            return await self._openai_compatible(resolved, api_key, system, user)
+        if family == "anthropic":
+            return await self._anthropic(resolved, api_key, system, user)
+        if family == "gemini":
+            return await self._gemini(resolved, api_key, system, user)
+        raise errors.ProviderInferenceError(f"不支持的推理 Provider: {family}")
 
     # ---- wire formats ----
 
