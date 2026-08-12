@@ -21,22 +21,28 @@ class ExtractionModelResolver:
         """Return (resolved_model, api_key, audit_metadata) for the run's frozen plan."""
         if self._provider_service is None or self._vault is None:
             return None, None, {}
+        from app.auth.models import User
         from app.domain.repository import PlanVersionRepository
 
         plan = PlanVersionRepository(self._db).get_version(
             run.user_id, run.task_id, run.plan_version
         )
-        plan_payload = plan.payload if plan is not None else {}
-        config_id = plan_payload.get("model_config_id")
-        config_version = plan_payload.get("model_config_version")
+        # persist_plan 把 model_config_id/version 存为 plan_versions 的**列**，graph 放
+        # payload；必须读列，payload 恒为 None（DEPLOY-GATE-3 上海政府真实链根因）。
+        config_id = plan.model_config_id if plan is not None else None
+        config_version = plan.model_config_version if plan is not None else None
+        # ProviderService 方法按 User 对象调用（内部用 user.id），不能传 run.user_id int。
+        owner = self._db.get(User, run.user_id)
+        if owner is None:
+            return None, None, {}
         try:
             if config_id and config_version is not None:
                 config = self._provider_service.get_model_config_version(
-                    run.user_id, config_id=config_id, version=config_version
+                    owner, config_id=config_id, version=config_version
                 )
             else:
                 config = self._provider_service.require_available_model_config(
-                    run.user_id
+                    owner
                 )  # owner-safe default
         except Exception:
             return None, None, {}
