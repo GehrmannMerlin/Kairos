@@ -76,6 +76,16 @@ class TaskRepository:
             )
         )
 
+    def list_deleted(self, user_id: int) -> list[Task]:
+        """M-15 已删除视图（/tasks?view=deleted，D-065）。"""
+        return list(
+            self._db.scalars(
+                select(Task)
+                .where(Task.user_id == user_id, Task.deleted_at.is_not(None))
+                .order_by(Task.deleted_at.desc())
+            )
+        )
+
     def update_state(self, task: Task, new_state: str, expected_version: int) -> Task:
         if task.version != expected_version:
             from app.domain.errors import StaleVersionError

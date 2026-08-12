@@ -125,3 +125,40 @@ class TaskCommandService:
             idempotency_key=idempotency_key,
             reason=reason,
         )
+
+    def delete_task(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        expected_version: int,
+        idempotency_key: str | None = None,
+        reason: str | None = None,
+    ) -> TaskCommandResult:
+        """软删除（D-065）：非运行任务进入 DELETED；运行中由状态机拒绝（须先 cancel）。"""
+        return self._run(
+            user_id=user_id,
+            task_id=task_id,
+            expected_version=expected_version,
+            command="delete",
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )
+
+    def restore_task(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        expected_version: int,
+        idempotency_key: str | None = None,
+        reason: str | None = None,
+    ) -> TaskCommandResult:
+        return self._run(
+            user_id=user_id,
+            task_id=task_id,
+            expected_version=expected_version,
+            command="restore",
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )

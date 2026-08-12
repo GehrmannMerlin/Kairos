@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session as DbSession
 
 from app.agents.deps import get_goal_understanding_service
@@ -95,10 +95,16 @@ def _shell_dto(task: Task) -> TaskShellDto:
 
 @router.get("", response_model=TaskShellListResponse)
 def list_tasks(
+    view: str | None = Query(default=None),
     user: User = Depends(require_user),
     db: DbSession = Depends(get_db),
 ) -> TaskShellListResponse:
-    tasks = TaskRepository(db).list_by_user(user.id)
+    repo = TaskRepository(db)
+    tasks = (
+        repo.list_deleted(user.id)
+        if view == "deleted"
+        else repo.list_by_user(user.id)
+    )
     return TaskShellListResponse(tasks=[_shell_dto(t) for t in tasks])
 
 
@@ -259,7 +265,7 @@ def confirm_spec(
 # ---- M-07 Task pause/resume/cancel commands ----
 
 
-_TASK_COMMANDS = {"pause", "resume", "cancel"}
+_TASK_COMMANDS = {"pause", "resume", "cancel", "delete", "restore"}
 
 
 @router.post("/{task_id}/commands/{command}", response_model=TaskCommandResponse)
@@ -281,6 +287,13 @@ async def task_command(
     """
     if command not in _TASK_COMMANDS:
         raise HTTPException(status_code=404, detail="未知命令")
+    if command == "delete":
+        # D-065：运行中 Task 不能直接删除，必须先 cancel 并等待 Workflow 停止。
+        task = TaskRepository(db).get_owned(user.id, task_id)
+        if task.state in ("RUNNING", "PAUSING", "CANCELLING"):
+            raise HTTPException(
+                status_code=409, detail="运行中的任务必须先取消并等待停止后才能删除"
+            )
     handler = getattr(service, f"{command}_task")
     result = handler(
         user_id=user.id,

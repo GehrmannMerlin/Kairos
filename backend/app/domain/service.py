@@ -48,10 +48,15 @@ class DomainService:
         from app.domain.errors import StaleVersionError
         from app.state.states import TaskState
 
-        current = TaskState(task.state)
-        next_state = assert_task_transition(current, command)
         if task.version != expected_version:
             raise StaleVersionError("任务已被其他操作修改")
+
+        current = TaskState(task.state)
+        if command == "restore":
+            # M-15：恢复到软删除前的终态（生命周期/可见性语义，不改写 Run execution facts）。
+            next_state = TaskState(task.restore_state or "DRAFT")
+        else:
+            next_state = assert_task_transition(current, command)
 
         payload: dict = {
             "command": command,
@@ -59,8 +64,12 @@ class DomainService:
             "to_state": next_state.value,
             "reason": reason,
         }
-        if next_state == TaskState.DELETED:
+        if command == "delete":
             task.deleted_at = datetime.now(UTC)
+            task.restore_state = task.state
+        elif command == "restore":
+            task.deleted_at = None
+            task.restore_state = None
         task.state = next_state.value
         task.version += 1
         db.add(task)
