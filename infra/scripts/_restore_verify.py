@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import sys
@@ -24,6 +25,11 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {name} {detail}")
     if not ok:
         sys.exit(1)
+
+
+def _storage_get(storage: object, key: str) -> bytes:
+    """ObjectStorage.get 是 async；用 asyncio.run 取回 bytes。"""
+    return asyncio.run(storage.get(key))  # type: ignore[attr-defined]
 
 
 def main() -> None:
@@ -46,7 +52,7 @@ def main() -> None:
 
         snap = session.scalars(select(PageSnapshot).order_by(PageSnapshot.id).limit(1)).first()
         if snap is not None and snap.storage_ref:
-            body = storage.get(snap.storage_ref)
+            body = _storage_get(storage, snap.storage_ref)
             digest = hashlib.sha256(body).hexdigest()
             check(
                 "4 snapshot content hash matches",
@@ -60,7 +66,7 @@ def main() -> None:
             select(Artifact).where(Artifact.export_type == "formal").order_by(Artifact.id).limit(1)
         ).first()
         if art is not None and art.storage_ref:
-            csv = storage.get(art.storage_ref).decode("utf-8")
+            csv = _storage_get(storage, art.storage_ref).decode("utf-8")
             rows = sum(1 for _ in csv.splitlines()) - 1  # header row
             digest = hashlib.sha256(csv.encode("utf-8")).hexdigest()
             check(
