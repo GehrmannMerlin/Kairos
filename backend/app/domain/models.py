@@ -16,11 +16,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -540,6 +542,19 @@ class Approval(Base):
 
 class Artifact(Base):
     __tablename__ = "artifacts"
+    # M-16 并发幂等加固：READY 状态按 (user, task, request_fingerprint) 唯一。
+    # 部分唯一（PG postgresql_where / SQLite sqlite_where）→ 相同导出并发只允许一行。
+    __table_args__ = (
+        Index(
+            "ix_artifacts_user_task_fp_ready",
+            "user_id",
+            "task_id",
+            "request_fingerprint",
+            unique=True,
+            postgresql_where=text("status = 'ready'"),
+            sqlite_where=text("status = 'ready'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     task_id: Mapped[int] = mapped_column(
@@ -874,3 +889,56 @@ class RecordReviewAction(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class ResourceLease(Base):
+    """M-16 跨进程资源租赁（D-071 三级调度协调事实，非业务 Checkpoint）。
+
+    heartbeat 只表达「资源仍被占用」事实，绝不充当业务 Checkpoint（M-04/M-07
+    规则不变）；TTL + reaper 回收异常退出 worker 的 slot。
+    """
+
+    __tablename__ = "resource_leases"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(String(30), nullable=False)  # global|user|resource_class
+    scope_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    holder_type: Mapped[str] = mapped_column(String(30), nullable=False)  # run|node
+    holder_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    resource_class: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active"
+    )  # active | released | expired
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("ix_leases_scope_key", "scope", "scope_key"),
+        Index("ix_leases_state_expires", "state", "expires_at"),
+    )
+
+
+class DomainCircuitBreaker(Base):
+    """M-16 部署级域名熔断器（保护目标域名，无 owner；用户 UI 只见脱敏文案）。"""
+
+    __tablename__ = "domain_circuit_breakers"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="CLOSED")
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_class: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    open_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    open_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    half_open_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # HALF_OPEN 期间只放行一次请求（单探针）；用条件 UPDATE 原子认领，避免多 worker 并发放行。
+    half_open_probe_claimed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
