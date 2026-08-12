@@ -20,6 +20,9 @@ from app.infra.telemetry import setup_otel
 
 async def run() -> None:
     settings = get_settings()
+    from app.observability.logging import configure_logging
+
+    configure_logging("kairos-worker")
     setup_otel(settings)
     from app.infra.temporal import create_temporal_client
 

@@ -15,6 +15,9 @@ def create_app() -> FastAPI:
     settings = get_settings()
     if settings.env == "production":
         settings.validate_runtime()  # M-17：production 配置违规立即失败，不静默带病上线
+    from app.observability.logging import configure_logging
+
+    configure_logging(settings.service_name)
     setup_otel(settings)
 
     app = FastAPI(title=settings.app_name, version="0.1.0")
