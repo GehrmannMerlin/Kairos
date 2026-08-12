@@ -7,11 +7,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.domain.errors import DomainError
 from app.validation.contracts import AllowedReviewAction
 
 
-class BatchCompatibilityError(Exception):
+class BatchCompatibilityError(DomainError):
     """批量动作与记录语义不兼容。"""
+
+    code = "BATCH_INCOMPATIBLE"
+    status_code = 422
 
 
 class ReviewPolicy:
