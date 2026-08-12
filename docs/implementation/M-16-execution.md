@@ -1,6 +1,6 @@
 # M-16 模块执行记录
 
-状态：**DONE_LOCAL**（2026-08-12）— 本地 scoped 验证全绿（LOCAL DONE GATE PASS），待 Light Staging Reliability Acceptance 后转 DONE
+状态：**DONE**（2026-08-12）— 本地 scoped 验证全绿 + Light Staging Reliability Acceptance 全 PASS
 负责人/Agent：Claude Code
 Baseline SHA：`841bd9b`（M-15 DONE HEAD，migration 0013）
 分支：`feature/M-16-reliability-pools`（pushed：NO）
@@ -67,8 +67,22 @@ LOCAL DONE GATE 逐项：ErrorClass/RetryDecision/bounded retry/Retry-After/auth
 | 3221067 | fix(browser): enforce process cleanup and pool limits |
 | 3060a07 | docs(worker): record M-16 capacity baseline and execution |
 
-## 8. Staging（待执行）
-Light Staging Reliability Acceptance（不是 DEPLOY-GATE-5 / 大型压测）：预检查 disk/backup/release/migration；只部署受影响的 api/worker（web 因最小 UI 文案变化按真实 diff 决定）；Staging 用安全小限额（browser=1 等）；4 个场景（admission / resource waiting / lease recovery / retry+circuit）+ small capacity smoke。完成后按最终报告更新本记录状态。
+## 8. Staging（Light Reliability Acceptance）
+**通过**（2026-08-12，非 DEPLOY-GATE-5 / 非大型压测）：
+- 预检查：disk 37G 可用（61%）、migration head 0013、backup `staging-m16-pre-20260812-123203.sql`、rollback 镜像 `staging-cfda95b0bd5c` 保留。
+- 部署：只部署受影响的 web/api/worker（WAITING_RESOURCE UI 变化 → web 也 build）；镜像 `kairos-web/api/worker:staging-6a423a2a5e18`；compose.staging.yml 增加 `KAIROS_WORKER_ROLES=all` + 安全小限额（global=4 / per-user=2 / core=2 / http=2 / browser=1 / llm_search=1，lease TTL=60s，breaker threshold=3）。
+- Migration：0012→0013→**0014**（head 0014，worker 容器验证 KAIROS_CAPACITY_* 生效）。
+- Health：HTTPS 200、live 200、ready postgresql/temporal/object_storage 全 ok。
+- Worker roles：`roles=['all'] queues=['kairos-task','kairos-http','kairos-browser','kairos-llm-search']`（多 role queue 连接成功）。
+- 验收场景（api 容器内跑 `infra/scripts/_m16_staging_acceptance.py`，连 staging DB，**18/18 PASS**）：
+  - A 全局+用户 admission（A 超 per-user 后第 3 任务 WAITING 非 FAILED，B 可运行，global bound）
+  - B Browser 资源等待（limit=1：holder 占、waiter `pool_limit` 等待非失败、release 后继续）
+  - C Lease Recovery（holder 消失 → reaper 回收 → waiter 可 acquire）
+  - D Retry/Circuit（429 尊重 Retry-After、attempt 有界、auth 不重试；breaker OPEN 抑制请求 + 脱敏文案无泄漏）
+  - E Capacity Smoke（12 synthetic jobs，max_active=4 ≤ global=4，无 leaked lease，105ms）
+- 清理：移除被取代的 M-15 镜像（api 2794a95580e4 / web 58da9e0eb26a），保留 current `6a423a2a5e18` + rollback `cfda95b0bd5c`；`docker builder prune -f`；disk 37G 可用（62%）。
+- 容量基线：见 `docs/operations/capacity-baseline.md`。
 
 ## 9. 完成结论
-**M-16 = DONE_LOCAL**（本地 scoped 全绿）。明确未做：M-17、M-18、Production、完整可靠性回归、DEFERRED-DYNAMIC-E2E-01、Push/Merge/Tag。Staging 后转 DONE。
+**M-16 = DONE**（本地 scoped 全绿 + Light Staging Reliability Acceptance 全 PASS）。**M-17 = UNBLOCKED**。**DEPLOY-GATE-5 = NOT_REACHED**。
+明确未做：M-17、M-18、Production、完整可靠性回归、真实大规模压测/soak、DEFERRED-DYNAMIC-E2E-01、Push/Merge/Tag。
