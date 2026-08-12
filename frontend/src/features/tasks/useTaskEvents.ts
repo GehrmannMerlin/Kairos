@@ -27,6 +27,12 @@ const _EVENT_TYPES: TaskEventType[] = [
   'APPROVAL_EXPIRED',
   'APPROVAL_REVOKED',
   'APPROVAL_CONSUMED',
+  'RECORD_APPROVED',
+  'RECORD_REJECTED',
+  'RECORD_EDITED',
+  'RECORD_REEVALUATE_REQUESTED',
+  'RECORD_APPROVED_BATCH',
+  'RECORD_REJECTED_BATCH',
 ]
 
 /** 统一 Task 事件订阅。断线自动重连（带 cursor），恢复后由调用方重新拉取 Task Snapshot。 */

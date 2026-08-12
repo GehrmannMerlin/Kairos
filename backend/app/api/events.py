@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
-from app.domain.models import DomainEvent
+from app.domain.models import DomainEvent, Record
 
 # domain_events.event_type -> SSE event_type（同一语义，不造第二套名称）
 _EVENT_TYPE_MAP = {
@@ -54,6 +54,13 @@ _EVENT_TYPE_MAP = {
     "validation.progress": "VALIDATION_PROGRESS",
     "validation.dedupe_completed": "DEDUPE_COMPLETED",
     "validation.completed": "VALIDATION_COMPLETED",
+    # M-13 record review 事件（D-040/D-061：数据页增量刷新）
+    "record.approved": "RECORD_APPROVED",
+    "record.rejected": "RECORD_REJECTED",
+    "record.edited": "RECORD_EDITED",
+    "record.reevaluate_requested": "RECORD_REEVALUATE_REQUESTED",
+    "record.approved_batch": "RECORD_APPROVED_BATCH",
+    "record.rejected_batch": "RECORD_REJECTED_BATCH",
 }
 
 
@@ -67,14 +74,24 @@ class SSETaskEvent(BaseModel):
 
 
 def query_task_events(db: Any, user_id: int, task_id: int, after_id: int) -> list[DomainEvent]:
+    # task.* 事件 + 本 task 的 record.* 事件（通过 records 表关联，record 事件无 task_id 列）
+    record_ids = select(Record.id).where(Record.user_id == user_id, Record.task_id == task_id)
     return list(
         db.scalars(
             select(DomainEvent)
             .where(
                 DomainEvent.user_id == user_id,
-                DomainEvent.aggregate_type == "task",
-                DomainEvent.aggregate_id == task_id,
                 DomainEvent.id > after_id,
+                or_(
+                    and_(
+                        DomainEvent.aggregate_type == "task",
+                        DomainEvent.aggregate_id == task_id,
+                    ),
+                    and_(
+                        DomainEvent.aggregate_type == "record",
+                        DomainEvent.aggregate_id.in_(record_ids),
+                    ),
+                ),
             )
             .order_by(DomainEvent.id)
         )
@@ -82,10 +99,15 @@ def query_task_events(db: Any, user_id: int, task_id: int, after_id: int) -> lis
 
 
 def map_domain_event_to_sse(ev: DomainEvent) -> SSETaskEvent:
+    # record 事件无 task_id 列，task_id 由 ReviewService 写入 payload
+    if ev.aggregate_type == "record":
+        task_id = int(ev.payload.get("task_id") or ev.aggregate_id)
+    else:
+        task_id = ev.aggregate_id
     return SSETaskEvent(
         event_id=ev.id,
         event_type=_EVENT_TYPE_MAP.get(ev.event_type, "TASK_STATE_CHANGED"),
-        task_id=ev.aggregate_id,
+        task_id=task_id,
         run_id=ev.run_id,
         occurred_at=ev.occurred_at or datetime.now(UTC),
         payload=ev.payload or {},

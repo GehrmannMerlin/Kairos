@@ -16,6 +16,12 @@ export type TaskEventType =
   | 'APPROVAL_EXPIRED'
   | 'APPROVAL_REVOKED'
   | 'APPROVAL_CONSUMED'
+  | 'RECORD_APPROVED'
+  | 'RECORD_REJECTED'
+  | 'RECORD_EDITED'
+  | 'RECORD_REEVALUATE_REQUESTED'
+  | 'RECORD_APPROVED_BATCH'
+  | 'RECORD_REJECTED_BATCH'
 
 export interface TaskSseEvent {
   event_id: number
