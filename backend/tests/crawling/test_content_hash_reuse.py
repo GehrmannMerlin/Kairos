@@ -47,7 +47,12 @@ async def test_identical_content_fetch_twice_reuses_blob_and_keeps_audit(ctx, st
 
     frontier = UrlFrontierRepository(db)
     row = db.get(URLResource, url_hash)
-    frontier.mark_state(user_id=user.id, url_hash=row.url_hash, state=FrontierState.READY_FOR_FETCH)
+    frontier.mark_state(
+        user_id=user.id,
+        task_id=row.task_id,
+        url_hash=row.url_hash,
+        state=FrontierState.READY_FOR_FETCH,
+    )
     r2 = await executor.execute(make_unit(run, 2, "fetch"))
     assert r2.status == "OK" and r2.committed_refs["fetched"] == 1
 

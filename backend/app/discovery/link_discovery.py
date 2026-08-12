@@ -188,7 +188,10 @@ class LinkDiscoveryService:
                     depth=seed.depth + 1,
                 )
                 frontier.mark_blocked(
-                    user_id=run.user_id, url_hash=url_hash, reason="robots_denied"
+                    user_id=run.user_id,
+                    task_id=run.task_id,
+                    url_hash=url_hash,
+                    reason="robots_denied",
                 )
                 blocked += 1
                 continue
@@ -203,7 +206,10 @@ class LinkDiscoveryService:
                 depth=seed.depth + 1,
             )
             frontier.mark_state(
-                user_id=run.user_id, url_hash=url_hash, state=FrontierState.READY_FOR_FETCH
+                user_id=run.user_id,
+                task_id=run.task_id,
+                url_hash=url_hash,
+                state=FrontierState.READY_FOR_FETCH,
             )
             added += 1
         return added, blocked, cross
@@ -240,7 +246,10 @@ class LinkDiscoveryService:
             added, blocked, cross = await self._expand_seed(seed, run, spec)
             # seed 本身访问已确认 → 置 READY_FOR_FETCH（站点入口也是要抓的页面）
             frontier.mark_state(
-                user_id=run.user_id, url_hash=seed.url_hash, state=FrontierState.READY_FOR_FETCH
+                user_id=run.user_id,
+                task_id=run.task_id,
+                url_hash=seed.url_hash,
+                state=FrontierState.READY_FOR_FETCH,
             )
             total_added += added
             total_blocked += blocked

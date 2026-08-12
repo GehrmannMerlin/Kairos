@@ -277,6 +277,7 @@ class TaskWorkflow:
                             resolve_robots_override,
                             ResolveRobotsOverrideInput(
                                 user_id=inp.user_id,
+                                task_id=inp.task_id,
                                 approval_id=int(approval_id),
                                 url_hash=str(refs.get("url_hash", "")),
                                 parameters=refs.get("parameters") or {},
@@ -325,6 +326,7 @@ class TaskWorkflow:
                         resolve_credential_access,
                         ResolveCredentialAccessInput(
                             user_id=inp.user_id,
+                            task_id=inp.task_id,
                             approval_id=int(latest.approval_id) if latest else 0,
                             url_hash=str(refs.get("url_hash", "")),
                             parameters=refs.get("parameters") or {},

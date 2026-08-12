@@ -177,6 +177,7 @@ class FetchNodeExecutor:
             reason = f"fetch_access_{decision.value}"
             UrlFrontierRepository(self._db).mark_fetch_outcome(
                 user_id=run.user_id,
+                task_id=row.task_id,
                 url_hash=row.url_hash,
                 state=FrontierState.BLOCKED,
                 error_code=reason,
@@ -196,6 +197,7 @@ class FetchNodeExecutor:
             if strategy is not None and getattr(strategy, "preferred_tier", "") == "browser":
                 UrlFrontierRepository(self._db).mark_fetch_outcome(
                     user_id=run.user_id,
+                    task_id=row.task_id,
                     url_hash=row.url_hash,
                     state=FrontierState.BROWSER_PENDING,
                     error_code=None,
@@ -248,6 +250,7 @@ class FetchNodeExecutor:
         if contains_captcha(body.body):
             UrlFrontierRepository(self._db).mark_fetch_outcome(
                 user_id=run.user_id,
+                task_id=row.task_id,
                 url_hash=row.url_hash,
                 state=FrontierState.FETCH_FAILED,
                 error_code=FetchErrorCode.CAPTCHA_REQUIRED.value,
@@ -289,6 +292,7 @@ class FetchNodeExecutor:
             )
             UrlFrontierRepository(self._db).mark_fetch_outcome(
                 user_id=run.user_id,
+                task_id=row.task_id,
                 url_hash=row.url_hash,
                 state=FrontierState.FETCHED,
                 error_code=None,
@@ -337,6 +341,7 @@ class FetchNodeExecutor:
         )
         UrlFrontierRepository(self._db).mark_fetch_outcome(
             user_id=run.user_id,
+            task_id=row.task_id,
             url_hash=row.url_hash,
             state=FrontierState.BROWSER_PENDING,
             error_code=None,
@@ -363,6 +368,7 @@ class FetchNodeExecutor:
         if credential_used:
             frontier.mark_fetch_outcome(
                 user_id=run.user_id,
+                task_id=row.task_id,
                 url_hash=row.url_hash,
                 state=FrontierState.FETCH_FAILED,
                 error_code=FetchErrorCode.ACCESS_DENIED.value,
@@ -377,6 +383,7 @@ class FetchNodeExecutor:
             )
         frontier.mark_fetch_outcome(
             user_id=run.user_id,
+            task_id=row.task_id,
             url_hash=row.url_hash,
             state=FrontierState.WAITING_CREDENTIAL,
             error_code=FetchErrorCode.CREDENTIAL_REQUIRED.value,
@@ -394,6 +401,7 @@ class FetchNodeExecutor:
         """403：访问被拒，不是凭据可修复/可升级；不盲升级 Playwright。"""
         UrlFrontierRepository(self._db).mark_fetch_outcome(
             user_id=run.user_id,
+            task_id=row.task_id,
             url_hash=row.url_hash,
             state=FrontierState.FETCH_FAILED,
             error_code=FetchErrorCode.ACCESS_DENIED.value,
@@ -410,6 +418,7 @@ class FetchNodeExecutor:
     def _handle_not_found(self, run, row, body) -> FetchResult:
         UrlFrontierRepository(self._db).mark_fetch_outcome(
             user_id=run.user_id,
+            task_id=row.task_id,
             url_hash=row.url_hash,
             state=FrontierState.FETCH_FAILED,
             error_code=FetchErrorCode.NOT_FOUND.value,
@@ -426,6 +435,7 @@ class FetchNodeExecutor:
     def _handle_unsupported(self, run, row, body) -> FetchResult:
         UrlFrontierRepository(self._db).mark_fetch_outcome(
             user_id=run.user_id,
+            task_id=row.task_id,
             url_hash=row.url_hash,
             state=FrontierState.FETCH_FAILED,
             error_code=FetchErrorCode.UNSUPPORTED_RESPONSE.value,
@@ -448,6 +458,7 @@ class FetchNodeExecutor:
             if credential_used:
                 frontier.mark_fetch_outcome(
                     user_id=run.user_id,
+                    task_id=row.task_id,
                     url_hash=row.url_hash,
                     state=FrontierState.FETCH_FAILED,
                     error_code=FetchErrorCode.ACCESS_DENIED.value,
@@ -461,6 +472,7 @@ class FetchNodeExecutor:
                 )
             frontier.mark_fetch_outcome(
                 user_id=run.user_id,
+                task_id=row.task_id,
                 url_hash=row.url_hash,
                 state=FrontierState.WAITING_CREDENTIAL,
                 error_code=FetchErrorCode.CREDENTIAL_REQUIRED.value,
@@ -474,6 +486,7 @@ class FetchNodeExecutor:
             )
         frontier.mark_fetch_outcome(
             user_id=run.user_id,
+            task_id=row.task_id,
             url_hash=row.url_hash,
             state=FrontierState.FETCH_FAILED,
             error_code=err.code.value,

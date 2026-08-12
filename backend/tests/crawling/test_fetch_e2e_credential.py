@@ -104,6 +104,7 @@ async def test_credential_cookie_e2e(ctx, storage, vault) -> None:
         db,
         ResolveCredentialAccessInput(
             user_id=user.id,
+            task_id=task.id,
             approval_id=approval.id,
             url_hash=waiting[0].url_hash,
             parameters={"task_id": task.id, "domain": "fixture.test", "type": "cookie"},

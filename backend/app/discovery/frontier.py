@@ -68,25 +68,38 @@ class UrlFrontierRepository:
         self._db.refresh(row)
         return url_hash, True
 
-    def _owned(self, user_id: int, url_hash: str) -> URLResource:
+    def _owned(self, user_id: int, task_id: int, url_hash: str) -> URLResource:
+        """按任务作用域定位 URLResource。
+
+        URLResource 的唯一身份是 (task_id, url_hash)（DB 唯一约束 uq_ur_task_url_hash），
+        不同 Task 可共享同一 canonical URL 而各自拥有独立行。查询必须同时带上 task_id，
+        否则跨 Task 复用同 seed 时 `.first()` 会选中最早 Task 的行，导致当前 Task 的
+        URL 状态永远停在 DISCOVERED（DEPLOY-GATE-3 blocker）。
+        """
         row = (
             self._db.query(URLResource)
-            .filter(URLResource.user_id == user_id, URLResource.url_hash == url_hash)
+            .filter(
+                URLResource.user_id == user_id,
+                URLResource.task_id == task_id,
+                URLResource.url_hash == url_hash,
+            )
             .first()
         )
         if row is None:
             raise DiscoveryError("URL 不属于当前用户或不存在")
         return row
 
-    def mark_state(self, *, user_id: int, url_hash: str, state: FrontierState) -> URLResource:
-        row = self._owned(user_id, url_hash)
+    def mark_state(
+        self, *, user_id: int, task_id: int, url_hash: str, state: FrontierState
+    ) -> URLResource:
+        row = self._owned(user_id, task_id, url_hash)
         row.status = state.value
         self._db.add(row)
         self._db.commit()
         return row
 
-    def mark_blocked(self, *, user_id: int, url_hash: str, reason: str) -> None:
-        row = self._owned(user_id, url_hash)
+    def mark_blocked(self, *, user_id: int, task_id: int, url_hash: str, reason: str) -> None:
+        row = self._owned(user_id, task_id, url_hash)
         row.status = FrontierState.BLOCKED.value
         evidence = dict(row.discovery_evidence or {})
         evidence["note"] = reason
@@ -94,8 +107,8 @@ class UrlFrontierRepository:
         self._db.add(row)
         self._db.commit()
 
-    def increment_discovery_count(self, *, user_id: int, url_hash: str) -> int:
-        row = self._owned(user_id, url_hash)
+    def increment_discovery_count(self, *, user_id: int, task_id: int, url_hash: str) -> int:
+        row = self._owned(user_id, task_id, url_hash)
         row.discovery_count = (row.discovery_count or 1) + 1
         self._db.add(row)
         self._db.commit()
@@ -135,6 +148,7 @@ class UrlFrontierRepository:
         self,
         *,
         user_id: int,
+        task_id: int,
         url_hash: str,
         state: FrontierState,
         error_code: str | None = None,
@@ -143,7 +157,7 @@ class UrlFrontierRepository:
 
         fetched_at 表示“最近一次抓取尝试完成时间”；失败记录 error_code 供审计/重试判断。
         """
-        row = self._owned(user_id, url_hash)
+        row = self._owned(user_id, task_id, url_hash)
         row.status = state.value
         row.fetched_at = datetime.now(UTC)
         row.fetch_error_code = error_code

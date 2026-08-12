@@ -119,6 +119,7 @@ class AccessRulesService:
                 if probe == AccessDecision.AUTH_PRIVATE:
                     frontier.mark_blocked(
                         user_id=run.user_id,
+                        task_id=run.task_id,
                         url_hash=row.url_hash,
                         reason="access_AUTH_PRIVATE_non_overrideable",
                     )
@@ -153,7 +154,10 @@ class AccessRulesService:
                         reason="robots_override_approval",
                     )
                 frontier.mark_state(
-                    user_id=run.user_id, url_hash=row.url_hash, state=FrontierState.WAITING_APPROVAL
+                    user_id=run.user_id,
+                    task_id=run.task_id,
+                    url_hash=row.url_hash,
+                    state=FrontierState.WAITING_APPROVAL,
                 )
                 from app.state.events import append_domain_event
 
@@ -184,11 +188,17 @@ class AccessRulesService:
                 )
             if decision == AccessDecision.ALLOW:
                 frontier.mark_state(
-                    user_id=run.user_id, url_hash=row.url_hash, state=FrontierState.ACCESS_ALLOWED
+                    user_id=run.user_id,
+                    task_id=run.task_id,
+                    url_hash=row.url_hash,
+                    state=FrontierState.ACCESS_ALLOWED,
                 )
             else:
                 frontier.mark_blocked(
-                    user_id=run.user_id, url_hash=row.url_hash, reason=f"access_{decision.value}"
+                    user_id=run.user_id,
+                    task_id=run.task_id,
+                    url_hash=row.url_hash,
+                    reason=f"access_{decision.value}",
                 )
                 blocked.append(row.url_hash)
         from app.state.events import append_domain_event

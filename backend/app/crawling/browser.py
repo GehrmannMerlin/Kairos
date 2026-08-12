@@ -172,6 +172,7 @@ class BrowserRenderNodeExecutor:
         if decision != AccessDecision.ALLOW:
             UrlFrontierRepository(self._db).mark_fetch_outcome(
                 user_id=run.user_id,
+                task_id=row.task_id,
                 url_hash=row.url_hash,
                 state=FrontierState.BLOCKED,
                 error_code=f"browser_access_{decision.value}",
@@ -192,6 +193,7 @@ class BrowserRenderNodeExecutor:
         if evidence is None:
             UrlFrontierRepository(self._db).mark_fetch_outcome(
                 user_id=run.user_id,
+                task_id=row.task_id,
                 url_hash=row.url_hash,
                 state=FrontierState.FETCH_FAILED,
                 error_code=FetchErrorCode.UNSUPPORTED_RESPONSE.value,
@@ -209,6 +211,7 @@ class BrowserRenderNodeExecutor:
         except BrowserRenderError as exc:
             UrlFrontierRepository(self._db).mark_fetch_outcome(
                 user_id=run.user_id,
+                task_id=row.task_id,
                 url_hash=row.url_hash,
                 state=FrontierState.FETCH_FAILED,
                 error_code=FetchErrorCode.INTERNAL_ERROR.value,
@@ -240,6 +243,7 @@ class BrowserRenderNodeExecutor:
         )
         UrlFrontierRepository(self._db).mark_fetch_outcome(
             user_id=run.user_id,
+            task_id=row.task_id,
             url_hash=row.url_hash,
             state=FrontierState.FETCHED,
             error_code=None,

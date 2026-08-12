@@ -20,6 +20,7 @@ from app.infra.deps import get_session_factory
 @dataclass
 class ResolveRobotsOverrideInput:
     user_id: int
+    task_id: int
     approval_id: int
     url_hash: str
     parameters: dict
@@ -35,19 +36,26 @@ def _resolve_with_session(session, inp: ResolveRobotsOverrideInput) -> dict:
                 user_id=inp.user_id, approval_id=inp.approval_id, parameters=inp.parameters
             )
             frontier.mark_state(
-                user_id=inp.user_id, url_hash=inp.url_hash, state=FrontierState.READY_FOR_FETCH
+                user_id=inp.user_id,
+                task_id=inp.task_id,
+                url_hash=inp.url_hash,
+                state=FrontierState.READY_FOR_FETCH,
             )
             return {"ok": True, "state": FrontierState.READY_FOR_FETCH.value}
         except Exception:
             session.rollback()
             frontier.mark_blocked(
                 user_id=inp.user_id,
+                task_id=inp.task_id,
                 url_hash=inp.url_hash,
                 reason="robots_override_revalidation_failed",
             )
             return {"ok": False, "state": FrontierState.BLOCKED.value}
     frontier.mark_blocked(
-        user_id=inp.user_id, url_hash=inp.url_hash, reason="robots_override_rejected"
+        user_id=inp.user_id,
+        task_id=inp.task_id,
+        url_hash=inp.url_hash,
+        reason="robots_override_rejected",
     )
     return {"ok": False, "state": FrontierState.BLOCKED.value}
 

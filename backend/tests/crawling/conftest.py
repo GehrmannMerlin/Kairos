@@ -227,7 +227,7 @@ def seed_ready(ctx, url: str, spec: dict | None = None) -> str:
         source=DiscoverySource.USER_SEED,
     )
     frontier.mark_state(
-        user_id=user.id, url_hash=url_hash, state=FrontierState.READY_FOR_FETCH
+        user_id=user.id, task_id=task.id, url_hash=url_hash, state=FrontierState.READY_FOR_FETCH
     )
     return url_hash
 

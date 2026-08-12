@@ -21,6 +21,7 @@ from app.infra.deps import get_session_factory
 @dataclass
 class ResolveCredentialAccessInput:
     user_id: int
+    task_id: int
     approval_id: int
     url_hash: str
     parameters: dict
@@ -34,7 +35,7 @@ def _host_of(url: str) -> str:
 def _resolve_with_session(session, inp: ResolveCredentialAccessInput) -> dict:
     frontier = UrlFrontierRepository(session)
     domain = str((inp.parameters or {}).get("domain") or "")
-    task_id = int((inp.parameters or {}).get("task_id") or 0)
+    task_id = inp.task_id
     if inp.decision == "APPROVED":
         try:
             ApprovalService(session).consume(
@@ -44,6 +45,7 @@ def _resolve_with_session(session, inp: ResolveCredentialAccessInput) -> dict:
             session.rollback()
             frontier.mark_blocked(
                 user_id=inp.user_id,
+                task_id=inp.task_id,
                 url_hash=inp.url_hash,
                 reason="credential_approval_revalidation_failed",
             )
@@ -58,13 +60,17 @@ def _resolve_with_session(session, inp: ResolveCredentialAccessInput) -> dict:
                 if not domain or _host_of(row.url) == domain:
                     frontier.mark_state(
                         user_id=inp.user_id,
+                        task_id=row.task_id,
                         url_hash=row.url_hash,
                         state=FrontierState.READY_FOR_FETCH,
                     )
                     moved += 1
         return {"ok": True, "state": FrontierState.READY_FOR_FETCH.value, "moved": moved}
     frontier.mark_blocked(
-        user_id=inp.user_id, url_hash=inp.url_hash, reason="credential_approval_rejected"
+        user_id=inp.user_id,
+        task_id=inp.task_id,
+        url_hash=inp.url_hash,
+        reason="credential_approval_rejected",
     )
     return {"ok": False, "state": FrontierState.BLOCKED.value}
 

@@ -299,6 +299,7 @@ async def test_scenario_c_robots_denied_public_override_approval(ctx, http) -> N
         db,
         ResolveRobotsOverrideInput(
             user_id=user.id,
+            task_id=task.id,
             approval_id=approval_id,
             url_hash=h,
             parameters=parameters,

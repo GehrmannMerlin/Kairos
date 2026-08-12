@@ -52,7 +52,12 @@ async def test_render_requires_escalation_evidence(ctx, storage, renderer) -> No
         .filter(URLResource.user_id == user.id, URLResource.url == "http://fixture.test/")
         .first()
     )
-    frontier.mark_state(user_id=user.id, url_hash=row.url_hash, state=FrontierState.BROWSER_PENDING)
+    frontier.mark_state(
+        user_id=user.id,
+        task_id=row.task_id,
+        url_hash=row.url_hash,
+        state=FrontierState.BROWSER_PENDING,
+    )
 
     result = await browser.execute(make_unit(run, 1, "browser_render"))
 
