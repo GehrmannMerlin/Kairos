@@ -274,6 +274,42 @@ CASES = [
         ),
         PlanValidationResult.VALID,
     ),
+    # 17 browser_render 无前置 fetch → INVALID（BROWSER_PENDING 仅由 fetch 升级产生）。
+    # 回归：Gate-3 Golden C 真实 LLM 生成 access_rules→browser_render（无 fetch）计划，
+    # browser_render 找不到可渲染 URL，静默 0 结果。
+    (
+        "browser_without_fetch",
+        _draft(
+            [
+                _node("n1", "access_rules_check", parameters={"respect_robots": True}),
+                _node(
+                    "n2", "browser_render", parameters={"wait_selector": "body"}, depends_on=["n1"]
+                ),
+                _node("n3", "extract", parameters={"fields": ["公司名"]}, depends_on=["n2"]),
+            ]
+        ),
+        PlanValidationResult.INVALID,
+    ),
+    # 18 browser_render 有前置 fetch → VALID（HTTP 升级证据触发 Playwright）
+    (
+        "browser_with_fetch",
+        _draft(
+            [
+                _node("n1", "access_rules_check", parameters={"respect_robots": True}),
+                _node(
+                    "n2",
+                    "fetch",
+                    parameters={"url_template": "https://example.com/x"},
+                    depends_on=["n1"],
+                ),
+                _node(
+                    "n3", "browser_render", parameters={"wait_selector": "body"}, depends_on=["n2"]
+                ),
+                _node("n4", "extract", parameters={"fields": ["公司名"]}, depends_on=["n3"]),
+            ]
+        ),
+        PlanValidationResult.VALID,
+    ),
 ]
 
 

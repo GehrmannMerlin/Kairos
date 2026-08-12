@@ -297,6 +297,25 @@ def validate_plan(
             node_risk_levels=node_risk_levels,
         )
 
+    # 8b. 升级链完整性：browser_render 必须由 fetch 的升级证据触发。
+    # BROWSER_PENDING 仅由 fetch 对空壳/JS 页面的 escalation 产生；没有先行的
+    # fetch，browser_render 找不到可渲染 URL，计划合法但静默产出 0 结果
+    # （Gate-3 Golden C 真实 LLM 生成 access_rules→browser_render 无 fetch 计划根因）。
+    if any(n.node_type == NodeType.BROWSER_RENDER for n in graph.nodes):
+        fetch_positions = [i for i, n in enumerate(graph.nodes) if n.node_type == NodeType.FETCH]
+        for n in graph.nodes:
+            if n.node_type != NodeType.BROWSER_RENDER:
+                continue
+            pos = next(i for i, x in enumerate(graph.nodes) if x.node_id == n.node_id)
+            if not any(fp < pos for fp in fetch_positions):
+                issues.append(
+                    PlanValidationIssue(
+                        code="BROWSER_REQUIRES_FETCH",
+                        message="browser_render 需前置 fetch（Playwright 由 HTTP 升级证据触发）",
+                        node_id=n.node_id,
+                    )
+                )
+
     # 结构性问题 -> INVALID
     structural = [
         i
