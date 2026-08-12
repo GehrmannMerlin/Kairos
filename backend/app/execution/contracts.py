@@ -115,7 +115,10 @@ class DagNodeExecution(BaseModel):
     last_error: str | None = None
     attempt_count: int = 0
     tool: str | None = None
+    model: str | None = None
     duration_ms: int | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
     url_fetched_count: int = 0
     record_count: int = 0
 

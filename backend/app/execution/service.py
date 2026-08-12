@@ -354,8 +354,11 @@ class ExecutionService:
         last_status = None
         last_error = None
         tool = None
+        model = None
         duration_ms = None
         attempt_count = 0
+        tokens_in = None
+        tokens_out = None
         for ev in node_events:
             payload = ev.payload or {}
             if payload.get("status"):
@@ -364,8 +367,14 @@ class ExecutionService:
                 last_error = str(payload["error_code"])
             if payload.get("tool"):
                 tool = str(payload["tool"])
+            if payload.get("model"):
+                model = str(payload["model"])
             if payload.get("duration_ms") is not None:
                 duration_ms = _safe_int(payload["duration_ms"])
+            if payload.get("tokens_in") is not None:
+                tokens_in = _safe_int(payload["tokens_in"])
+            if payload.get("tokens_out") is not None:
+                tokens_out = _safe_int(payload["tokens_out"])
             attempt = _safe_int(payload.get("attempt"))
             attempt_count = max(attempt_count, attempt)
         url_fetched_count = (
@@ -380,7 +389,10 @@ class ExecutionService:
             last_error=last_error,
             attempt_count=attempt_count,
             tool=tool,
+            model=model,
             duration_ms=duration_ms,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
             url_fetched_count=url_fetched_count,
             record_count=record_count,
         )
