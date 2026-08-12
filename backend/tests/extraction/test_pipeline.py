@@ -76,7 +76,7 @@ async def test_llm_url_field_does_not_require_body_text_grounding(ctx, storage) 
     文本 grounding 不应拦截 URL 字段（URL 格式校验已防幻觉）；非 URL 字段仍强制 grounding。"""
     db = ctx["db"]
     user = ctx["user"]
-    body = "<html><body><p>这是一段页面正文，其中没有 URL。</p></body></html>".encode("utf-8")
+    body = "<html><body><p>这是一段页面正文，其中没有 URL。</p></body></html>".encode()
     snap_id = seed_snapshot(ctx, body, storage, url="https://gm.example.com/page")
     snapshot = db.get(PageSnapshot, snap_id)
     spec = SpecVersionRepository(db).get_version(user.id, ctx["task"].id, 1)
