@@ -12,6 +12,7 @@ from app.api.routes import (
     health,
     plans,
     providers,
+    records,
     tasks,
     templates,
 )
@@ -27,4 +28,5 @@ api_router.include_router(approvals.router)
 api_router.include_router(approvals.task_router)
 api_router.include_router(credentials.router)
 api_router.include_router(credentials.saved_router)
+api_router.include_router(records.router)
 api_router.include_router(events.router)
