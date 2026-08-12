@@ -11,7 +11,7 @@ name: kairos-production
 
 x-backend-env: &backend-env
   KAIROS_ENV: production
-  KAIROS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?}@postgres:5432/${POSTGRES_DB:?}
+  KAIROS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
   KAIROS_TEMPORAL_ADDRESS: temporal:7233
   KAIROS_TEMPORAL_NAMESPACE: ${KAIROS_TEMPORAL_NAMESPACE:?}
   KAIROS_S3_ENDPOINT: minio:9000
