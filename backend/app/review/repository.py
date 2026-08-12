@@ -171,6 +171,16 @@ class ReviewRepository:
         )
         return total, result
 
+    def query_records_all(
+        self, *, user_id: int, task_id: int, params: RecordListParams
+    ) -> list[Record]:
+        """与 query_records 相同 filter 语义，不分页，固定 record.id ASC（M-15 导出确定性）。"""
+        params = params.model_copy(
+            update={"page": 1, "page_size": 10**9, "sort_by": "id", "sort_order": "asc"}
+        )
+        _, rows = self.query_records(user_id=user_id, task_id=task_id, params=params)
+        return rows
+
     def list_overrides(self, *, user_id: int, record_id: int) -> list[RecordFieldOverride]:
         return list(
             self._db.scalars(
