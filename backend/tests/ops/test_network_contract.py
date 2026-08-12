@@ -70,3 +70,16 @@ def test_staging_cors_is_staging_only() -> None:
     combined = base + "\n" + staging
     assert '["https://staging.kairos.ac.cn"]' in combined
     assert '["*"]' not in combined
+
+
+def test_production_vhost_proxies_to_production_containers_only() -> None:
+    # M-18：production vhost 必须代理到 kairos-production-*-1 容器，
+    # 不能命中 staging 独占的 kairos-api/kairos-web 容器名（否则串环境）。
+    vhost_path = os.path.join(ROOT, "infra", "reverse-proxy", "zz-kairos-production-tls.conf")
+    assert os.path.exists(vhost_path), f"missing {vhost_path}"
+    with open(vhost_path, encoding="utf-8") as fh:
+        vhost = fh.read()
+    assert "kairos-production-api-1:8000" in vhost
+    assert "kairos-production-web-1:80" in vhost
+    assert "http://kairos-api:8000" not in vhost, "must not proxy to staging api"
+    assert "http://kairos-web:80" not in vhost, "must not proxy to staging web"
