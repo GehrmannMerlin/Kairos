@@ -65,6 +65,44 @@ def test_state_transition_to_ready_for_fetch(db) -> None:
     assert ready[0].url_hash == h
 
 
+def test_list_ready_for_fetch_includes_access_allowed(db) -> None:
+    """DEPLOY-GATE-3 Golden B 回归：access_rules 已放行（ACCESS_ALLOWED）但计划未含
+    link_discovery 时，搜索/种子结果 URL 仍应被 fetch 消费 —— fetch 不得只依赖
+    READY_FOR_FETCH，否则真实 LLM 省略 link_discovery 的计划会静默产出 0 记录。"""
+    repo = UrlFrontierRepository(db)
+    h_allowed, _ = repo.upsert_discovery(
+        task_id=5,
+        user_id=1,
+        run_id=1,
+        spec_version=1,
+        raw_url="https://example.com/allowed",
+        source=DiscoverySource.SEARCH_RESULT,
+    )
+    repo.mark_state(user_id=1, task_id=5, url_hash=h_allowed, state=FrontierState.ACCESS_ALLOWED)
+    h_ready, _ = repo.upsert_discovery(
+        task_id=5,
+        user_id=1,
+        run_id=1,
+        spec_version=1,
+        raw_url="https://example.com/ready",
+        source=DiscoverySource.SITEMAP,
+    )
+    repo.mark_state(user_id=1, task_id=5, url_hash=h_ready, state=FrontierState.READY_FOR_FETCH)
+    h_blocked, _ = repo.upsert_discovery(
+        task_id=5,
+        user_id=1,
+        run_id=1,
+        spec_version=1,
+        raw_url="https://example.com/blocked",
+        source=DiscoverySource.USER_SEED,
+    )
+    repo.mark_state(user_id=1, task_id=5, url_hash=h_blocked, state=FrontierState.BLOCKED)
+    urls = {r.url for r in repo.list_ready_for_fetch(user_id=1, task_id=5)}
+    assert "https://example.com/allowed" in urls
+    assert "https://example.com/ready" in urls
+    assert "https://example.com/blocked" not in urls
+
+
 def test_replay_after_restart_resumes_without_duplicate(db) -> None:
     """幂等重放：同 batch 重试不产生第二个有效 Entry，也不丢已提交状态。"""
     repo = UrlFrontierRepository(db)
@@ -113,9 +151,9 @@ def test_state_mark_is_scoped_to_task_when_seed_shared_across_tasks(db) -> None:
             raw_url="https://example.com/seed",
             source=DiscoverySource.USER_SEED,
         )
-        assert len(
-            repo.list_by_state(user_id=1, task_id=task_id, state=FrontierState.DISCOVERED)
-        ) == 1
+        assert (
+            len(repo.list_by_state(user_id=1, task_id=task_id, state=FrontierState.DISCOVERED)) == 1
+        )
     assert db.query(URLResource).filter(URLResource.url_hash == h).count() == 3
 
     # 每个 Task 各自 mark_state(ACCESS_ALLOWED)，只能影响自己的行
@@ -128,15 +166,13 @@ def test_state_mark_is_scoped_to_task_when_seed_shared_across_tasks(db) -> None:
             state=FrontierState.ACCESS_ALLOWED,
         )
     for task_id in task_ids:
-        allowed = repo.list_by_state(
-            user_id=1, task_id=task_id, state=FrontierState.ACCESS_ALLOWED
-        )
+        allowed = repo.list_by_state(user_id=1, task_id=task_id, state=FrontierState.ACCESS_ALLOWED)
         assert len(allowed) == 1
         assert allowed[0].task_id == task_id
         # 其他 Task 的行不受本次 mark 影响（各 Task 恰好一行 ACCESS_ALLOWED）
-        assert len(
-            repo.list_by_state(user_id=1, task_id=task_id, state=FrontierState.DISCOVERED)
-        ) == 0
+        assert (
+            len(repo.list_by_state(user_id=1, task_id=task_id, state=FrontierState.DISCOVERED)) == 0
+        )
 
     # mark_fetch_outcome 同样按 task 隔离：只把 Task 31 的 ACCESS_ALLOWED → FETCHED
     repo.mark_fetch_outcome(
