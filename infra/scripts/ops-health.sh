@@ -20,6 +20,9 @@ fi
 
 SCRIPTS_DIR="${SCRIPTS_DIR:-/srv/kairos/scripts}"
 BACKUP_DIR="${BACKUP_DIR:-/srv/kairos/backups}"
+API_CONTAINER="${API_CONTAINER:-kairos-api}"
+WORKER_CONTAINER="${WORKER_CONTAINER:-kairos-staging-worker-1}"
+WEB_CONTAINER="${WEB_CONTAINER:-kairos-web}"
 
 status=PASS
 declare -A checks=()
@@ -31,13 +34,15 @@ fail_fast_status() {  # 只会升级，不会降级：PASS < P1 < P0
   fi
 }
 
-# --- API liveness / readiness（走容器内网，不经公网）---
-if curl -fsS -m 5 http://kairos-api:8000/health/live >/dev/null 2>&1; then
+# --- API liveness / readiness（docker exec 容器内自检，api 镜像无 curl → 用 python urllib）---
+if docker exec "$API_CONTAINER" python -c \
+  "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health/live', timeout=5).status==200 else 1)" >/dev/null 2>&1; then
   checks[api_live]=ok
 else
   checks[api_live]=down; fail_fast_status P0
 fi
-ready="$(curl -fsS -m 8 http://kairos-api:8000/health/ready 2>/dev/null || echo '{"status":"error"}')"
+ready="$(docker exec "$API_CONTAINER" python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/health/ready', timeout=8).read().decode())" 2>/dev/null || echo '{"status":"error"}')"
 if printf '%s' "$ready" | grep -q '"status":"ok"'; then
   checks[api_ready]=ok
 else
@@ -45,12 +50,12 @@ else
 fi
 
 # --- 业务容器状态 + restart loop ---
-for c in kairos-api kairos-worker kairos-web; do
+for c in "$API_CONTAINER" "$WORKER_CONTAINER" "$WEB_CONTAINER"; do
   st="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)"
   checks["container_$c"]=$st
   if [ "$st" != "running" ]; then fail_fast_status P0; fi
 done
-for c in kairos-api kairos-worker; do
+for c in "$API_CONTAINER" "$WORKER_CONTAINER"; do
   r="$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo 0)"
   if [ "$r" -gt 5 ]; then checks["restart_loop_$c"]=$r; fail_fast_status P1; fi
 done
@@ -70,8 +75,8 @@ done
 # --- DB / 业务指标（api 容器内）---
 db_metrics='{}'
 if [ -f "$SCRIPTS_DIR/_ops_health.py" ]; then
-  docker cp "$SCRIPTS_DIR/_ops_health.py" kairos-api:/app/_ops_health.py >/dev/null 2>&1 || true
-  db_metrics="$(docker exec kairos-api python /app/_ops_health.py 2>/dev/null || echo '{}')"
+  docker cp "$SCRIPTS_DIR/_ops_health.py" "$API_CONTAINER":/app/_ops_health.py >/dev/null 2>&1 || true
+  db_metrics="$(docker exec "$API_CONTAINER" python /app/_ops_health.py 2>/dev/null || echo '{}')"
 fi
 
 # --- 最近备份存在性 ---
