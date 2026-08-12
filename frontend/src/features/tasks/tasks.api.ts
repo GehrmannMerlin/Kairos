@@ -20,8 +20,13 @@ export interface TaskShellListDto {
   tasks: TaskShellDto[]
 }
 
-export function listTasks(): Promise<TaskShellListDto> {
-  return apiClient.get<TaskShellListDto>('/tasks')
+export interface ListTasksOptions {
+  view?: string
+}
+
+export function listTasks(options: ListTasksOptions = {}): Promise<TaskShellListDto> {
+  const qs = options.view ? `?view=${options.view}` : ''
+  return apiClient.get<TaskShellListDto>(`/tasks${qs}`)
 }
 
 export function getTask(taskId: string | number): Promise<TaskShellDto> {
