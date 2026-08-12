@@ -20,7 +20,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", default=False)
     parser.add_argument("--days", type=int, default=None)
     args = parser.parse_args()
-    days = args.days or get_settings().retention_heavy_days
+    days = args.days if args.days is not None else get_settings().retention_heavy_days
     session = get_session_factory()()
     storage = get_object_storage()
     result = asyncio.run(
