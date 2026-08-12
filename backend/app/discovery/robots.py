@@ -10,9 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from time import monotonic
 
-from app.discovery.http import DiscoveryHttp
+from app.discovery.http import DEFAULT_USER_AGENT, DiscoveryHttp
 
-DEFAULT_USER_AGENT = "KairosBot"
 _MAX_ROBOTS_BYTES = 512 * 1024
 
 

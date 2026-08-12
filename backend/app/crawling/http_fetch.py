@@ -15,6 +15,7 @@ from urllib.parse import urljoin
 from app.crawling.contracts import redact_headers
 from app.crawling.errors import FetchErrorCode, HttpFetchError
 from app.discovery.errors import DiscoveryError
+from app.discovery.http import DEFAULT_USER_AGENT
 from app.discovery.ssrf import assert_safe_url
 
 _REDIRECT_STATUS = (301, 302, 303, 307, 308)
@@ -49,8 +50,12 @@ class _HttpxFetchTransport:
     ) -> _RawResponse:
         import httpx
 
+        # 默认带全站统一 UA（显式传入的 headers 不覆盖）；避免 python-httpx 默认
+        # UA 被站点 WAF/反爬拦截（DEPLOY-GATE-3：shanghai.gov.cn 403）。
+        merged = dict(headers or {})
+        merged.setdefault("User-Agent", DEFAULT_USER_AGENT)
         async with httpx.AsyncClient(
-            timeout=timeout_seconds, follow_redirects=False, headers=headers
+            timeout=timeout_seconds, follow_redirects=False, headers=merged
         ) as client:
             resp = await client.request(method, url)
             return _RawResponse(

@@ -16,6 +16,11 @@ from app.discovery.ssrf import assert_safe_url
 _MAX_REDIRECTS = 5
 _REDIRECT_STATUS = (301, 302, 303, 307, 308)
 
+# 全站统一 User-Agent：robots 策略匹配与实际 HTTP 请求使用同一 UA，避免默认
+# ``python-httpx`` UA 被站点 WAF/反爬识别拦截（DEPLOY-GATE-3：shanghai.gov.cn 对
+# python-httpx UA 返回 403，对 KairosBot 返回 200）。
+DEFAULT_USER_AGENT = "KairosBot"
+
 
 @dataclass
 class DiscoveryTextResponse:
@@ -46,7 +51,11 @@ class _HttpxDiscoveryTransport:
     async def request(self, *, method: str, url: str, timeout_seconds: float) -> _HttpResponse:
         import httpx
 
-        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout_seconds,
+            follow_redirects=False,
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+        ) as client:
             resp = await client.request(method, url)
             return _HttpResponse(
                 status_code=resp.status_code,
