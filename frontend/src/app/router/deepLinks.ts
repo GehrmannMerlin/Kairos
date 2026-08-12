@@ -6,6 +6,11 @@ export interface TaskDeepLinkQuery {
   status?: string
   review_type?: string
   source_type?: string
+  extract_method?: string
+  min_confidence?: string
+  q?: string
+  field?: string
+  value?: string
 }
 
 function firstString(value: LocationQueryValue | LocationQueryValue[]): string | undefined {
@@ -20,5 +25,10 @@ export function parseTaskQuery(query: LocationQuery): TaskDeepLinkQuery {
     status: firstString(query.status),
     review_type: firstString(query.review_type),
     source_type: firstString(query.source_type),
+    extract_method: firstString(query.extract_method),
+    min_confidence: firstString(query.min_confidence),
+    q: firstString(query.q),
+    field: firstString(query.field),
+    value: firstString(query.value),
   }
 }
