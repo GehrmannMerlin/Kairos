@@ -18,6 +18,7 @@ from app.api.routes import (
     providers,
     quality,
     records,
+    settings_data,
     tasks,
     templates,
 )
@@ -40,3 +41,4 @@ api_router.include_router(execution.router)
 api_router.include_router(evidence.router)
 api_router.include_router(artifacts.router)
 api_router.include_router(completion.router)
+api_router.include_router(settings_data.router)

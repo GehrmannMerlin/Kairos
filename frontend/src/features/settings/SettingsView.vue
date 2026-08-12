@@ -8,6 +8,13 @@ import type { SessionDto } from '@/features/auth/auth.api'
 import * as authApi from '@/features/auth/auth.api'
 import * as credentialsApi from '@/features/tasks/credentials.api'
 import * as providersApi from '@/features/providers/providers.api'
+import {
+  formatBytes,
+  getStorageSummary,
+  postCleanupPreview,
+  type CleanupPreviewDto,
+  type StorageSummaryDto,
+} from '@/features/settings/storage.api'
 
 // 设置四区（D-052）。账户资料/安全/采集默认值接入 M-02/M-03 真实能力；
 // 尚未实现的字段扩展/高级运行默认值/存储与数据为明确「后续接入」，禁止假开关。
@@ -125,10 +132,41 @@ async function onDeleteSavedCredential(credentialId: number): Promise<void> {
   await loadSavedCredentials()
 }
 
+// ④ 存储与数据（D-052/D-072）：只读摘要 + retention dry-run 预览
+const storageSummary = ref<StorageSummaryDto | null>(null)
+const summaryLoading = ref(false)
+const preview = ref<CleanupPreviewDto | null>(null)
+const previewLoading = ref(false)
+const previewError = ref<string | null>(null)
+
+async function loadStorageSummary(): Promise<void> {
+  summaryLoading.value = true
+  try {
+    storageSummary.value = await getStorageSummary()
+  } catch {
+    storageSummary.value = null
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+async function onCleanupPreview(): Promise<void> {
+  previewLoading.value = true
+  previewError.value = null
+  try {
+    preview.value = await postCleanupPreview()
+  } catch (err) {
+    previewError.value = mapApiError(err).message
+  } finally {
+    previewLoading.value = false
+  }
+}
+
 onMounted(() => {
   void loadSessions()
   void loadDefaultModel()
   void loadSavedCredentials()
+  void loadStorageSummary()
 })
 </script>
 
@@ -238,9 +276,33 @@ onMounted(() => {
 
     <section class="settings__section">
       <h2>存储与数据</h2>
-      <p class="muted">
-        任务 / 记录 / 证据 / 导出统计、清理已删除任务文件、删除全部数据等危险操作将在后续模块接入
-      </p>
+      <div class="settings__block">
+        <h3>存储概要</h3>
+        <p v-if="summaryLoading" class="muted">加载中…</p>
+        <dl v-else-if="storageSummary" class="settings__summary">
+          <div><dt>任务</dt><dd>{{ storageSummary.task_count }}</dd></div>
+          <div><dt>记录</dt><dd>{{ storageSummary.record_count }}</dd></div>
+          <div><dt>证据</dt><dd>{{ storageSummary.evidence_count }}</dd></div>
+          <div><dt>导出 Artifact</dt><dd>{{ storageSummary.artifact_count }}</dd></div>
+          <div><dt>重型文件占用</dt><dd>{{ formatBytes(storageSummary.snapshot_bytes) }}</dd></div>
+          <div><dt>CSV 占用</dt><dd>{{ formatBytes(storageSummary.artifact_bytes) }}</dd></div>
+          <div><dt>保留天数</dt><dd>{{ storageSummary.retention_days }} 天</dd></div>
+        </dl>
+        <p v-else class="muted">无法加载存储概要</p>
+      </div>
+
+      <div class="settings__block">
+        <h3>生命周期清理预览</h3>
+        <p class="muted">仅预览到期且不再承担证据作用的重型文件，不会执行删除。</p>
+        <button type="button" :disabled="previewLoading" @click="onCleanupPreview">
+          {{ previewLoading ? '预览中…' : '运行清理预览' }}
+        </button>
+        <p v-if="previewError" class="form-error">{{ previewError }}</p>
+        <p v-if="preview" class="ok" data-testid="cleanup-preview">
+          已扫描 {{ preview.scanned }}，待清理 {{ preview.eligible }}，保护 {{ preview.protected }}，
+          将释放 {{ formatBytes(preview.bytes_freed) }}
+        </p>
+      </div>
     </section>
   </section>
 </template>
@@ -308,6 +370,25 @@ onMounted(() => {
   padding: 0.3rem 0;
   border-bottom: 1px dashed var(--color-border);
   font-size: 0.9rem;
+}
+.settings__summary {
+  margin: 0;
+  max-width: 420px;
+}
+.settings__summary div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px dashed var(--color-border);
+  font-size: 0.9rem;
+}
+.settings__summary dt {
+  color: var(--color-text-secondary);
+}
+.settings__summary dd {
+  margin: 0;
+  font-weight: 600;
 }
 .ok {
   color: var(--color-success);

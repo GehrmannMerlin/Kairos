@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     site_strategy_ttl_seconds: int = 86400
     browser_render_timeout_seconds: float = 60.0
 
+    # --- M-15 retention（D-072，部署配置；测试用独立短值 fixture）---
+    retention_heavy_days: int = 90
+
 
     @field_validator("cors_origins", mode="before")
     @classmethod
