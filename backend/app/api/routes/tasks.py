@@ -34,6 +34,7 @@ from app.api.schemas import (
     UnderstandResponse,
     UpdateSpecDraftCommand,
 )
+from app.artifacts.contracts import PermanentDeleteCommand
 from app.auth.deps import require_user
 from app.auth.models import User
 from app.domain.errors import SpecValidationError
@@ -43,7 +44,8 @@ from app.domain.service import DomainService
 from app.domain.task_commands import TaskCommandService
 from app.domain.task_draft import TaskDraftService
 from app.domain.template_service import TemplateService
-from app.infra.deps import get_db
+from app.infra.deps import get_db, storage
+from app.infra.object_storage import ObjectStorage
 from app.infra.outbox_dispatch import OutboxTemporalDispatcher
 from app.infra.temporal import get_temporal_client
 from app.state.states import TaskState, allowed_task_actions
@@ -317,3 +319,23 @@ async def task_command(
             exc_info=True,
         )
     return TaskCommandResponse(command=result.command, state=result.state, version=result.version)
+
+
+@router.post("/{task_id}/permanent-delete", response_model=dict)
+async def permanent_delete(
+    task_id: int,
+    cmd: PermanentDeleteCommand,
+    user: User = Depends(require_user),
+    db: DbSession = Depends(get_db),
+    object_storage: ObjectStorage = Depends(storage),
+) -> dict:
+    """永久删除（D-065/D-072）：owner + state==DELETED + 二次强确认，引用安全清理。"""
+    from dataclasses import asdict
+
+    from app.artifacts.deletion import DeletionService
+
+    TaskRepository(db).get_owned(user.id, task_id)
+    manifest = await DeletionService(db, object_storage).permanent_delete(
+        user_id=user.id, task_id=task_id, confirmed=cmd.confirmed
+    )
+    return {"task_id": task_id, **asdict(manifest)}
