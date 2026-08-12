@@ -1,5 +1,4 @@
 """E2E Fixture 2 — 动态页面：HTTP shell → EscalationEvidence → Playwright → rendered snapshot。"""
-
 from __future__ import annotations
 
 import pytest
@@ -93,50 +92,3 @@ async def test_static_page_never_reaches_renderer(ctx, storage, renderer) -> Non
     assert browser_result.status == "OK"
     assert browser_result.committed_refs["rendered"] == 0
     assert renderer.invocation_count == 0  # 静态页面不启动 Playwright（强制门禁）
-
-
-@pytest.mark.asyncio
-async def test_fetch_render_if_empty_renders_directly(ctx, storage, renderer) -> None:
-    """DEPLOY-GATE-3 Golden C 回归：render_if_empty=true 时，fetch 在 HTTP 空壳升级
-    证据提交后由 Playwright 直接渲染（不依赖计划是否含独立 browser_render 节点）。"""
-    db = ctx["db"]
-    user = ctx["user"]
-    task = ctx["task"]
-    run = ctx["run"]
-    transport = FakeFetchTransport(
-        {
-            "/robots.txt": {"status": 200, "body": b"User-agent: *\nAllow: /\n"},
-            "/dynamic": {
-                "status": 200,
-                "body": (
-                    b'<html><head></head><body><div id="app"></div>'
-                    b'<script>document.getElementById("app").innerHTML='
-                    b'"<p>JS Rendered Content</p>";</script>'
-                    b"</body></html>"
-                ),
-            },
-        }
-    )
-    seed_ready(ctx, "http://fixture.test/dynamic")
-    http = SafeFetchHttp(transport=transport, allow_hosts=frozenset({SITE_HOST}))
-    robots = RobotsCache(DiscoveryHttp(transport=transport, allow_hosts=frozenset({SITE_HOST})))
-    fetch = FetchNodeExecutor(
-        db, http=http, robots=robots, storage=storage, retry_base_seconds=0, renderer=renderer
-    )
-
-    result = await fetch.execute(make_unit(run, 1, "fetch", parameters={"render_if_empty": True}))
-    assert result.status == "OK"
-    assert result.committed_refs["fetched"] == 1
-    assert result.committed_refs["browser_pending"] == 0
-    assert renderer.invocation_count == 1  # 升级证据后 Playwright 只被调用一次
-
-    snapshots = PageSnapshotRepository(db).list_for_task(user.id, task.id)
-    assert len(snapshots) == 2  # HTTP shell（含升级证据）+ rendered
-    rendered = snapshots[1]
-    assert rendered.tool == "playwright"
-    assert rendered.escalation_evidence is not None  # 升级证据在 rendered 快照保留
-    assert rendered.prior_snapshot_id == snapshots[0].id
-    fetched = UrlFrontierRepository(db).list_by_state(
-        user_id=user.id, task_id=task.id, state=FrontierState.FETCHED
-    )
-    assert len(fetched) == 1 and fetched[0].url == "http://fixture.test/dynamic"

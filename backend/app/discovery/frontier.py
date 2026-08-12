@@ -131,21 +131,13 @@ class UrlFrontierRepository:
     def list_ready_for_fetch(
         self, *, user_id: int, task_id: int, limit: int = 200
     ) -> list[URLResource]:
-        """M-10 Handoff：消费 READY_FOR_FETCH（link_discovery 已移交）以及
-        ACCESS_ALLOWED（access_rules 已放行；当计划未含 link_discovery 时搜索/种子
-        结果 URL 仍应被抓取 —— Gate-3 Golden B 真实 LLM 计划缺失 link_discovery
-        根因）。按 priority 降序。"""
+        """M-10 Handoff：只消费 READY_FOR_FETCH，按 priority 降序。"""
         return (
             self._db.query(URLResource)
             .filter(
                 URLResource.user_id == user_id,
                 URLResource.task_id == task_id,
-                URLResource.status.in_(
-                    [
-                        FrontierState.READY_FOR_FETCH.value,
-                        FrontierState.ACCESS_ALLOWED.value,
-                    ]
-                ),
+                URLResource.status == FrontierState.READY_FOR_FETCH.value,
             )
             .order_by(URLResource.priority.desc(), URLResource.id.asc())
             .limit(limit)

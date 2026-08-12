@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.plan.nodes import NodeRegistry, NodeType, ResourceKind, RiskLevel
+from app.plan.nodes import NodeRegistry, NodeType, RiskLevel
 from app.plan.schemas import (
     PlanGraphDraft,
     PlanValidationIssue,
@@ -195,18 +195,10 @@ def validate_plan(
         dst_def = registry.get(dst.node_type)
         if src_def and dst_def:
             for ref in edge.resource_refs:
-                src_ok = ref.kind in src_def.output_contract
-                dst_ok = ref.kind in dst_def.input_contract
-                # M-09 source_search executor 把搜索结果 URL 物化为 URL Frontier 资源
-                # （D-068 典型路径 SourceSearch → AccessRulesCheck → LinkDiscovery →
-                # Fetch）。因此 source_search 产出的 candidate 可被消费 url 的发现节点
-                # 接收，等价于候选站点已作为 url 资源进入 Frontier。
                 if (
-                    ref.kind == ResourceKind.CANDIDATE
-                    and ResourceKind.URL in dst_def.input_contract
+                    ref.kind not in src_def.output_contract
+                    or ref.kind not in dst_def.input_contract
                 ):
-                    dst_ok = True
-                if not src_ok or not dst_ok:
                     issues.append(
                         PlanValidationIssue(
                             code="RESOURCE_EDGE_INCOMPATIBLE",
@@ -296,25 +288,6 @@ def validate_plan(
             issues=issues,
             node_risk_levels=node_risk_levels,
         )
-
-    # 8b. 升级链完整性：browser_render 必须由 fetch 的升级证据触发。
-    # BROWSER_PENDING 仅由 fetch 对空壳/JS 页面的 escalation 产生；没有先行的
-    # fetch，browser_render 找不到可渲染 URL，计划合法但静默产出 0 结果
-    # （Gate-3 Golden C 真实 LLM 生成 access_rules→browser_render 无 fetch 计划根因）。
-    if any(n.node_type == NodeType.BROWSER_RENDER for n in graph.nodes):
-        fetch_positions = [i for i, n in enumerate(graph.nodes) if n.node_type == NodeType.FETCH]
-        for n in graph.nodes:
-            if n.node_type != NodeType.BROWSER_RENDER:
-                continue
-            pos = next(i for i, x in enumerate(graph.nodes) if x.node_id == n.node_id)
-            if not any(fp < pos for fp in fetch_positions):
-                issues.append(
-                    PlanValidationIssue(
-                        code="BROWSER_REQUIRES_FETCH",
-                        message="browser_render 需前置 fetch（Playwright 由 HTTP 升级证据触发）",
-                        node_id=n.node_id,
-                    )
-                )
 
     # 结构性问题 -> INVALID
     structural = [
