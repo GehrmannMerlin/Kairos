@@ -176,12 +176,8 @@ class PlanVersion(Base):
     )
     spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
-    parent_plan_version_id: Mapped[int | None] = mapped_column(
-        BigInteger, nullable=True
-    )
-    validation_status: Mapped[str] = mapped_column(
-        String(30), nullable=False, default="pending"
-    )
+    parent_plan_version_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    validation_status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     model_config_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -411,6 +407,8 @@ class Record(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+    # ---- M-13 data review（migration 0011，nullable 兼容）----
+    data_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class FieldEvidence(Base):
@@ -694,7 +692,9 @@ class DedupeCluster(Base):
     """
 
     __tablename__ = "dedupe_clusters"
-    __table_args__ = (UniqueConstraint("task_id", "business_key_fingerprint", name="uq_dc_task_fp"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "business_key_fingerprint", name="uq_dc_task_fp"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -806,3 +806,62 @@ class CompletionDecision(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class RecordFieldOverride(Base):
+    """M-13 人工字段修正（D-042）。保留 original/final/value_source/modified_by/modified_at。
+
+    禁止覆盖 PageSnapshot 与 FieldEvidence；Record.payload 最终值 = payload 叠加覆写。
+    """
+
+    __tablename__ = "record_field_overrides"
+    __table_args__ = (UniqueConstraint("record_id", "field_name", name="uq_rfo_record_field"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    field_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value_source: Mapped[str] = mapped_column(String(30), nullable=False, default="USER_OVERRIDE")
+    modified_by: Mapped[int] = mapped_column(Integer, nullable=False)
+    modified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RecordReviewAction(Base):
+    """M-13 单条/批量审核审计（D-061）。append-only，绝不 UPDATE 历史。"""
+
+    __tablename__ = "record_review_actions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    action_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    review_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    batch_operation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[int] = mapped_column(Integer, nullable=False)
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
