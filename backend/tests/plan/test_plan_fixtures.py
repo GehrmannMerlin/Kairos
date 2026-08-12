@@ -238,6 +238,42 @@ CASES = [
         ),
         PlanValidationResult.PROHIBITED,
     ),
+    # 16 合法探索式完整管线（D-068：SourceSearch → AccessRulesCheck → LinkDiscovery → Fetch）。
+    # source_search executor 把搜索结果 URL 物化为 URL Frontier 资源，因此 candidate
+    # 边流向消费 url 的 access_rules_check 是合法资源过渡（回归：真实 LLM 按 D-068
+    # 生成该管线时曾被 RESOURCE_EDGE_INCOMPATIBLE 拒为 INVALID，阻塞 Gate-3 Golden B）。
+    (
+        "valid_exploratory_full_pipeline",
+        _draft(
+            [
+                _node("n1", "source_search", parameters={"query": "自动化设备", "max_results": 20}),
+                _node(
+                    "n2",
+                    "access_rules_check",
+                    parameters={"respect_robots": True, "public_only": True},
+                    depends_on=["n1"],
+                ),
+                _node(
+                    "n3",
+                    "link_discovery",
+                    parameters={"allow_outside_scope": False, "max_links": 20},
+                    depends_on=["n2"],
+                ),
+                _node(
+                    "n4", "fetch", parameters={"url_template": "https://{site}/"}, depends_on=["n3"]
+                ),
+                _node("n5", "extract", parameters={"fields": ["公司名"]}, depends_on=["n4"]),
+            ],
+            edges=[
+                _edge("n1", "n2", kind="candidate", ref="cand:1"),
+                _edge("n2", "n3", kind="url", ref="url:1"),
+                _edge("n3", "n4", kind="url", ref="url:2"),
+                _edge("n4", "n5", kind="snapshot", ref="snap:1"),
+            ],
+            task_type=TaskType.EXPLORATORY,
+        ),
+        PlanValidationResult.VALID,
+    ),
 ]
 
 
