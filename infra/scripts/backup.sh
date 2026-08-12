@@ -11,8 +11,11 @@
 #   - Secret 用 openssl AES-256-CBC 加密，manifest 只记录引用，绝无明文。
 #   - flock 互斥锁 + 磁盘 preflight fail-fast（INSUFFICIENT_BACKUP_SPACE）。
 set -euo pipefail
+umask 077  # 备份产物（含加密 secrets）只允许 deploy 可读
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PY_PATH="$SCRIPT_DIR"
 ENV_NAME="${ENV:-staging}"
 BACKUP_DIR="${BACKUP_DIR:-/srv/kairos/backups}"
 MIN_FREE_MB="${MIN_FREE_MB:-2048}"
@@ -48,7 +51,7 @@ echo "==> disk preflight (min free ${MIN_FREE_MB}MB)"
 mkdir -p "$BACKUP_DIR"
 PROBLEMS="$("$PY" -c "
 import sys
-sys.path.insert(0, '$ROOT/infra/scripts')
+sys.path.insert(0, '$PY_PATH')
 from _backup_common import disk_preflight
 print('\n'.join(disk_preflight(['$BACKUP_DIR', '/var/lib/docker'], $MIN_FREE_MB)))
 ")"
@@ -60,13 +63,18 @@ fi
 echo "==> backup lock"
 "$PY" -c "
 import sys
-sys.path.insert(0, '$ROOT/infra/scripts')
+sys.path.insert(0, '$PY_PATH')
 from _backup_common import acquire_lock
 with acquire_lock('$BACKUP_DIR/.backup.lock'):
     print('lock acquired')
 " || fail "backup lock held — another backup is running" 3
 
-SHA="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+SHA="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || true)"
+if [ -z "$SHA" ]; then
+  # 服务器无 git 仓库：从已部署 api 镜像 tag（staging-<sha>）取部署 SHA
+  SHA="$(docker inspect -f '{{.Config.Image}}' "${API_CONTAINER:-kairos-api}" 2>/dev/null | sed -E 's/.*:staging-([0-9a-f]{12}).*/\1/')" || true
+fi
+SHA="${SHA:-unknown}"
 BACKUP_ID="${ENV_NAME}-$(date -u +%Y%m%d-%H%M%S)-${SHA}"
 DEST="$BACKUP_DIR/$BACKUP_ID"
 mkdir -p "$DEST/postgres" "$DEST/objects" "$DEST/config" "$DEST/secrets"
@@ -75,12 +83,19 @@ echo "==> postgres dump (backup_id=$BACKUP_ID)"
 compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' \
   > "$DEST/postgres/postgres.dump" || fail "pg_dump failed"
 MIG_HEAD="$(compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version_num FROM alembic_version"' | tr -d '[:space:]')"
+REC_COUNT="$(compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM records"' 2>/dev/null | tr -d '[:space:]' || echo 0)"
 sha256sum "$DEST/postgres/postgres.dump" | cut -d' ' -f1 > "$DEST/postgres/postgres.dump.sha256"
 
 echo "==> object storage backup (MinIO data volume, read-only tar)"
-MINIO_VOL="$(compose config --volumes 2>/dev/null | grep -i minio | head -1 || echo kairos-staging_minio_data)"
-docker run --rm -v "$MINIO_VOL:/data:ro" -v "$DEST/objects:/backups" alpine \
-  tar czf /backups/objects.tar.gz -C /data . || fail "minio volume tar failed"
+# 从运行中的 minio 容器解析 /data 实际挂载 volume（compose config --volumes 只给短名）
+MINIO_VOL="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "${MINIO_CONTAINER:-kairos-staging-minio-1}" 2>/dev/null || true)"
+if [ -z "$MINIO_VOL" ]; then
+  MINIO_VOL="$(compose config --volumes 2>/dev/null | grep -i minio | head -1 || echo kairos-staging_minio_data)"
+fi
+echo "   minio volume: $MINIO_VOL"
+# 容器内 tar 输出到 stdout，宿主机重定向 → 文件属主是 deploy（避免 root 属主无法 chmod）
+docker run --rm -v "$MINIO_VOL:/data:ro" alpine \
+  sh -c 'tar czf - -C /data .' > "$DEST/objects/objects.tar.gz" || fail "minio volume tar failed"
 sha256sum "$DEST/objects/objects.tar.gz" | cut -d' ' -f1 > "$DEST/objects/objects.tar.gz.sha256"
 
 echo "==> config backup"
@@ -115,7 +130,7 @@ fi
 echo "==> manifest"
 "$PY" - <<PYEOF
 import json, os, sys
-sys.path.insert(0, "$ROOT/infra/scripts")
+sys.path.insert(0, "$PY_PATH")
 from _backup_common import BackupManifest, sha256_file, write_manifest
 
 d = "$DEST"
@@ -126,13 +141,16 @@ def ref(p: str) -> dict | None:
     return {"ref": p, "sha256": sha256_file(path), "size": os.path.getsize(path)}
 
 secrets_path = os.path.join(d, "secrets/secrets.env.enc")
+pg = ref("postgres/postgres.dump")
+if pg is not None:
+    pg = {**pg, "record_count": int("$REC_COUNT")}
 m = BackupManifest(
     backup_id="$BACKUP_ID",
     environment="$ENV_NAME",
     timestamp="$(date -u +%FT%TZ)",
     git_sha="$SHA",
     migration_head="$MIG_HEAD",
-    postgres=ref("postgres/postgres.dump"),
+    postgres=pg,
     objects=ref("objects/objects.tar.gz"),
     config=ref("config/config.tar.gz"),
     secrets={
@@ -150,7 +168,7 @@ PYEOF
 echo "==> retention (keep ${RETENTION_DAYS}d)"
 "$PY" -c "
 import sys
-sys.path.insert(0, '$ROOT/infra/scripts')
+sys.path.insert(0, '$PY_PATH')
 from _backup_common import apply_retention
 print('removed', apply_retention('$BACKUP_DIR', $RETENTION_DAYS))
 "
