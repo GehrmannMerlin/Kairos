@@ -5,6 +5,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { openDrawer } from '@/app/overlay/drawer.store'
+import { openModal } from '@/app/overlay/modal.store'
 import { useBatchReview, type BatchAction } from '@/features/data/useBatchReview'
 import { useRecordEvents } from '@/features/data/useRecordEvents'
 import { useRecords } from '@/features/data/useRecords'
@@ -23,6 +24,7 @@ const {
   error,
   page,
   search,
+  params,
   load,
   setTab,
   setSearch,
@@ -140,6 +142,24 @@ function openRecord(record: RecordView): void {
   openDrawer('RECORD', { taskId: taskId.value, recordId: record.record_id })
 }
 
+// ---- 导出（D-060）：Export Modal 复用当前筛选快照，UI 列设置不影响 CSV schema ----
+function currentFilterSnapshot(): Record<string, unknown> {
+  const p = params.value
+  return {
+    q: search.value || undefined,
+    field: p.field ?? undefined,
+    value: p.value ?? undefined,
+    source_type: p.source_type ?? undefined,
+    extract_method: p.extract_method ?? undefined,
+    min_confidence: p.min_confidence ?? undefined,
+    review_type: p.review_type ?? undefined,
+  }
+}
+
+function openExport(): void {
+  openModal('EXPORT', { taskId: taskId.value, filter: currentFilterSnapshot() })
+}
+
 // ---- 批量审核（D-061：按钮仅对后端 allowed_actions 允许且语义兼容记录开放；后端最终校验）----
 const selected = ref<Map<number, number>>(new Map())
 const selectedIds = computed<number[]>(() => [...selected.value.keys()])
@@ -224,6 +244,9 @@ function displayField(record: RecordView, col: string): string {
       </select>
       <button type="button" class="data-settings" @click="showColumnSettings = !showColumnSettings">
         列设置
+      </button>
+      <button type="button" class="data-settings" data-testid="export-button" @click="openExport">
+        导出
       </button>
     </div>
 

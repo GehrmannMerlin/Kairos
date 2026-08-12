@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     approvals,
+    artifacts,
     auth,
     credentials,
     events,
@@ -36,3 +37,4 @@ api_router.include_router(events.router)
 api_router.include_router(quality.router)
 api_router.include_router(execution.router)
 api_router.include_router(evidence.router)
+api_router.include_router(artifacts.router)
