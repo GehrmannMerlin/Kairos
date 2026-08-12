@@ -23,9 +23,18 @@ from app.discovery.ssrf import assert_safe_url
 from app.domain.models import Run, URLResource
 from app.domain.repository import SpecVersionRepository
 from app.infra.object_storage import ObjectStorage
+from app.reliability.browser_pool import BrowserProcessRegistry
 
 # D-009 TIER3：Browser Agent 本轮只保留契约，不实现自主点击/填表/滚动/验证码。
 BROWSER_AGENT_REQUIRED = "BROWSER_AGENT_REQUIRED"
+
+# M-16：进程内 active browser 登记 + 优雅退出回收（孤儿进程兜底，§48）。
+_BROWSER_REGISTRY = BrowserProcessRegistry()
+
+
+async def close_all_browsers() -> int:
+    """Worker 优雅退出时回收所有登记浏览器进程（孤儿兜底）。"""
+    return await _BROWSER_REGISTRY.close_all()
 
 
 @dataclass
@@ -72,24 +81,34 @@ class PlaywrightChromiumRenderer:
             from playwright.async_api import async_playwright
         except ImportError as exc:  # playwright 未安装（依赖缺失）：如实暴露，不用 fake 冒充
             raise BrowserRenderError("playwright 未安装，无法渲染") from exc
+        holder = f"render:{url[:120]}"
+        await _BROWSER_REGISTRY.open(holder)
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=self._headless)
-                context = await browser.new_context()
-                if cookies:
-                    # cookies 是 runtime dict 契约；playwright add_cookies 类型为 SetCookieParam
-                    await context.add_cookies(cast(Any, cookies))
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=int(to * 1000))
-                await page.wait_for_timeout(600)  # 等待同步 JS 注入
-                html = await page.content()
-                final_url = page.url
-                title = await page.title()
-                await browser.close()
-        except BrowserRenderError:
-            raise
-        except Exception as exc:
-            raise BrowserRenderError(f"浏览器渲染失败: {exc}") from exc
+            try:
+                async with async_playwright() as p:
+                    browser = None
+                    try:
+                        browser = await p.chromium.launch(headless=self._headless)
+                        context = await browser.new_context()
+                        if cookies:
+                            # cookies 是 runtime dict 契约；add_cookies 类型为 SetCookieParam
+                            await context.add_cookies(cast(Any, cookies))
+                        page = await context.new_page()
+                        await page.goto(url, wait_until="domcontentloaded", timeout=int(to * 1000))
+                        await page.wait_for_timeout(600)  # 等待同步 JS 注入
+                        html = await page.content()
+                        final_url = page.url
+                        title = await page.title()
+                    finally:
+                        # M-16：正常/超时/异常都关闭 browser 进程（进程生命周期安全，§48）
+                        if browser is not None:
+                            await browser.close()
+            except BrowserRenderError:
+                raise
+            except Exception as exc:
+                raise BrowserRenderError(f"浏览器渲染失败: {exc}") from exc
+        finally:
+            await _BROWSER_REGISTRY.close(holder)
         return RenderedPage(html=html.encode("utf-8"), final_url=final_url, title=title)
 
 
