@@ -91,6 +91,23 @@ class Settings(BaseSettings):
     # --- M-15 retention（D-072，部署配置；测试用独立短值 fixture）---
     retention_heavy_days: int = 90
 
+    # --- M-16 capacity / worker roles（D-071 部署配置，禁止进入 CollectionSpec）---
+    capacity_global_active_tasks: int = 4
+    capacity_per_user_active_tasks: int = 2
+    capacity_core_concurrency: int = 4
+    capacity_http_concurrency: int = 4
+    capacity_browser_concurrency: int = 1
+    capacity_llm_search_concurrency: int = 2
+    capacity_lease_ttl_seconds: int = 120
+    capacity_lease_heartbeat_seconds: int = 30
+    capacity_lease_reap_interval_seconds: int = 30
+    capacity_domain_breaker_threshold: int = 5
+    capacity_domain_breaker_cooldown_seconds: int = 60
+    capacity_default_retry_max_attempts: int = 3
+    provider_throttle_min_interval_seconds: float = 0.2
+    provider_throttle_max_burst: int = 1
+    worker_roles: str = "all"  # all | core,http,browser,llm_search（逗号分隔）
+
 
     @field_validator("cors_origins", mode="before")
     @classmethod
