@@ -65,7 +65,7 @@ LOCAL DONE GATE 逐项：ErrorClass/RetryDecision/bounded retry/Retry-After/auth
 | cb47c8b | feat(worker): route activities by resource class with waiting semantics |
 | 6d3e798 | feat(provider): add bounded provider throttling with retry-after |
 | 3221067 | fix(browser): enforce process cleanup and pool limits |
-| （docs 提交） | docs(worker): record M-16 capacity baseline and execution |
+| 3060a07 | docs(worker): record M-16 capacity baseline and execution |
 
 ## 8. Staging（待执行）
 Light Staging Reliability Acceptance（不是 DEPLOY-GATE-5 / 大型压测）：预检查 disk/backup/release/migration；只部署受影响的 api/worker（web 因最小 UI 文案变化按真实 diff 决定）；Staging 用安全小限额（browser=1 等）；4 个场景（admission / resource waiting / lease recovery / retry+circuit）+ small capacity smoke。完成后按最终报告更新本记录状态。
