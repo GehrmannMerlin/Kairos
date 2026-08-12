@@ -549,7 +549,7 @@ class Artifact(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    dataset_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    dataset_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
     export_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     filter_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
