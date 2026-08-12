@@ -35,6 +35,7 @@ class ObjectStorage(Protocol):
     async def get(self, key: str) -> bytes: ...
     async def exists(self, key: str) -> bool: ...
     async def head(self, key: str) -> ObjectMetadata | None: ...
+    async def delete(self, key: str) -> None: ...
     async def ensure_bucket(self) -> None: ...
 
 
@@ -101,6 +102,16 @@ class MinioObjectStorage:
             etag=stat.etag,
             content_sha256="",
         )
+
+    async def delete(self, key: str) -> None:
+        def _delete() -> None:
+            try:
+                self._client.remove_object(self._bucket, key)
+            except Exception:
+                # NoSuchKey / NoSuchObject 视为已删除，幂等。
+                pass
+
+        await anyio.to_thread.run_sync(_delete)
 
 
 def create_object_storage(settings: Settings) -> MinioObjectStorage:
