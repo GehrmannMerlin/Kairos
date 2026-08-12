@@ -42,9 +42,7 @@ class CredentialResolver(Protocol):
 
     def resolve_ref(self, *, user_id: int, task_id: int, domain: str) -> dict | None: ...
 
-    def build_headers(
-        self, *, user_id: int, credential_ref: dict, url: str
-    ) -> dict | None: ...
+    def build_headers(self, *, user_id: int, credential_ref: dict, url: str) -> dict | None: ...
 
 
 class _DiscoveryFromFetchTransport:
@@ -78,6 +76,7 @@ class FetchNodeExecutor:
         storage: ObjectStorage | None = None,
         site_strategy=None,
         credential_resolver: CredentialResolver | None = None,
+        renderer: Any | None = None,
         user_agent: str = DEFAULT_USER_AGENT,
         allow_hosts: frozenset[str] = frozenset(),
         max_internal_retries: int = 2,
@@ -90,6 +89,7 @@ class FetchNodeExecutor:
         self._storage = storage
         self._site_strategy = site_strategy
         self._credential_resolver = credential_resolver
+        self._renderer = renderer
         self._user_agent = user_agent
         self._allow_hosts = allow_hosts
         self._max_internal_retries = max_internal_retries
@@ -136,11 +136,15 @@ class FetchNodeExecutor:
             try:
                 body = await self._http.get_bytes(url, headers=headers)
             except HttpFetchError as exc:
-                if exc.code in (
-                    FetchErrorCode.TIMEOUT,
-                    FetchErrorCode.DNS_ERROR,
-                    FetchErrorCode.CONNECTION_ERROR,
-                ) and attempts < self._max_internal_retries:
+                if (
+                    exc.code
+                    in (
+                        FetchErrorCode.TIMEOUT,
+                        FetchErrorCode.DNS_ERROR,
+                        FetchErrorCode.CONNECTION_ERROR,
+                    )
+                    and attempts < self._max_internal_retries
+                ):
                     attempts += 1
                     await asyncio.sleep(self._retry_base_seconds * (2 ** (attempts - 1)))
                     continue
@@ -166,7 +170,13 @@ class FetchNodeExecutor:
             return body, None
 
     async def process_row(
-        self, run: Run, spec: Any, row: URLResource, robots: RobotsCache
+        self,
+        run: Run,
+        spec: Any,
+        row: URLResource,
+        robots: RobotsCache,
+        *,
+        render_if_empty: bool = False,
     ) -> FetchResult:
         """单 URL 静态层抓取（FetchNodeExecutor 与 ScrapyBatchFetcher 共享同一路径）。"""
         policy = await robots.get(row.url)
@@ -339,6 +349,12 @@ class FetchNodeExecutor:
             credential_ref=credential_ref,
             http_metadata=body.headers_allowlist,
         )
+        if render_if_empty:
+            # render_if_empty（D-009 能力阶梯内）：HTTP 空壳证据已提交后，由 Playwright
+            # 直接渲染并落 rendered 快照 —— 不依赖计划是否含独立 browser_render 节点。
+            return await self._render_escalated(
+                run, row, snapshot, evidence, credential_ref=credential_ref
+            )
         UrlFrontierRepository(self._db).mark_fetch_outcome(
             user_id=run.user_id,
             task_id=row.task_id,
@@ -355,6 +371,75 @@ class FetchNodeExecutor:
             download_bytes=len(body.body),
             duration_ms=body.duration_ms,
             snapshot_ref=shell_ref,
+            escalation_decision=True,
+            escalation_evidence=evidence,
+            retryable=False,
+        )
+
+    async def _render_escalated(
+        self,
+        run: Run,
+        row: URLResource,
+        snapshot: PageSnapshotService,
+        evidence: EscalationEvidence,
+        *,
+        credential_ref: dict | None,
+    ) -> FetchResult:
+        """render_if_empty：HTTP 空壳升级证据已提交后，由 Playwright 直接渲染并落
+        rendered 快照（D-009 能力阶梯内，Playwright 必须在升级证据之后调用）。"""
+        from app.crawling.browser import PlaywrightChromiumRenderer
+
+        renderer = self._renderer or PlaywrightChromiumRenderer(allow_hosts=self._allow_hosts)
+        try:
+            rendered = await renderer.render(url=row.url)
+        except Exception as exc:
+            UrlFrontierRepository(self._db).mark_fetch_outcome(
+                user_id=run.user_id,
+                task_id=row.task_id,
+                url_hash=row.url_hash,
+                state=FrontierState.FETCH_FAILED,
+                error_code=FetchErrorCode.INTERNAL_ERROR.value,
+            )
+            return FetchResult(
+                status="FAILED",
+                tool="playwright",
+                tool_version="1.0",
+                error_code=FetchErrorCode.INTERNAL_ERROR,
+                error_summary=str(exc),
+            )
+        ref = await snapshot.commit_raw(
+            body=rendered.html,
+            url_resource_id=row.id,
+            tool="playwright",
+            tool_version="1.0",
+            source_url=row.url,
+            final_url=rendered.final_url or row.url,
+            http_status=None,
+            content_type="text/html",
+            content_length=len(rendered.html),
+            duration_ms=None,
+            redirect_summary=[],
+            escalation_evidence=evidence.model_dump(mode="json"),
+            credential_ref=credential_ref,
+            http_metadata={},
+        )
+        UrlFrontierRepository(self._db).mark_fetch_outcome(
+            user_id=run.user_id,
+            task_id=row.task_id,
+            url_hash=row.url_hash,
+            state=FrontierState.FETCHED,
+            error_code=None,
+        )
+        return FetchResult(
+            status="SUCCESS",
+            tool="playwright",
+            tool_version="1.0",
+            http_status=None,
+            content_type="text/html",
+            content_length=len(rendered.html),
+            download_bytes=len(rendered.html),
+            duration_ms=None,
+            snapshot_ref=ref,
             escalation_decision=True,
             escalation_evidence=evidence,
             retryable=False,
@@ -527,8 +612,9 @@ class FetchNodeExecutor:
         robots = self.robots_cache()
         results: list[FetchResult] = []
         credential_required_url: URLResource | None = None
+        render_if_empty = bool((unit.parameters or {}).get("render_if_empty"))
         for row in ready:
-            result = await self.process_row(run, spec, row, robots)
+            result = await self.process_row(run, spec, row, robots, render_if_empty=render_if_empty)
             results.append(result)
             if result.status == "CREDENTIAL_REQUIRED" and credential_required_url is None:
                 credential_required_url = row
