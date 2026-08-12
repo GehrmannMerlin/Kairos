@@ -24,12 +24,6 @@ const error = ref<string | null>(null)
 
 const isPermanent = () => action.value === 'permanent'
 
-function reset(): void {
-  step.value = 1
-  running.value = false
-  error.value = null
-}
-
 async function confirm(): Promise<void> {
   if (!props.payload) return
   if (isPermanent() && step.value === 1) {
