@@ -96,6 +96,10 @@ const importantEvent = computed<TaskSseEvent | null>(() => latestEvent.value)
         <dt>状态</dt>
         <dd>{{ summary.state }}</dd>
       </div>
+      <div v-if="summary.waiting_reason" class="status-row">
+        <dt>等待</dt>
+        <dd class="waiting-badge">等待可用执行资源：{{ summary.waiting_reason }}</dd>
+      </div>
       <div class="status-row">
         <dt>Spec 版本</dt>
         <dd>{{ summary.current_spec_version ?? '—' }}</dd>

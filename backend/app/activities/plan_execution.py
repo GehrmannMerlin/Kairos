@@ -59,6 +59,15 @@ async def fetch_next_execution_unit(inp: FetchUnitInput) -> FetchUnitResult:
         risk = (graph.get("node_risk_levels") or {}).get(str(node.get("node_id")), "low")
         parameters = node.get("parameters") or {}
         requires_approval = risk == "high"
+        # M-16：确定性 ResourceClass → TaskQueue 路由用（来自 NodeDefinition.resource_class）
+        from app.plan.nodes import NodeRegistry
+
+        rc = None
+        try:
+            definition = NodeRegistry().get(str(node_type))
+            rc = definition.resource_class.value if definition else None
+        except Exception:
+            rc = None
         return FetchUnitResult(
             unit=ExecutionUnit(
                 run_id=inp.run_id,
@@ -76,6 +85,7 @@ async def fetch_next_execution_unit(inp: FetchUnitInput) -> FetchUnitResult:
                 approval_target=str(parameters.get("url_template") or ""),
                 approval_parameters=parameters,
                 credential_ref=parameters.get("credential_ref"),
+                resource_class=rc,
             )
         )
     finally:
@@ -84,12 +94,48 @@ async def fetch_next_execution_unit(inp: FetchUnitInput) -> FetchUnitResult:
 
 @activity.defn
 async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
-    executor = get_node_executor(inp.unit.node_type)
-    if executor is None:
-        return ExecuteUnitResult(
-            unit_index=inp.unit.index,
-            committed_refs={},
-            status="NODE_EXECUTOR_UNAVAILABLE",
-            error_code="NODE_EXECUTOR_UNAVAILABLE",
-        )
-    return await executor(inp.unit)
+    # M-16 Level 3 pool admission（D-071）：资源类单元先占 pool slot；无 slot → RESOURCE_WAITING
+    # （等待而非失败），finally 释放。CORE 单元（rc=None）不走 pool 准入。
+    from app.config import get_settings
+    from app.reliability.admission import ResourceAdmission
+    from app.reliability.capacity import capacity_from_settings
+
+    rc = inp.unit.resource_class
+    holder = f"run{inp.run_id}-node{inp.unit.node_id or inp.unit.index}"
+    admission_session = None
+    if rc is not None:
+        admission_session = get_session_factory()()
+        capacity = capacity_from_settings(get_settings())
+        adm = ResourceAdmission(admission_session, capacity)
+        slot = adm.try_acquire_pool_slot(resource_class=rc, holder_id=holder, user_id=None)
+        if not slot.granted:
+            admission_session.close()
+            return ExecuteUnitResult(
+                unit_index=inp.unit.index,
+                committed_refs={
+                    "waiting_reason": "pool_limit",
+                    "resource_class": rc,
+                    "wait_seconds": slot.retry_after_seconds,
+                },
+                status="RESOURCE_WAITING",
+                error_code="RESOURCE_UNAVAILABLE",
+            )
+    try:
+        executor = get_node_executor(inp.unit.node_type)
+        if executor is None:
+            return ExecuteUnitResult(
+                unit_index=inp.unit.index,
+                committed_refs={},
+                status="NODE_EXECUTOR_UNAVAILABLE",
+                error_code="NODE_EXECUTOR_UNAVAILABLE",
+            )
+        return await executor(inp.unit)
+    finally:
+        if rc is not None and admission_session is not None:
+            try:
+                ResourceAdmission(admission_session, capacity).release_pool_slot(
+                    resource_class=rc, holder_id=holder
+                )
+            except Exception:
+                admission_session.rollback()
+            admission_session.close()

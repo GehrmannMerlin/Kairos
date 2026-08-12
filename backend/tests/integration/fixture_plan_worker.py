@@ -27,33 +27,35 @@ from app.activities.task_execution import (
 from app.auth.models import User  # noqa: F401
 from app.config import get_settings
 from app.infra.temporal import create_temporal_client
+from app.reliability.pools import all_role_queues
 from app.workflows.task_workflow import TaskWorkflow
 from temporalio.worker import Worker
 from tests.fixtures.plan_fixture import install_fixture_executors
+
+_ACTIVITIES = [
+    ensure_run_started,
+    mark_paused,
+    mark_cancelled,
+    complete_run,
+    commit_checkpoint,
+    fetch_next_execution_unit,
+    execute_safe_unit,
+    request_approval,
+    block_high_risk_node,
+    resume_from_approval,
+]
 
 
 async def run(queue: str) -> None:
     settings = get_settings()
     install_fixture_executors()
     client = await create_temporal_client(settings)
-    worker = Worker(
-        client,
-        task_queue=queue,
-        workflows=[TaskWorkflow],
-        activities=[
-            ensure_run_started,
-            mark_paused,
-            mark_cancelled,
-            complete_run,
-            commit_checkpoint,
-            fetch_next_execution_unit,
-            execute_safe_unit,
-            request_approval,
-            block_high_risk_node,
-            resume_from_approval,
-        ],
-    )
-    await worker.run()
+    queues = all_role_queues() if queue == settings.temporal_task_queue else [queue]
+    workers = [
+        Worker(client, task_queue=q, workflows=[TaskWorkflow], activities=_ACTIVITIES)
+        for q in queues
+    ]
+    await asyncio.gather(*(w.run() for w in workers))
 
 
 def main() -> None:

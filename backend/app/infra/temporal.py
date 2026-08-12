@@ -59,7 +59,8 @@ async def create_smoke_worker(client: Client, settings: Settings) -> Worker:
     )
 
 
-async def create_task_worker(client: Client, settings: Settings) -> Worker:
+def _lifecycle_activities() -> list[Any]:
+    """core/orchestration queue 上注册的 activity（lifecycle + 审批 + 完成 + reliability）。"""
     from app.activities.approval import (
         block_high_risk_node,
         request_approval,
@@ -69,6 +70,7 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
     from app.activities.credential_approval import resolve_credential_access
     from app.activities.discovery_approval import resolve_robots_override
     from app.activities.plan_execution import execute_safe_unit, fetch_next_execution_unit
+    from app.activities.reliability import heartbeat_task_slot, record_resource_wait
     from app.activities.task_execution import (
         commit_checkpoint,
         complete_run,
@@ -78,28 +80,85 @@ async def create_task_worker(client: Client, settings: Settings) -> Worker:
         mark_partial,
         mark_paused,
     )
-    from app.workflows.task_workflow import TaskWorkflow
 
+    return [
+        ensure_run_started,
+        mark_paused,
+        mark_cancelled,
+        mark_partial,
+        fail_run,
+        complete_run,
+        commit_checkpoint,
+        fetch_next_execution_unit,
+        execute_safe_unit,
+        request_approval,
+        block_high_risk_node,
+        resume_from_approval,
+        resolve_credential_access,
+        resolve_robots_override,
+        resolve_completion,
+        record_resource_wait,
+        heartbeat_task_slot,
+    ]
+
+
+async def create_role_worker(
+    client: Client,
+    settings: Settings,
+    *,
+    queue: str,
+    workflows: list[Any],
+    activities: list[Any],
+    max_concurrent_activities: int,
+) -> Worker:
+    """同一代码库不同 role 的 Temporal Worker（I-001 §3）：queue + max_concurrent 来自容量配置。"""
     return Worker(
         client,
-        task_queue=settings.temporal_task_queue,
-        workflows=[TaskWorkflow],
-        activities=[
-            ensure_run_started,
-            mark_paused,
-            mark_cancelled,
-            mark_partial,
-            fail_run,
-            complete_run,
-            commit_checkpoint,
-            fetch_next_execution_unit,
-            execute_safe_unit,
-            request_approval,
-            block_high_risk_node,
-            resume_from_approval,
-            resolve_credential_access,
-            resolve_robots_override,
-            resolve_completion,
-        ],
+        task_queue=queue,
+        workflows=workflows,
+        activities=activities,
         interceptors=_interceptors(),
+        max_concurrent_activities=max_concurrent_activities,
     )
+
+
+async def create_task_workers(client: Client, settings: Settings) -> list[Worker]:
+    """按 KAIROS_WORKER_ROLES 创建 role worker（同代码库不同 queue/concurrency）。
+
+    core 队列承载 TaskWorkflow + lifecycle；HTTP/BROWSER/LLM_SEARCH 队列只注册
+    execute_safe_unit（按 ResourceClass 确定性路由进入）。default all → 单进程全部 queue。
+    """
+    from app.activities.plan_execution import execute_safe_unit
+    from app.reliability.capacity import capacity_from_settings
+    from app.reliability.pools import (
+        WorkerRole,
+        capacity_pool_for_queue,
+        parse_worker_roles,
+        role_task_queues,
+    )
+    from app.workflows.task_workflow import TaskWorkflow
+
+    roles = parse_worker_roles(settings.worker_roles)
+    if WorkerRole.ALL in roles:
+        roles = [WorkerRole.CORE, WorkerRole.HTTP, WorkerRole.BROWSER, WorkerRole.LLM_SEARCH]
+    capacity = capacity_from_settings(settings)
+    workers: list[Worker] = []
+    for role in roles:
+        for queue in role_task_queues(role):
+            if queue == settings.temporal_task_queue:
+                workers.append(
+                    await create_role_worker(
+                        client, settings, queue=queue,
+                        workflows=[TaskWorkflow], activities=_lifecycle_activities(),
+                        max_concurrent_activities=capacity_pool_for_queue(queue, capacity),
+                    )
+                )
+            else:
+                workers.append(
+                    await create_role_worker(
+                        client, settings, queue=queue,
+                        workflows=[], activities=[execute_safe_unit],
+                        max_concurrent_activities=capacity_pool_for_queue(queue, capacity),
+                    )
+                )
+    return workers

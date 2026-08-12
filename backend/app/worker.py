@@ -16,50 +16,48 @@ import asyncio
 from app.auth.models import User  # noqa: F401
 from app.config import get_settings
 from app.infra.telemetry import setup_otel
-from app.infra.temporal import create_smoke_worker, create_task_worker, create_temporal_client
 
 
 async def run() -> None:
     settings = get_settings()
     setup_otel(settings)
+    from app.infra.temporal import create_temporal_client
+
     client = await create_temporal_client(settings)
-    smoke_worker = await create_smoke_worker(client, settings)
-    task_worker = await create_task_worker(client, settings)
-    # Staging Gate fixture harness（DEPLOY-GATE-2 / M-08 §48）：
-    # 仅 plan_fixture_mode=true 时注册 fixture executor（真实 NodeDefinition，
-    # 无外部网络副作用）。Production 默认关闭且部署强制关闭。
+    # Staging Gate fixture harness（DEPLOY-GATE-2 / M-08 §48）：仅 plan_fixture_mode 时注册。
     if settings.plan_fixture_mode:
         from app.plan.staging_fixture import install_staging_fixture
 
         install_staging_fixture()
         print("kairos worker: plan_fixture_mode enabled (staging fixture executor)")
-    # M-09 真实 discovery executor（SourceSearch / AccessRulesCheck / LinkDiscovery）
-    from app.discovery.executors import install_discovery_executors
-
-    install_discovery_executors()
-    print(
-        "kairos worker: discovery executors installed (source_search/access_rules/link_discovery)"
-    )
-    # M-10 真实 fetch/browser executor（Fetch / BrowserRender，含凭据访问与站点策略）
+    # M-16：全部 role 都安装全量 executor；role 只决定 poll 哪些 TaskQueue + 并发，
+    # 不复制四份 Worker 工程（I-001 §3）。
     from app.crawling.executors import install_fetch_executors
-
-    install_fetch_executors()
-    print("kairos worker: fetch executors installed (fetch/browser_render)")
-    # M-11 真实 extraction/normalize executor（Extract / Normalize，含 LLM fallback）
+    from app.discovery.executors import install_discovery_executors
     from app.extraction.executors import install_extraction_executors
-
-    install_extraction_executors()
-    print("kairos worker: extraction executors installed (extract/normalize)")
-    # M-12 真实 validation/quality/completion executor（Deduplicate / Validate）
     from app.validation.executors import install_validation_executors
 
+    install_discovery_executors()
+    install_fetch_executors()
+    install_extraction_executors()
     install_validation_executors()
-    print("kairos worker: validation executors installed (deduplicate/validate)")
-    print(
-        f"kairos worker listening on {settings.temporal_address} "
-        f"(smoke={settings.temporal_smoke_task_queue}, task={settings.temporal_task_queue})"
+
+    from app.infra.temporal import (
+        create_smoke_worker,
+        create_task_workers,
+        create_temporal_client,
     )
-    await asyncio.gather(smoke_worker.run(), task_worker.run())
+    from app.reliability.pools import parse_worker_roles
+
+    smoke_worker = await create_smoke_worker(client, settings)
+    workers = await create_task_workers(client, settings)
+    roles = parse_worker_roles(settings.worker_roles)
+    print(
+        f"kairos worker roles={[r.value for r in roles]} "
+        f"queues={[w.task_queue for w in workers]} "
+        f"({settings.temporal_address}, smoke={settings.temporal_smoke_task_queue})"
+    )
+    await asyncio.gather(smoke_worker.run(), *(w.run() for w in workers))
 
 
 def main() -> None:

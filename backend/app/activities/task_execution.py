@@ -26,6 +26,20 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _release_task_slot(session, *, user_id: int, run_id: int) -> None:
+    """终态释放 task slot（global+user lease）。幂等：无 lease 时为空操作。"""
+    from app.config import get_settings
+    from app.reliability.admission import ResourceAdmission
+    from app.reliability.capacity import capacity_from_settings
+
+    try:
+        ResourceAdmission(session, capacity_from_settings(get_settings())).release_task_slot(
+            user_id=user_id, holder_id=f"run{run_id}"
+        )
+    except Exception:
+        session.rollback()
+
+
 @dataclass
 class EnsureRunStartedInput:
     task_id: int
@@ -39,6 +53,8 @@ class EnsureRunStartedInput:
 class EnsureRunStartedResult:
     run_id: int
     started: bool
+    waiting_reason: str | None = None  # global_limit | per_user_limit | None
+    retry_after_seconds: float = 5.0
 
 
 class RunSpecNotFrozenError(ApplicationError):
@@ -63,6 +79,20 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
         run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
         if run.state != "pending":
             return EnsureRunStartedResult(inp.run_id, started=False)
+        # M-16 Level 1+2 task admission（D-071）：无全局/单用户 slot → 等待（非失败），
+        # 任务保持 QUEUED。幂等：重放/重复调度重新检查。
+        from app.config import get_settings
+        from app.reliability.admission import ResourceAdmission
+        from app.reliability.capacity import capacity_from_settings
+
+        slot = ResourceAdmission(
+            session, capacity_from_settings(get_settings())
+        ).try_acquire_task_slot(user_id=inp.user_id, holder_id=f"run{inp.run_id}")
+        if not slot.granted:
+            return EnsureRunStartedResult(
+                inp.run_id, started=False, waiting_reason=slot.reason,
+                retry_after_seconds=slot.retry_after_seconds,
+            )
         task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
         try:
             DomainService(TaskRepository(session)).transition_task(
@@ -156,6 +186,7 @@ async def mark_cancelled(inp: MarkCancelledInput) -> None:
         run.state = "cancelled"
         run.finished_at = _utcnow()
         session.commit()
+        _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
     finally:
         session.close()
 
@@ -186,6 +217,7 @@ async def fail_run(inp: FailRunInput) -> None:
         run.state = "failed"
         run.finished_at = _utcnow()
         session.commit()
+        _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
     finally:
         session.close()
 
@@ -214,6 +246,7 @@ async def complete_run(inp: CompleteRunInput) -> None:
         run.state = "completed"
         run.finished_at = _utcnow()
         session.commit()
+        _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
     finally:
         session.close()
 
@@ -298,5 +331,6 @@ async def mark_partial(inp: MarkPartialInput) -> None:
         run.state = "partially_completed"
         run.finished_at = _utcnow()
         session.commit()
+        _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
     finally:
         session.close()

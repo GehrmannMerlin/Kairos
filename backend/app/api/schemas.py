@@ -25,6 +25,7 @@ class TaskShellDto(BaseModel):
     template_id: str | None
     template_version: int | None
     allowed_actions: list[str]
+    waiting_reason: str | None = None  # M-16：最近一次资源等待原因（无则 None）
     created_at: datetime
     updated_at: datetime
 

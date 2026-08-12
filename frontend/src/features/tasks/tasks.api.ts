@@ -12,6 +12,8 @@ export interface TaskShellDto {
   template_id: string | null
   template_version: number | null
   allowed_actions: string[]
+  // M-16：资源等待原因（后端 additive 字段，可能为 null/undefined）
+  waiting_reason?: string | null
   created_at: string
   updated_at: string
 }

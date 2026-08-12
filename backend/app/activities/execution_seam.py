@@ -26,6 +26,8 @@ class ExecutionUnit:
     approval_target: str | None = None
     approval_parameters: dict | None = None
     credential_ref: str | None = None  # 脱敏凭据引用（非明文）
+    # M-16：来自 NodeDefinition.resource_class，用于确定性 TaskQueue 路由与 pool 准入。
+    resource_class: str | None = None
 
 
 @dataclass

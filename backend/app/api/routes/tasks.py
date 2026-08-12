@@ -38,7 +38,7 @@ from app.artifacts.contracts import PermanentDeleteCommand
 from app.auth.deps import require_user
 from app.auth.models import User
 from app.domain.errors import SpecValidationError
-from app.domain.models import ChatMessage, Task
+from app.domain.models import ChatMessage, DomainEvent, Task
 from app.domain.repository import TaskRepository
 from app.domain.service import DomainService
 from app.domain.task_commands import TaskCommandService
@@ -78,7 +78,26 @@ def _chat_dto(message: ChatMessage) -> ChatMessageDto:
     )
 
 
-def _shell_dto(task: Task) -> TaskShellDto:
+def _latest_waiting_reason(db: DbSession, *, task_id: int) -> str | None:
+    """最近一次资源等待原因（M-16）：WAITING_RESOURCE 只是等待，非失败。"""
+    from sqlalchemy import select
+
+    ev = db.scalars(
+        select(DomainEvent)
+        .where(
+            DomainEvent.aggregate_type == "task",
+            DomainEvent.aggregate_id == task_id,
+            DomainEvent.event_type.in_(["task.resource_waiting", "node.resource_waiting"]),
+        )
+        .order_by(DomainEvent.id.desc())
+        .limit(1)
+    ).first()
+    if ev is None:
+        return None
+    return str((ev.payload or {}).get("waiting_reason") or "waiting_resource")
+
+
+def _shell_dto(task: Task, db: DbSession) -> TaskShellDto:
     return TaskShellDto(
         task_id=task.id,
         title=task.title,
@@ -90,6 +109,7 @@ def _shell_dto(task: Task) -> TaskShellDto:
         template_id=task.template_id,
         template_version=task.template_version,
         allowed_actions=allowed_task_actions(TaskState(task.state)),
+        waiting_reason=_latest_waiting_reason(db, task_id=task.id),
         created_at=task.created_at,
         updated_at=task.updated_at,
     )
@@ -107,7 +127,7 @@ def list_tasks(
         if view == "deleted"
         else repo.list_by_user(user.id)
     )
-    return TaskShellListResponse(tasks=[_shell_dto(t) for t in tasks])
+    return TaskShellListResponse(tasks=[_shell_dto(t, db) for t in tasks])
 
 
 @router.get("/{task_id}", response_model=TaskShellDto)
@@ -117,7 +137,7 @@ def get_task(
     db: DbSession = Depends(get_db),
 ) -> TaskShellDto:
     task = TaskRepository(db).get_owned(user.id, task_id)
-    return _shell_dto(task)
+    return _shell_dto(task, db)
 
 
 # ---- M-06 Task Draft / Chat / Spec Draft commands ----

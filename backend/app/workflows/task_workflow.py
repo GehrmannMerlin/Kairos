@@ -42,6 +42,12 @@ with workflow.unsafe.imports_passed_through():
         execute_safe_unit,
         fetch_next_execution_unit,
     )
+    from app.activities.reliability import (
+        HeartbeatTaskSlotInput,
+        RecordResourceWaitInput,
+        heartbeat_task_slot,
+        record_resource_wait,
+    )
     from app.activities.task_execution import (
         CommitCheckpointInput,
         CompleteRunInput,
@@ -58,6 +64,7 @@ with workflow.unsafe.imports_passed_through():
         mark_partial,
         mark_paused,
     )
+    from app.reliability.pools import workflow_queue_override
 
 
 @dataclass
@@ -125,20 +132,47 @@ class TaskWorkflow:
 
     @workflow.run
     async def run(self, inp: TaskWorkflowInput) -> TaskWorkflowResult:
-        await workflow.execute_activity(
-            ensure_run_started,
-            EnsureRunStartedInput(
-                task_id=inp.task_id,
-                user_id=inp.user_id,
-                run_id=inp.run_id,
-                spec_version=inp.spec_version,
-                plan_version=inp.plan_version,
-            ),
-            start_to_close_timeout=timedelta(seconds=60),
-        )
+        # M-16 task admission（Level 1+2，D-071）：无全局/单用户 slot → 记录等待事实并
+        # sleep 重试。任务保持 QUEUED，绝不以失败表达资源等待（§38 WAITING 非 FAILED）。
+        while True:
+            start_res = await workflow.execute_activity(
+                ensure_run_started,
+                EnsureRunStartedInput(
+                    task_id=inp.task_id,
+                    user_id=inp.user_id,
+                    run_id=inp.run_id,
+                    spec_version=inp.spec_version,
+                    plan_version=inp.plan_version,
+                ),
+                start_to_close_timeout=timedelta(seconds=60),
+            )
+            if start_res.started:
+                break
+            if start_res.waiting_reason:
+                await workflow.execute_activity(
+                    record_resource_wait,
+                    RecordResourceWaitInput(
+                        task_id=inp.task_id,
+                        user_id=inp.user_id,
+                        run_id=inp.run_id,
+                        waiting_reason=start_res.waiting_reason or "task_limit",
+                        retry_after_seconds=start_res.retry_after_seconds,
+                    ),
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+            wait_seconds = start_res.retry_after_seconds if start_res.waiting_reason else 5.0
+            await workflow.sleep(timedelta(seconds=wait_seconds))
 
         while True:
             try:
+                # M-16：task slot heartbeat（延长资源 lease；资源占用事实，非业务 Checkpoint）。
+                await workflow.execute_activity(
+                    heartbeat_task_slot,
+                    HeartbeatTaskSlotInput(
+                        task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id
+                    ),
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
                 if self._cancel_requested:
                     await workflow.execute_activity(
                         mark_cancelled,
@@ -232,11 +266,36 @@ class TaskWorkflow:
                         start_to_close_timeout=timedelta(seconds=60),
                     )
 
+                # M-16：按 ResourceClass 确定性路由 execute_safe_unit 到对应 TaskQueue
+                # （CORE → workflow 自身队列；HTTP/BROWSER/LLM_SEARCH → 固定常量）。
+                exec_kwargs: dict = {"start_to_close_timeout": timedelta(seconds=120)}
+                queue_override = workflow_queue_override(unit.resource_class or "")
+                if queue_override:
+                    exec_kwargs["task_queue"] = queue_override
                 exec_result: ExecuteUnitResult = await workflow.execute_activity(
                     execute_safe_unit,
                     ExecuteUnitInput(run_id=inp.run_id, unit=unit),
-                    start_to_close_timeout=timedelta(seconds=120),
+                    **exec_kwargs,
                 )
+                if exec_result.status == "RESOURCE_WAITING":
+                    # M-16：资源池无 slot → 等待，不推进 _last_index，不失败（D-071 §38）。
+                    refs = exec_result.committed_refs or {}
+                    await workflow.execute_activity(
+                        record_resource_wait,
+                        RecordResourceWaitInput(
+                            task_id=inp.task_id,
+                            user_id=inp.user_id,
+                            run_id=inp.run_id,
+                            waiting_reason=str(refs.get("waiting_reason", "pool_limit")),
+                            resource_class=str(refs.get("resource_class") or ""),
+                            retry_after_seconds=float(refs.get("wait_seconds", 5.0)),
+                        ),
+                        start_to_close_timeout=timedelta(seconds=30),
+                    )
+                    await workflow.sleep(
+                        timedelta(seconds=float(refs.get("wait_seconds", 5.0)))
+                    )
+                    continue  # 不推进 index，重取同一单元
                 if exec_result.status == "NODE_EXECUTOR_UNAVAILABLE":
                     # 生产运行时 M-09+ 尚未实现该 Node Activity：稳定错误，不冒充能力（四十七）。
                     await workflow.execute_activity(

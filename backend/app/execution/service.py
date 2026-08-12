@@ -98,6 +98,7 @@ _TASK_EVENT_LABELS = {
     "task.fail": "任务执行失败",
     "task.mark_waiting_approval": "等待审批",
     "task.mark_waiting_resource": "等待执行资源",
+    "task.resource_waiting": "等待可用执行资源",
     "task.delete": "任务已删除",
     "task.restore": "任务已恢复",
     "task.spec_confirmed": "采集方案已确认",
@@ -115,6 +116,9 @@ _RECORD_LABELS = {
     "record.reevaluate_requested": "记录重新处理请求",
     "record.approved_batch": "批量通过",
     "record.rejected_batch": "批量拒绝",
+}
+_NODE_RESOURCE_LABELS = {
+    "node.resource_waiting": "等待执行资源",
 }
 
 _BATCH_SIZE = 500
@@ -535,6 +539,8 @@ class ExecutionService:
             return _DISCOVERY_LABELS.get(event_type, "来源发现")
         if event_type.startswith("record."):
             return _RECORD_LABELS.get(event_type, "记录变更")
+        if event_type in _NODE_RESOURCE_LABELS:
+            return _NODE_RESOURCE_LABELS[event_type]
         return event_type
 
     def _to_dto(self, ev: Any) -> TimelineEvent:
