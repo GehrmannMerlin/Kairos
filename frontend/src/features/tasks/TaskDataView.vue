@@ -5,9 +5,11 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { openDrawer } from '@/app/overlay/drawer.store'
+import { useBatchReview, type BatchAction } from '@/features/data/useBatchReview'
 import { useRecordEvents } from '@/features/data/useRecordEvents'
 import { useRecords } from '@/features/data/useRecords'
-import type { RecordView } from '@/features/data/types'
+import type { RecordListParams } from '@/features/data/types'
+import type { RecordPartition, RecordView } from '@/features/data/types'
 
 const route = useRoute()
 const taskId = computed(() => String(route.params.taskId))
@@ -27,13 +29,24 @@ const {
   applyParams,
 } = useRecords(taskId)
 
-// Deep Link（D-062）：/data?status=review → 待复核 Tab；其余参数由 Task 11 回读
+// Deep Link 回读（D-062）：?status=&review_type=&source_type=&extract_method=&q= 落到对应筛选
 watch(
-  () => route.query.status,
-  (status) => {
-    if (status === 'passed' || status === 'review' || status === 'rejected') {
-      setTab(status === 'review' ? 'needs_review' : status)
+  () => route.query,
+  (q) => {
+    if (
+      typeof q.status === 'string' &&
+      (q.status === 'passed' || q.status === 'review' || q.status === 'rejected')
+    ) {
+      setTab(q.status === 'review' ? 'needs_review' : (q.status as RecordPartition))
     }
+    if (typeof q.q === 'string' && q.q) {
+      setSearch(q.q)
+    }
+    const p: RecordListParams = {}
+    if (typeof q.review_type === 'string') p.review_type = q.review_type
+    if (typeof q.source_type === 'string') p.source_type = q.source_type
+    if (typeof q.extract_method === 'string') p.extract_method = q.extract_method
+    if (Object.keys(p).length) applyParams(p)
   },
   { immediate: true },
 )
@@ -127,6 +140,39 @@ function openRecord(record: RecordView): void {
   openDrawer('RECORD', { taskId: taskId.value, recordId: record.record_id })
 }
 
+// ---- 批量审核（D-061：按钮仅对后端 allowed_actions 允许且语义兼容记录开放；后端最终校验）----
+const selected = ref<Map<number, number>>(new Map())
+const selectedIds = computed<number[]>(() => [...selected.value.keys()])
+const selectedVersions = computed<Record<number, number>>(() =>
+  Object.fromEntries(selected.value.entries()),
+)
+
+function toggleSelect(record: RecordView): void {
+  const next = new Map(selected.value)
+  if (next.has(record.record_id)) next.delete(record.record_id)
+  else next.set(record.record_id, record.data_version)
+  selected.value = next
+}
+
+const batchAllowed = computed(() => {
+  const selectedRecords = items.value.filter((r) => selected.value.has(r.record_id))
+  return (action: string) =>
+    selectedRecords.length > 0 && selectedRecords.every((r) => r.allowed_actions.includes(action))
+})
+
+const {
+  pending: batchPending,
+  error: batchError,
+  run: runBatchAction,
+} = useBatchReview(taskId.value, selectedIds, selectedVersions, () => {
+  selected.value = new Map()
+  void load()
+})
+
+function runBatch(action: BatchAction): void {
+  void runBatchAction(action, '')
+}
+
 function displayField(record: RecordView, col: string): string {
   const v = record.fields[col]
   return v === null || v === undefined ? '—' : String(v)
@@ -188,6 +234,36 @@ function displayField(record: RecordView, col: string): string {
       </label>
     </div>
 
+    <div v-if="selectedIds.length" class="data-batchbar">
+      <span class="muted">已选 {{ selectedIds.length }} 条</span>
+      <button
+        v-if="batchAllowed('approve')"
+        type="button"
+        :disabled="batchPending"
+        @click="runBatch('approve')"
+      >
+        批量通过
+      </button>
+      <button
+        v-if="batchAllowed('reject')"
+        type="button"
+        :disabled="batchPending"
+        @click="runBatch('reject')"
+      >
+        批量拒绝
+      </button>
+      <button
+        v-if="batchAllowed('agent_reevaluate')"
+        type="button"
+        :disabled="batchPending"
+        @click="runBatch('agent_reevaluate')"
+      >
+        批量重新处理
+      </button>
+      <button type="button" @click="selected = new Map()">取消</button>
+      <span v-if="batchError" class="data-batchbar__error">{{ batchError }}</span>
+    </div>
+
     <p v-if="loading" class="muted">加载中…</p>
     <p v-else-if="error" class="empty">{{ error }}</p>
     <p v-else-if="items.length === 0" class="empty">暂无数据</p>
@@ -195,6 +271,7 @@ function displayField(record: RecordView, col: string): string {
     <table v-else class="data-table">
       <thead>
         <tr>
+          <th class="data-cell--select" aria-label="选择"></th>
           <th v-for="col in visibleColumns" :key="col">{{ col }}</th>
           <th>分区</th>
           <th>来源</th>
@@ -203,6 +280,14 @@ function displayField(record: RecordView, col: string): string {
       </thead>
       <tbody>
         <tr v-for="r in items" :key="r.record_id" class="data-row" @click="openRecord(r)">
+          <td class="data-cell--select" @click.stop>
+            <input
+              type="checkbox"
+              :checked="selected.has(r.record_id)"
+              :aria-label="`选择记录 ${r.record_id}`"
+              @change="toggleSelect(r)"
+            />
+          </td>
           <td v-for="col in visibleColumns" :key="col">{{ displayField(r, col) }}</td>
           <td>{{ r.partition }}</td>
           <td class="data-cell--muted">{{ r.source_url }}</td>
@@ -309,5 +394,24 @@ function displayField(record: RecordView, col: string): string {
   align-items: center;
   gap: 0.75rem;
   margin-top: 0.75rem;
+}
+.data-cell--select {
+  width: 2rem;
+  text-align: center;
+}
+.data-batchbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface, transparent);
+}
+.data-batchbar__error {
+  color: #dc2626;
+  font-size: 0.85rem;
 }
 </style>
