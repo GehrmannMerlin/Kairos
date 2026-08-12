@@ -11,6 +11,7 @@ from time import perf_counter
 from typing import Any
 
 from app.domain.models import PageSnapshot
+from app.domain.spec import FieldType
 from app.extraction.confidence import final_confidence
 from app.extraction.context import ExtractionContextBuilder
 from app.extraction.contracts import (
@@ -123,7 +124,12 @@ class ExtractionPipeline:
                         )
                     )
                     continue
-                if not evidence_is_grounded(cand.evidence_quote, ctx.readable_text):
+                # URL 字段（如 原文URL）的值是页面自身 URL，不在正文中，文本 grounding
+                # 不适用；URL 格式校验（normalize_url 返回 None 即 schema 拒绝）已防幻觉
+                # （DEPLOY-GATE-3 上海政府：所有含 原文URL 的 record 均被 grounding 拦截）。
+                if field.type != FieldType.URL and not evidence_is_grounded(
+                    cand.evidence_quote, ctx.readable_text
+                ):
                     all_issues.append(
                         ExtractionIssue(
                             code="EVIDENCE_NOT_GROUNDED",

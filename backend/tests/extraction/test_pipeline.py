@@ -71,6 +71,47 @@ async def test_ladder_only_llm_falls_back_on_unresolved(ctx, storage):
 
 
 @pytest.mark.asyncio
+async def test_llm_url_field_does_not_require_body_text_grounding(ctx, storage) -> None:
+    """DEPLOY-GATE-3 上海政府：原文URL 等 URL 字段的值是页面自身 URL，不在正文中。
+    文本 grounding 不应拦截 URL 字段（URL 格式校验已防幻觉）；非 URL 字段仍强制 grounding。"""
+    db = ctx["db"]
+    user = ctx["user"]
+    body = "<html><body><p>这是一段页面正文，其中没有 URL。</p></body></html>".encode("utf-8")
+    snap_id = seed_snapshot(ctx, body, storage, url="https://gm.example.com/page")
+    snapshot = db.get(PageSnapshot, snap_id)
+    spec = SpecVersionRepository(db).get_version(user.id, ctx["task"].id, 1)
+
+    class _UrlAgent:
+        async def extract(self, inp, resolved=None, api_key=None):  # noqa: ARG002
+            return SemanticExtractionResult(
+                fields=[
+                    SemanticFieldCandidate(
+                        field_name="官网",  # URL 字段，页面自身 URL 不在正文
+                        value="https://gm.example.com/page",
+                        evidence_quote="https://gm.example.com/page",
+                        confidence=0.9,
+                    )
+                ]
+            )
+
+    pipeline = ExtractionPipeline(
+        db,
+        storage,
+        context_builder=ExtractionContextBuilder(db, storage),
+        llm_agent=_UrlAgent(),
+    )
+    result = await pipeline.run(snapshot, spec.payload, user_id=user.id)
+
+    url_cands = [c for c in result.candidates if c.field_name == "官网"]
+    assert len(url_cands) == 1
+    assert url_cands[0].raw_value == "https://gm.example.com/page"
+    assert "官网" not in result.unresolved_fields
+    assert not any(
+        i.code == "EVIDENCE_NOT_GROUNDED" and i.field_name == "官网" for i in result.issues
+    )
+
+
+@pytest.mark.asyncio
 async def test_structured_fixture_uses_no_llm(ctx, storage):
     db = ctx["db"]
     user = ctx["user"]
