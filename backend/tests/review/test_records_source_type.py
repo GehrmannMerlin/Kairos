@@ -83,11 +83,11 @@ def test_source_type_resolves_via_url_resource(client: dict) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["total"] == 1
-    assert body["items"][0]["fields"]["values"]["company"] == "A"
+    assert body["items"][0]["fields"]["company"] == "A"
 
     resp2 = c.get(f"/api/tasks/{task_id}/records?source_type=seed")
     assert resp2.json()["total"] == 1
-    assert resp2.json()["items"][0]["fields"]["values"]["company"] == "B"
+    assert resp2.json()["items"][0]["fields"]["company"] == "B"
 
 
 def test_source_type_falls_back_to_payload_for_fixture_records(client: dict) -> None:
