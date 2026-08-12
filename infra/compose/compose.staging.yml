@@ -15,6 +15,23 @@ x-staging-env-file: &staging-env-file
   env_file:
     - ${KAIROS_STAGING_ENV_FILE:-/srv/kairos/env/staging.env}
 
+# M-16：Staging 安全小限额（D-071 部署配置，不进 CollectionSpec）。
+# worker 用同一镜像 + KAIROS_WORKER_ROLES=all（单进程 poll 全部 role queue，
+# 每 queue 并发来自 CapacityConfig）；未来扩 worker 时改为多容器不同 role 即可。
+x-m16-capacity: &m16-capacity
+  KAIROS_WORKER_ROLES: "all"
+  KAIROS_CAPACITY_GLOBAL_ACTIVE_TASKS: "4"
+  KAIROS_CAPACITY_PER_USER_ACTIVE_TASKS: "2"
+  KAIROS_CAPACITY_CORE_CONCURRENCY: "2"
+  KAIROS_CAPACITY_HTTP_CONCURRENCY: "2"
+  KAIROS_CAPACITY_BROWSER_CONCURRENCY: "1"
+  KAIROS_CAPACITY_LLM_SEARCH_CONCURRENCY: "1"
+  KAIROS_CAPACITY_LEASE_TTL_SECONDS: "60"
+  KAIROS_CAPACITY_LEASE_HEARTBEAT_SECONDS: "15"
+  KAIROS_CAPACITY_LEASE_REAP_INTERVAL_SECONDS: "20"
+  KAIROS_CAPACITY_DOMAIN_BREAKER_THRESHOLD: "3"
+  KAIROS_CAPACITY_DOMAIN_BREAKER_COOLDOWN_SECONDS: "30"
+
 services:
   postgres:
     <<: *staging-env-file
@@ -37,6 +54,8 @@ services:
 
   worker:
     <<: *staging-env-file
+    environment:
+      <<: *m16-capacity
 
   web:
     <<: *staging-env-file
