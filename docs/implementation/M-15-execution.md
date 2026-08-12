@@ -1,6 +1,6 @@
 # M-15 模块执行记录
 
-状态：**DONE_LOCAL**（2026-08-12）— 本地 scoped 验证全绿；Staging 部署与 FAST DEPLOY-GATE-4 见本记录第 8 节
+状态：**DONE**（2026-08-12）— 本地 scoped 验证全绿 + Staging 增量验收全 PASS + FAST DEPLOY-GATE-4 = PASS_FAST_DEV
 负责人/Agent：Claude Code
 Baseline SHA：`d2464c7`（M-14 DONE HEAD，migration 0011）
 分支：`feature/M-15-artifacts-lifecycle`（pushed：NO）
@@ -75,4 +75,13 @@ cd frontend && npx vue-tsc --noEmit && npm run build            # PASS
 | 6c25e68 | docs(plan): record M-15 artifacts deletion retention plan |
 
 ## 8. Staging + FAST DEPLOY-GATE-4
-见 `docs/implementation/DEPLOY-GATE-4-execution.md`（本阶段完成后创建）。
+**DEPLOY-GATE-4 = PASS_FAST_DEV**（见 `docs/implementation/DEPLOY-GATE-4-execution.md`）：
+- Release：web `staging-58da9e0eb26a` + api `staging-2794a95580e4`（worker 保持 `staging-cfda95b0bd5c`），migration 0012→0013 head。
+- Health：HTTPS 200、live/ready ok、postgres/temporal/minio/otel healthy。
+- NEW_PASS：Completion Card（task 44 PARTIAL）、Formal CSV（19 行 = passed）、Download、Artifact reuse（同 id）、Soft delete / Deleted view / Restore、Retention dry-run（protected=81 Evidence 引用对象）。
+- Backup：`staging-m15-pre` + `staging-m15-fix`；rollback 镜像 `staging-cfda95b0bd5c` 保留。
+- Deferred：完整 reliability matrix → M-16/M-17；DEFERRED-DYNAMIC-E2E-01 不处理。
+
+## 9. 完成结论
+**M-15 = DONE**（本地 scoped 全绿 + Staging 增量验收全 PASS + FAST DEPLOY-GATE-4 = PASS_FAST_DEV）。
+**M-16 = UNBLOCKED**。明确未做：M-16 实现、M-17、M-18、Production、完整可靠性回归、DEFERRED-DYNAMIC-E2E-01、Push/Merge/Tag。
