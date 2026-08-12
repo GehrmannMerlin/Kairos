@@ -26,8 +26,8 @@ refine() {  # refine <label>  从 stdin 读候选行
     if printf '%s' "$val" | grep -Eiq '^[a-z_][a-z0-9_.]*$'; then
       continue
     fi
-    # 模板 / 示例 / 测试占位
-    if printf '%s' "$line" | grep -Eiq "example|your-|your_key|xxx|dummy|placeholder|changeme|REPLACE_ME|\.env\.example|\.env\.production\.example|M17_SECRET|sk-test"; then
+    # 模板 / 示例 / 测试占位 / canary 变量引用
+    if printf '%s' "$line" | grep -Eiq "example|your-|your_key|xxx|dummy|placeholder|changeme|REPLACE_ME|\.env\.example|\.env\.production\.example|M17_SECRET|CANARY|sk-test"; then
       continue
     fi
     echo "SECRET-HIT[$label]: ${line:0:160}" >> "$TMP"
@@ -36,13 +36,18 @@ refine() {  # refine <label>  从 stdin 读候选行
 
 BROAD_PATTERN="(postgres_password|minio_secret_key|kairos_session_secret|session_secret|secret_key|aws_secret_access_key|access_key_secret)=|KAIROS_CREDENTIAL_MASTER_KEY=[0-9a-f]{64}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|authorization: bearer|sk-[a-zA-Z0-9]{20,}"
 
-# 1) git tracked 文件
+# 1) git tracked 文件（排除 .env 模板 / 含 secret 模式字面量的脚本）
 git ls-files -z | xargs -0 grep -HnE "$BROAD_PATTERN" 2>/dev/null \
-  | grep -vE "\.env\.example|\.env\.production\.example" \
+  | grep -vE "\.env\.example|\.env\.production\.example|infra/scripts/secret-scan\.sh|infra/scripts/_backup_common\.py" \
   | refine "git-tracked" || true
 
-# 2) 最近 10 个 commit 的 diff（一次扫描）
-git log -p --format= -10 -- . ':(exclude)*.md' 2>/dev/null \
+# 2) 最近 10 个 commit 的 diff（一次扫描；排除含 secret 模式字面量的脚本，避免自我命中）
+git log -p --format= -10 -- . \
+  ':(exclude)*.md' \
+  ':(exclude)*tests*' \
+  ':(exclude)infra/scripts/secret-scan.sh' \
+  ':(exclude)infra/scripts/_backup_common.py' \
+  ':(exclude)backend/app/observability/*' 2>/dev/null \
   | grep -E "$BROAD_PATTERN" \
   | refine "recent-commits" || true
 

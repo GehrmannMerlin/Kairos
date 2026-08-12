@@ -7,7 +7,6 @@ Dev defaults（Secure Cookie=false / localhost CORS / 无主密钥 / 本地 DB /
 from __future__ import annotations
 
 import pytest
-
 from app.config import Settings
 
 _PROD = {
