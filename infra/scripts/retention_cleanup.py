@@ -6,6 +6,6 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[2] / "backend"
 sys.path.insert(0, str(BACKEND))
 
-from app.artifacts.cli import main  # noqa: E402
+from app.artifacts.cli import main
 
 main()

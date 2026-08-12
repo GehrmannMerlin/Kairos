@@ -40,7 +40,7 @@ def assemble_completion_card(db, *, user_id: int, task_id: int) -> CompletionCar
         partition_counts={"passed": passed, "needs_review": review, "rejected": rejected},
         url_processed=terminal,
         runtime_limit_reason=decision.runtime_limit_reason if decision else None,
-        scope_completion_metadata=decision.scope_completion_metadata or {},
+        scope_completion_metadata=(decision.scope_completion_metadata or {}) if decision else {},
         can_view_data=True,
         can_view_quality=True,
         can_export_formal=passed > 0,
