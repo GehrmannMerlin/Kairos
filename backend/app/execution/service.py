@@ -9,8 +9,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.auth.errors import NotFoundError
 from app.execution.contracts import (
+    DagEdge,
+    DagNodeDto,
+    DagNodeExecution,
+    DagView,
     ExecutionView,
+    NodeDetailDto,
     PlanBrief,
     RunSummary,
     StageKey,
@@ -21,6 +27,18 @@ from app.execution.contracts import (
     TimelinePage,
 )
 from app.execution.repository import ExecutionRepository
+
+_SECRET_KEYS = {
+    "credential_ref",
+    "password",
+    "api_key",
+    "cookie",
+    "authorization",
+    "proxy_authorization",
+    "token",
+    "secret",
+    "session_token",
+}
 
 _STAGE_LABELS = {
     StageKey.GOAL_PLAN: "目标与计划",
@@ -38,16 +56,16 @@ _STAGE_ORDER = [
 ]
 
 _NODE_TYPE_STAGE: dict[str, StageKey] = {
-    "SourceSearch": StageKey.SOURCE_DISCOVERY,
-    "AccessRulesCheck": StageKey.SOURCE_DISCOVERY,
-    "LinkDiscovery": StageKey.SOURCE_DISCOVERY,
-    "Fetch": StageKey.FETCH,
-    "BrowserRender": StageKey.FETCH,
-    "Extract": StageKey.EXTRACTION,
-    "Normalize": StageKey.EXTRACTION,
-    "Deduplicate": StageKey.VALIDATION,
-    "Validate": StageKey.VALIDATION,
-    "GenerateArtifact": StageKey.VALIDATION,
+    "source_search": StageKey.SOURCE_DISCOVERY,
+    "access_rules_check": StageKey.SOURCE_DISCOVERY,
+    "link_discovery": StageKey.SOURCE_DISCOVERY,
+    "fetch": StageKey.FETCH,
+    "browser_render": StageKey.FETCH,
+    "extract": StageKey.EXTRACTION,
+    "normalize": StageKey.EXTRACTION,
+    "deduplicate": StageKey.VALIDATION,
+    "validate": StageKey.VALIDATION,
+    "generate_artifact": StageKey.VALIDATION,
 }
 
 _ERROR_TYPES = {"task.fail", "fetch.failed", "extraction.failed", "node.blocked_high_risk"}
@@ -153,7 +171,6 @@ class ExecutionService:
                     error_count=error_count,
                 )
             )
-
         return ExecutionView(
             task_id=task_id,
             run=(
@@ -181,6 +198,203 @@ class ExecutionService:
                 else None
             ),
         )
+
+    # ---- plan DAG + node detail ----
+    def assemble_dag(self, *, user_id: int, task_id: int) -> DagView:
+        plan = self._repo.latest_plan(user_id=user_id, task_id=task_id)
+        if plan is None:
+            return DagView(
+                task_id=task_id,
+                plan_version=0,
+                spec_version=0,
+                validation_status="none",
+                stage_status={k.value: "not_started" for k in _STAGE_ORDER},
+            )
+        graph = (plan.payload or {}).get("graph") or {}
+        raw_nodes = graph.get("nodes") or []
+        raw_edges = graph.get("edges") or []
+        all_events = self._repo.events_after(
+            user_id=user_id, task_id=task_id, after_id=0, limit=100_000
+        )
+        run = self._repo.latest_run(user_id=user_id, task_id=task_id)
+        urls = self._repo.url_stats(user_id=user_id, task_id=task_id)
+        record_total = self._repo.record_count_total(user_id=user_id, task_id=task_id)
+        run_state = run.state if run else None
+        stage_status = {k.value: v for k, v in self._stage_state_map(all_events, run_state).items()}
+
+        nodes: list[DagNodeDto] = []
+        for n in raw_nodes:
+            node_type = str(n.get("node_type") or "")
+            node_id = str(n.get("node_id") or "")
+            nodes.append(
+                DagNodeDto(
+                    node_id=node_id,
+                    node_type=node_type,
+                    definition_version=str(n.get("definition_version") or ""),
+                    resource_class=self._resource_class(node_type),
+                    depends_on=[str(d) for d in (n.get("depends_on") or [])],
+                    optional=bool(n.get("optional")),
+                    fail_policy=str(n.get("fail_policy") or "block"),
+                    stage=self._node_stage(node_type).value,
+                    parameters_summary=self._parameters_summary(n.get("parameters") or {}),
+                    execution=self._node_execution(
+                        node_id=node_id,
+                        node_type=node_type,
+                        all_events=all_events,
+                        urls=urls,
+                        record_total=record_total,
+                    ),
+                )
+            )
+        edges = [
+            DagEdge(
+                from_node_id=str(e.get("from_node_id") or ""),
+                to_node_id=str(e.get("to_node_id") or ""),
+            )
+            for e in raw_edges
+        ]
+        return DagView(
+            task_id=task_id,
+            plan_version=plan.version,
+            spec_version=plan.spec_version,
+            validation_status=plan.validation_status,
+            stage_status=stage_status,
+            nodes=nodes,
+            edges=edges,
+        )
+
+    def node_detail(
+        self, *, user_id: int, task_id: int, node_id: str
+    ) -> NodeDetailDto:
+        plan = self._repo.latest_plan(user_id=user_id, task_id=task_id)
+        if plan is None:
+            raise NotFoundError("资源不存在")
+        graph = (plan.payload or {}).get("graph") or {}
+        raw_nodes = graph.get("nodes") or []
+        node = next((n for n in raw_nodes if str(n.get("node_id") or "") == node_id), None)
+        if node is None:
+            raise NotFoundError("资源不存在")
+        node_type = str(node.get("node_type") or "")
+        all_events = self._repo.events_after(
+            user_id=user_id, task_id=task_id, after_id=0, limit=100_000
+        )
+        run = self._repo.latest_run(user_id=user_id, task_id=task_id)
+        urls = self._repo.url_stats(user_id=user_id, task_id=task_id)
+        record_total = self._repo.record_count_total(user_id=user_id, task_id=task_id)
+        return NodeDetailDto(
+            node_id=node_id,
+            node_type=node_type,
+            definition_version=str(node.get("definition_version") or ""),
+            resource_class=self._resource_class(node_type),
+            depends_on=[str(d) for d in (node.get("depends_on") or [])],
+            optional=bool(node.get("optional")),
+            fail_policy=str(node.get("fail_policy") or "block"),
+            plan_version=plan.version,
+            stage=self._node_stage(node_type).value,
+            run=(
+                RunSummary(
+                    run_id=run.id,
+                    state=run.state,
+                    started_at=run.started_at,
+                    finished_at=run.finished_at,
+                    plan_version=run.plan_version,
+                    spec_version=run.spec_version,
+                )
+                if run
+                else None
+            ),
+            parameters_summary=self._parameters_summary(node.get("parameters") or {}),
+            execution=self._node_execution(
+                node_id=node_id,
+                node_type=node_type,
+                all_events=all_events,
+                urls=urls,
+                record_total=record_total,
+            ),
+        )
+
+    def _stage_state_map(self, all_events: list[Any], run_state: str | None) -> dict[StageKey, str]:
+        stage_events: dict[StageKey, list[Any]] = {k: [] for k in _STAGE_ORDER}
+        for ev in all_events:
+            stage_events[self._stage(ev)].append(ev)
+        return {
+            key: self._stage_state(
+                key=key, stage_events=stage_events[key], all_events=all_events, run_state=run_state
+            )
+            for key in _STAGE_ORDER
+        }
+
+    @staticmethod
+    def _resource_class(node_type: str) -> str | None:
+        from app.plan.nodes import NodeRegistry
+
+        definition = NodeRegistry().get(node_type)
+        return definition.resource_class.value if definition else None
+
+    def _node_stage(self, node_type: str) -> StageKey:
+        return _NODE_TYPE_STAGE.get(node_type, StageKey.GOAL_PLAN)
+
+    def _node_execution(
+        self,
+        *,
+        node_id: str,
+        node_type: str,
+        all_events: list[Any],
+        urls: dict[str, int],
+        record_total: int,
+    ) -> DagNodeExecution:
+        """节点级执行证据：当前执行路径不写 NodeRun 行且事件大多不带 node_id，
+        因此 event_count 通常为 0；fetch/extract/validate 类型按任务级 URL/Record 事实展示。
+        """
+        node_events = [
+            ev
+            for ev in all_events
+            if ev.payload and str(ev.payload.get("node_id") or "") == node_id
+        ]
+        last_status = None
+        last_error = None
+        tool = None
+        duration_ms = None
+        attempt_count = 0
+        for ev in node_events:
+            payload = ev.payload or {}
+            if payload.get("status"):
+                last_status = str(payload["status"])
+            if payload.get("error_code"):
+                last_error = str(payload["error_code"])
+            if payload.get("tool"):
+                tool = str(payload["tool"])
+            if payload.get("duration_ms") is not None:
+                duration_ms = _safe_int(payload["duration_ms"])
+            attempt = _safe_int(payload.get("attempt"))
+            attempt_count = max(attempt_count, attempt)
+        url_fetched_count = (
+            urls["fetched"] + urls["failed"] if node_type == "fetch" else 0
+        )
+        record_count = (
+            record_total if node_type in ("extract", "normalize", "deduplicate", "validate") else 0
+        )
+        return DagNodeExecution(
+            event_count=len(node_events),
+            last_status=last_status,
+            last_error=last_error,
+            attempt_count=attempt_count,
+            tool=tool,
+            duration_ms=duration_ms,
+            url_fetched_count=url_fetched_count,
+            record_count=record_count,
+        )
+
+    @staticmethod
+    def _parameters_summary(parameters: dict) -> dict:
+        """参数摘要：只暴露标量、非 secret 键；凭据引用等一律不返回。"""
+        out: dict = {}
+        for key, value in parameters.items():
+            if key in _SECRET_KEYS:
+                continue
+            if isinstance(value, (str, int, float, bool)) and value is not None:
+                out[key] = value
+        return out
 
     def _stage_state(
         self,

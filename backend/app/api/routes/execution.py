@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session as DbSession
 from app.auth.deps import require_user
 from app.auth.models import User
 from app.domain.repository import TaskRepository
-from app.execution.contracts import ExecutionView, TimelineCategory, TimelinePage
+from app.execution.contracts import (
+    DagView,
+    ExecutionView,
+    NodeDetailDto,
+    TimelineCategory,
+    TimelinePage,
+)
 from app.execution.service import ExecutionService
 from app.infra.deps import get_db
 
@@ -45,3 +51,24 @@ def get_timeline(
     return service.timeline(
         user_id=user.id, task_id=task_id, category=category, after_id=after_id, limit=limit
     )
+
+
+@router.get("/dag", response_model=DagView)
+def get_dag(
+    task_id: int,
+    user: User = Depends(require_user),
+    db: DbSession = Depends(get_db),
+) -> DagView:
+    TaskRepository(db).get_owned(user.id, task_id)
+    return ExecutionService(db).assemble_dag(user_id=user.id, task_id=task_id)
+
+
+@router.get("/nodes/{node_id}", response_model=NodeDetailDto)
+def get_node_detail(
+    task_id: int,
+    node_id: str,
+    user: User = Depends(require_user),
+    db: DbSession = Depends(get_db),
+) -> NodeDetailDto:
+    TaskRepository(db).get_owned(user.id, task_id)
+    return ExecutionService(db).node_detail(user_id=user.id, task_id=task_id, node_id=node_id)

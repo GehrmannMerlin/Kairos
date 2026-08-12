@@ -103,3 +103,71 @@ class TimelinePage(BaseModel):
     items: list[TimelineEvent] = Field(default_factory=list)
     next_cursor: int | None = None
     has_more: bool = False
+
+
+class DagNodeExecution(BaseModel):
+    """节点级执行事实（只读，来自事件/URL/Record 可获得的证据；缺失显示 0/—）。"""
+
+    model_config = _STRICT
+
+    event_count: int = 0
+    last_status: str | None = None
+    last_error: str | None = None
+    attempt_count: int = 0
+    tool: str | None = None
+    duration_ms: int | None = None
+    url_fetched_count: int = 0
+    record_count: int = 0
+
+
+class DagNodeDto(BaseModel):
+    model_config = _STRICT
+
+    node_id: str
+    node_type: str
+    definition_version: str
+    resource_class: str | None = None
+    depends_on: list[str] = Field(default_factory=list)
+    optional: bool = False
+    fail_policy: str = "block"
+    stage: str
+    parameters_summary: dict = Field(default_factory=dict)
+    execution: DagNodeExecution = Field(default_factory=DagNodeExecution)
+
+
+class DagEdge(BaseModel):
+    model_config = _STRICT
+
+    from_node_id: str
+    to_node_id: str
+
+
+class DagView(BaseModel):
+    model_config = _STRICT
+
+    task_id: int
+    plan_version: int
+    spec_version: int
+    validation_status: str
+    stage_status: dict[str, str] = Field(default_factory=dict)
+    nodes: list[DagNodeDto] = Field(default_factory=list)
+    edges: list[DagEdge] = Field(default_factory=list)
+
+
+class NodeDetailDto(BaseModel):
+    """Node Detail Drawer 数据：冻结定义 + 可获得的执行证据，无大型原始 payload。"""
+
+    model_config = _STRICT
+
+    node_id: str
+    node_type: str
+    definition_version: str
+    resource_class: str | None = None
+    depends_on: list[str] = Field(default_factory=list)
+    optional: bool = False
+    fail_policy: str = "block"
+    plan_version: int
+    stage: str
+    run: RunSummary | None = None
+    parameters_summary: dict = Field(default_factory=dict)
+    execution: DagNodeExecution = Field(default_factory=DagNodeExecution)
