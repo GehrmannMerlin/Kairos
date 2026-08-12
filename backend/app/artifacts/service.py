@@ -6,6 +6,7 @@ import hashlib
 import re
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.artifacts.contracts import (
     ArtifactRef,
@@ -124,21 +125,41 @@ class ArtifactService:
             request.export_type.value,
             ds_version,
         )
-        artifact = self._repo.create(
-            user_id=user_id,
-            task_id=task_id,
-            artifact_type="csv",
-            dataset_version=ds_version,
-            export_type=request.export_type.value,
-            filter_snapshot=snapshot,
-            request_fingerprint=request_fp,
-            schema_version=schema_version,
-            content_hash=content_hash,
-            storage_ref=key,
-            row_count=len(rows),
-            size_bytes=len(data),
-            filename=filename,
-        )
+        try:
+            artifact = self._repo.create(
+                user_id=user_id,
+                task_id=task_id,
+                artifact_type="csv",
+                dataset_version=ds_version,
+                export_type=request.export_type.value,
+                filter_snapshot=snapshot,
+                request_fingerprint=request_fp,
+                schema_version=schema_version,
+                content_hash=content_hash,
+                storage_ref=key,
+                row_count=len(rows),
+                size_bytes=len(data),
+                filename=filename,
+            )
+        except IntegrityError:
+            # M-16 并发幂等：相同导出并发都越过 find_ready → 部分唯一索引兜底，
+            # 回滚后复用已提交的获胜 Artifact（不重复生成 Blob/不重复建行）。
+            self._db.rollback()
+            existing = self._repo.find_ready(
+                user_id=user_id,
+                task_id=task_id,
+                dataset_version=ds_version,
+                export_type=request.export_type.value,
+                request_fingerprint=request_fp,
+            )
+            if existing is not None and existing.content_hash:
+                return ArtifactRef(
+                    artifact_id=existing.id,
+                    content_hash=existing.content_hash,
+                    download_url=f"/tasks/{task_id}/artifacts/{existing.id}/download",
+                    row_count=existing.row_count,
+                )
+            raise
         return ArtifactRef(
             artifact_id=artifact.id,
             content_hash=content_hash,
