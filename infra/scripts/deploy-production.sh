@@ -50,7 +50,7 @@ echo "==> validating compose config on server"
     --env-file /srv/kairos/env/production.env config -q" || fail "compose config validation failed"
 
 echo "==> writing release manifest"
-"${SSH[@]}" "cd /srv/kairos && RELEASE_VERSION=${RELEASE_VERSION} \
+"${SSH[@]}" "cd /srv/kairos && RELEASE_VERSION=${RELEASE_VERSION} RELEASE_SHA=${SHA} \
     bash /srv/kairos/scripts/release-manifest.sh" || fail "release manifest failed"
 
 echo "==> production up: infra first (storage/db/temporal/init)"

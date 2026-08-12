@@ -5,7 +5,10 @@
 set -euo pipefail
 VERSION="${RELEASE_VERSION:-v0.1.0}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SHA="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+# 服务器 /srv/kairos 不是 git 仓库；release SHA 由发布流程显式传入（RELEASE_SHA），
+# 否则回退到本机 git（仅本地场景），最后回退 unknown 并在校验阶段失败。
+SHA="${RELEASE_SHA:-$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}"
+[ "$SHA" != "unknown" ] || { echo "RELEASE_SHA required (server has no git repo)" >&2; exit 2; }
 MIG="${MIGRATION_HEAD:-0014}"
 DIR=/srv/kairos/releases
 mkdir -p "$DIR"
