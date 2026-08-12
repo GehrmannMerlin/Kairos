@@ -119,6 +119,48 @@ class Settings(BaseSettings):
             return json.loads(value)
         return value
 
+    # --- M-17：production 上线门禁校验（部署配置错误必须启动即失败）---
+    _DEV_CORS_HOSTS = ("localhost", "127.0.0.1")
+    _DEV_DB_HOSTS = ("localhost", "127.0.0.1")
+
+    def production_validation_errors(self) -> list[str]:
+        """返回 production 环境下配置违规列表；空列表表示可上线。"""
+        if self.env != "production":
+            return []
+        errors: list[str] = []
+        if not self.session_cookie_secure:
+            errors.append("production: KAIROS_SESSION_COOKIE_SECURE must be true")
+        if self.cors_origins == ["*"] or any(
+            any(h in o for h in self._DEV_CORS_HOSTS) for o in self.cors_origins
+        ):
+            errors.append(
+                "production: KAIROS_CORS_ORIGINS must be the real product origin only"
+            )
+        if not self.credential_master_key:
+            errors.append("production: KAIROS_CREDENTIAL_MASTER_KEY is required")
+        elif len(self.credential_master_key) != 64:
+            errors.append(
+                "production: KAIROS_CREDENTIAL_MASTER_KEY must be 64 hex chars"
+            )
+        if self.database_url and any(
+            h in self.database_url for h in self._DEV_DB_HOSTS
+        ):
+            errors.append(
+                "production: KAIROS_DATABASE_URL must point to the production DB host"
+            )
+        if self.s3_bucket.endswith("-dev") or "kairos-staging" in self.s3_bucket:
+            errors.append("production: KAIROS_S3_BUCKET must be the production bucket")
+        if self.temporal_namespace in ("default", "kairos-staging"):
+            errors.append(
+                "production: KAIROS_TEMPORAL_NAMESPACE must be production-isolated"
+            )
+        return errors
+
+    def validate_runtime(self) -> None:
+        errors = self.production_validation_errors()
+        if errors:
+            raise RuntimeError("production config invalid: " + "; ".join(errors))
+
 
 @lru_cache
 def get_settings() -> Settings:
