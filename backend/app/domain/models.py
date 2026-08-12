@@ -46,6 +46,8 @@ class Task(Base):
     template_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # M-15: 软删除前状态，restore 时回到该终态（不破坏 Run execution facts）。
+    restore_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -552,6 +554,13 @@ class Artifact(Base):
     filter_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     storage_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # ---- M-15 export/artifact lifecycle（migration 0012，expand-only）----
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schema_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ready")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
