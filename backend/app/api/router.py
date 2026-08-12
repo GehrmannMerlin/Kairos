@@ -9,6 +9,7 @@ from app.api.routes import (
     auth,
     credentials,
     events,
+    execution,
     health,
     plans,
     providers,
@@ -32,3 +33,4 @@ api_router.include_router(credentials.saved_router)
 api_router.include_router(records.router)
 api_router.include_router(events.router)
 api_router.include_router(quality.router)
+api_router.include_router(execution.router)
