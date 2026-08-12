@@ -6,6 +6,7 @@ M-01 ships one adapter (MinIO) which is also S3-compatible for production use.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 from dataclasses import dataclass
@@ -105,11 +106,9 @@ class MinioObjectStorage:
 
     async def delete(self, key: str) -> None:
         def _delete() -> None:
-            try:
-                self._client.remove_object(self._bucket, key)
-            except Exception:
+            with contextlib.suppress(Exception):
                 # NoSuchKey / NoSuchObject 视为已删除，幂等。
-                pass
+                self._client.remove_object(self._bucket, key)
 
         await anyio.to_thread.run_sync(_delete)
 

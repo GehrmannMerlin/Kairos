@@ -34,7 +34,13 @@ def final_field_dict(
 def schema_columns_for_spec(spec_payload: dict | None) -> list[str]:
     """冻结 CollectionSpec 的业务列，按 spec.fields 声明顺序。"""
     fields = (spec_payload or {}).get("fields") or []
-    return [f.get("name") for f in fields if isinstance(f, dict) and f.get("name")]
+    out: list[str] = []
+    for f in fields:
+        if isinstance(f, dict):
+            name = f.get("name")
+            if isinstance(name, str) and name:
+                out.append(name)
+    return out
 
 
 STATUS_COLUMNS = ["partition", "review_type", "review_reason"]

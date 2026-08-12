@@ -85,7 +85,8 @@ def client(tmp_path) -> dict:
     """TestClient + sessionmaker + 假存储，供 artifacts API 测试（同 tests/review 模式）。"""
     from app.auth.deps import get_login_limiter
     from app.auth.rate_limit import InMemoryLoginLimiter
-    from app.infra.deps import get_db, storage as storage_dep
+    from app.infra.deps import get_db
+    from app.infra.deps import storage as storage_dep
     from app.main import create_app
     from fastapi.testclient import TestClient
 
