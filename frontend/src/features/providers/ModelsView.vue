@@ -15,8 +15,10 @@ import type {
 import SearchConfigDrawer from '@/features/providers/SearchConfigDrawer.vue'
 
 type Tab = 'models' | 'searches'
+type DrawerKind = 'model' | 'search'
 type DrawerState =
-  { open: false } | { open: true; mode: DrawerMode; config: DrawerConfigRef | null }
+  | { open: false }
+  | { open: true; kind: DrawerKind; mode: DrawerMode; config: DrawerConfigRef | null }
 
 const route = useRoute()
 // D-066：Model Required 返回链。return_to 必须是站内路径（如 /tasks/123/chat），
@@ -135,14 +137,14 @@ async function onDeleteSearch(config: SearchConfigDto): Promise<void> {
   }
 }
 
-function openCreate(): void {
-  drawer.value = { open: true, mode: 'create', config: null }
+function openCreate(kind: DrawerKind): void {
+  drawer.value = { open: true, kind, mode: 'create', config: null }
 }
-function openEdit(config: DrawerConfigRef): void {
-  drawer.value = { open: true, mode: 'edit', config }
+function openEdit(kind: DrawerKind, config: DrawerConfigRef): void {
+  drawer.value = { open: true, kind, mode: 'edit', config }
 }
-function openReplaceKey(config: DrawerConfigRef): void {
-  drawer.value = { open: true, mode: 'replaceKey', config }
+function openReplaceKey(kind: DrawerKind, config: DrawerConfigRef): void {
+  drawer.value = { open: true, kind, mode: 'replaceKey', config }
 }
 function closeDrawer(): void {
   drawer.value = { open: false }
@@ -156,6 +158,11 @@ const drawerMode = computed<DrawerMode>(() => (drawer.value.open ? drawer.value.
 const drawerConfig = computed<DrawerConfigRef | null>(() =>
   drawer.value.open ? drawer.value.config : null,
 )
+// Explicit kind so the two drawers can never cross-wire: only the drawer whose
+// kind matches the current context is mounted open.
+const drawerKind = computed<DrawerKind>(() => (drawer.value.open ? drawer.value.kind : 'model'))
+const modelDrawerOpen = computed(() => drawer.value.open && drawerKind.value === 'model')
+const searchDrawerOpen = computed(() => drawer.value.open && drawerKind.value === 'search')
 
 onMounted(() => {
   void loadAll()
@@ -191,7 +198,7 @@ onMounted(() => {
 
     <template v-if="activeTab === 'models'">
       <div class="toolbar">
-        <button type="button" @click="openCreate">新增模型</button>
+        <button type="button" @click="openCreate('model')">新增模型</button>
       </div>
       <table v-if="modelConfigs.length" class="config-table">
         <thead>
@@ -214,8 +221,8 @@ onMounted(() => {
             <td>{{ config.credential_configured ? '已配置' : '未配置' }}</td>
             <td>{{ config.is_default ? '默认' : '' }}</td>
             <td class="actions">
-              <button type="button" @click="openEdit(config)">编辑</button>
-              <button type="button" @click="openReplaceKey(config)">更换 Key</button>
+              <button type="button" @click="openEdit('model', config)">编辑</button>
+              <button type="button" @click="openReplaceKey('model', config)">更换 Key</button>
               <button
                 type="button"
                 :disabled="testingId === config.config_id"
@@ -234,7 +241,7 @@ onMounted(() => {
 
     <template v-else>
       <div class="toolbar">
-        <button type="button" @click="openCreate">新增搜索服务</button>
+        <button type="button" @click="openCreate('search')">新增搜索服务</button>
       </div>
       <table v-if="searchConfigs.length" class="config-table">
         <thead>
@@ -255,8 +262,8 @@ onMounted(() => {
             <td>{{ statusLabel(config.connection_status) }}</td>
             <td>{{ config.credential_configured ? '已配置' : '未配置' }}</td>
             <td class="actions">
-              <button type="button" @click="openEdit(config)">编辑</button>
-              <button type="button" @click="openReplaceKey(config)">更换 Key</button>
+              <button type="button" @click="openEdit('search', config)">编辑</button>
+              <button type="button" @click="openReplaceKey('search', config)">更换 Key</button>
               <button
                 type="button"
                 :disabled="testingId === config.config_id"
@@ -273,7 +280,7 @@ onMounted(() => {
     </template>
 
     <ModelConfigDrawer
-      :open="drawer.open"
+      :open="modelDrawerOpen"
       :mode="drawerMode"
       :config="drawerConfig"
       :definitions="modelDefs"
@@ -281,7 +288,7 @@ onMounted(() => {
       @saved="onDrawerSaved"
     />
     <SearchConfigDrawer
-      :open="drawer.open"
+      :open="searchDrawerOpen"
       :mode="drawerMode"
       :config="drawerConfig"
       :definitions="searchDefs"

@@ -8,6 +8,7 @@ export interface ProviderDefinitionDto {
   requires_base_url: boolean
   default_base_url: string | null
   protocol_family: string
+  base_url_mode: 'managed' | 'required' | 'local_required'
 }
 
 export interface ModelConfigDto {
@@ -41,6 +42,18 @@ export interface ProviderTestResultDto {
   error_code: string | null
   message: string | null
   latency_ms: number | null
+}
+
+export interface ModelProbeResultDto {
+  status: string | null
+  detection_confidence: 'HIGH' | 'AMBIGUOUS' | 'NONE'
+  detected_provider: string | null
+  candidates: string[]
+  resolved_base_url: string | null
+  latency_ms: number | null
+  error_code: string | null
+  message: string | null
+  probe_method: string | null
 }
 
 export type DrawerMode = 'create' | 'edit' | 'replaceKey'
@@ -96,6 +109,15 @@ export function replaceModelKey(configId: string, apiKey: string): Promise<Model
 
 export function testModelConnection(configId: string): Promise<ProviderTestResultDto> {
   return apiClient.post<ProviderTestResultDto>(`/providers/models/${configId}/test`)
+}
+
+export function probeModel(body: {
+  api_key?: string
+  provider_type?: string
+  base_url?: string
+  model_name?: string
+}): Promise<ModelProbeResultDto> {
+  return apiClient.post<ModelProbeResultDto>('/providers/models/probe', body)
 }
 
 export function setModelDefault(configId: string): Promise<ModelConfigDto> {
