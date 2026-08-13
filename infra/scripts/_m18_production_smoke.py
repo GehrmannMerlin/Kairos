@@ -82,6 +82,12 @@ def main() -> None:
         },
     )
     check("create DeepSeek model config", r.status_code == 201, f"status={r.status_code}")
+    model_config_id = r.json().get("config_id") if r.status_code == 201 else None
+    # connection_status starts "untested"; a real /test flips it to "available",
+    # which understand() requires (require_available_model_config).
+    if model_config_id:
+        r = base.post(f"/providers/models/{model_config_id}/test")
+        check("test DeepSeek connection", r.status_code == 200, f"status={r.status_code} body={r.text[:120]}")
 
     # 3) Create directed task with SPECIFIED source (seed URL, no search).
     r = base.post(
@@ -154,17 +160,19 @@ def main() -> None:
     r = base.get(f"/tasks/{task_id}/completion")
     check("completion card readable", r.status_code == 200, f"status={r.status_code}")
 
-    # 9) CSV artifact downloadable.
+    # 9) CSV artifact: export first (D-060), then list + download.
+    r = base.post(f"/tasks/{task_id}/artifacts/export", json={"export_type": "formal"})
+    check("csv export", r.status_code == 200, f"status={r.status_code} body={r.text[:120]}")
     r = base.get(f"/tasks/{task_id}/artifacts")
     arts = r.json()
-    art_list = arts.get("items", arts) if isinstance(arts, dict) else arts
+    art_list = arts if isinstance(arts, list) else arts.get("items", arts.get("artifacts", []))
     check("artifacts present", isinstance(art_list, list) and len(art_list) >= 1, f"artifacts={len(art_list) if isinstance(art_list, list) else 'n/a'}")
     if isinstance(art_list, list) and art_list:
-        aid = art_list[0]["id"]
+        aid = art_list[0]["artifact_id"]
         r = base.get(f"/tasks/{task_id}/artifacts/{aid}/download")
         check("csv downloadable", r.status_code == 200, f"status={r.status_code} type={r.headers.get('content-type')}")
 
-    ok = all(ok for _, ok, _ in _results)
+    ok = all(ok for _, ok in _results)
     print(f"SMOKE_RESULT={'PASS' if ok else 'FAIL'} total={len(_results)} task_id={task_id}")
     sys.exit(0 if ok else 1)
 
