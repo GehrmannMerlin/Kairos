@@ -1,0 +1,10 @@
+[Unit]
+Description=Kairos daily backup timer (staging)
+
+[Timer]
+OnCalendar=*-*-* 01:17:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

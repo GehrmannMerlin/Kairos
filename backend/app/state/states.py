@@ -79,6 +79,12 @@ TASK_COMMANDS: dict[str, list[tuple[TaskState, TaskState]]] = {
     "restore": [(TaskState.DELETED, TaskState.DRAFT)],
 }
 
+# 系统内部命令（仅 Workflow/Activity 在安全停止后调用），不出现在用户 allowed_actions。
+TASK_SYSTEM_COMMANDS: dict[str, list[tuple[TaskState, TaskState]]] = {
+    "mark_paused": [(TaskState.PAUSING, TaskState.PAUSED)],
+    "mark_cancelled": [(TaskState.CANCELLING, TaskState.CANCELLED)],
+}
+
 NODE_COMMANDS: dict[str, list[tuple[NodeState, NodeState]]] = {
     "ready": [(NodeState.PENDING, NodeState.READY)],
     "dispatch": [
@@ -113,7 +119,10 @@ def _resolve(commands: dict, kind: str, state: object, command: str):
 
 
 def assert_task_transition(state: TaskState, command: str) -> TaskState:
-    return _resolve(TASK_COMMANDS, "任务", state, command)
+    try:
+        return _resolve(TASK_COMMANDS, "任务", state, command)
+    except IllegalTransitionError:
+        return _resolve(TASK_SYSTEM_COMMANDS, "任务", state, command)
 
 
 def assert_node_transition(state: NodeState, command: str) -> NodeState:

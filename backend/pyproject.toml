@@ -23,13 +23,30 @@ dependencies = [
     # version (e.g. 0.65b0) which older pip rejects as a pre-release under >=.
     "opentelemetry-instrumentation-fastapi==0.65b0",
     "opentelemetry-exporter-otlp>=1.27",
+    "httpx>=0.27",
     "pwdlib[argon2]>=0.2",
     "cryptography>=42",
+    # M-06 Goal Understanding. We only use pydantic-ai's typed Agent/FunctionModel
+    # orchestration; the actual model call routes through app.providers (M-03),
+    # never through pydantic-ai's own provider SDKs.
+    # pydantic-ai-slim（无 extras）：`pydantic-ai` 元包会拉入 mcp/fastmcp/py-key-value-aio，
+    # 后者在 import 时激活 beartype claw import hook，与 Temporal workflow sandbox 冲突
+    # （worker 无法执行任何 workflow）。本项目只用 Agent/FunctionModel/messages（slim 核心）。
+    "pydantic-ai-slim>=2.27",
+    # M-11 extraction（D-010）。Scrapy 的 selector 引擎：CSS + XPath 确定性提取与站点规则。
+    "parsel>=1.9",
 ]
 
 [project.optional-dependencies]
+browser = [
+    # M-10 BrowserRender（D-009 TIER2）。仅 browser worker 需要；API image 不安装，
+    # 避免把 ~48MB 的 playwright 大包拉进 API 镜像（api/worker 曾共用一份 backend
+    # requirements）。import 仅发生在 app/crawling/browser.py 的惰性 import 处，
+    # 无模块级 import，因此 API runtime 无需 playwright 也能正常运行。
+    # Chromium 二进制由 `playwright install chromium` 安装，不引入第二套 browser framework。
+    "playwright>=1.45",
+]
 dev = [
-    "httpx>=0.27",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
@@ -44,6 +61,7 @@ addopts = "-q"
 testpaths = ["tests"]
 markers = [
     "integration: requires live local services (postgres/temporal/minio)",
+    "browser: requires playwright chromium (real browser render verification)",
 ]
 
 [tool.ruff]

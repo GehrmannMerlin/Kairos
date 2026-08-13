@@ -21,7 +21,7 @@ def test_search_registry_has_compatible_provider() -> None:
 
 def test_invalid_search_provider_rejected() -> None:
     with pytest.raises(perr.ProviderValidationError):
-        validate_search_provider_type("tavily")
+        validate_search_provider_type("not_a_real_provider")
 
 
 @pytest.mark.asyncio

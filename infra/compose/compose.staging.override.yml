@@ -1,0 +1,23 @@
+# kairos-staging shared-edge override — adds the staging vhost to the EXISTING
+# Lumina nginx container via a read-only bind mount (same pattern as aurora and
+# stellaris). Applied to Lumina's compose, NOT to kairos-staging:
+#   docker compose -f /opt/lumina/app/deploy/compose.prod.yml \
+#     -f /opt/aurora-preview/deploy/compose.aurora-override.yml \
+#     -f /opt/stellaris/deploy/compose.stellaris-override.yml \
+#     -f /srv/kairos/compose/compose.staging.override.yml up -d nginx
+#
+# WARNING: `docker compose up -d nginx` from Lumina's own deploy.sh recreates
+# nginx WITHOUT aurora/stellaris/kairos overrides and drops all three vhosts.
+# Re-apply all override files together after any Lumina redeploy.
+#
+# NOTE: the running nginx container has no compose project labels and its binds
+# live in HostConfig.Binds (manually managed). If it must be recreated, preserve
+# every existing bind plus this one (see DEPLOY-GATE-1-execution.md).
+
+services:
+  nginx:
+    volumes:
+      - type: bind
+        source: /srv/kairos/deploy/nginx/conf.d/zz-kairos-staging-tls.conf
+        target: /etc/nginx/conf.d/zz-kairos-staging-tls.conf
+        read_only: true

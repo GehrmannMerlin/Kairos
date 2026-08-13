@@ -1,0 +1,261 @@
+"""Cross-module API response DTOs (M-05 task shell query)."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel
+
+
+class TaskShellDto(BaseModel):
+    """Owner-safe read-only snapshot of a Task for the frontend shell.
+
+    state / allowed_actions come from the M-04 state machine; the frontend must
+    not re-derive them locally.
+    """
+
+    task_id: int
+    title: str
+    state: str
+    version: int
+    task_type: str | None
+    current_spec_version: int | None
+    current_plan_version: int | None
+    template_id: str | None
+    template_version: int | None
+    allowed_actions: list[str]
+    waiting_reason: str | None = None  # M-16：最近一次资源等待原因（无则 None）
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskShellListResponse(BaseModel):
+    tasks: list[TaskShellDto]
+
+
+class CreateTaskCommand(BaseModel):
+    """Create a Task Draft; content present = create + first user message (D-045)."""
+
+    content: str | None = None
+    seed_urls: list[str] = []
+    idempotency_key: str | None = None
+
+
+class CreateTaskResponse(BaseModel):
+    task_id: int
+
+
+class ChatMessageDto(BaseModel):
+    id: int
+    role: str
+    content: str
+    ref_type: str | None
+    ref_id: int | None
+    meta: dict | None
+    created_at: datetime
+
+
+class ChatListResponse(BaseModel):
+    messages: list[ChatMessageDto]
+
+
+class CreateMessageCommand(BaseModel):
+    content: str
+    idempotency_key: str | None = None
+
+
+class CreateMessageResponse(BaseModel):
+    message: ChatMessageDto
+
+
+class SpecDraftResponse(BaseModel):
+    task_id: int
+    payload: dict | None
+
+
+class UpdateSpecDraftCommand(BaseModel):
+    payload: dict
+
+
+class AddSeedUrlCommand(BaseModel):
+    url: str
+
+
+class UnderstandResponse(BaseModel):
+    task_id: int
+    message: ChatMessageDto
+    result: dict
+    spec_draft: dict
+
+
+class ConfirmSpecCommand(BaseModel):
+    """expected_version is the Task.version the client last saw (optimistic lock)."""
+
+    expected_version: int
+    payload: dict | None = None
+
+
+class ConfirmSpecResponse(BaseModel):
+    task_id: int
+    spec_version: int
+    state: str
+
+
+class TemplateDto(BaseModel):
+    template_id: str
+    version: int
+    name: str
+    task_type: str
+    goal_template: str
+    variables: list
+    field_schema: list
+    completion_conditions: list
+    advanced_settings: dict
+    field_expansion: dict
+    is_favorite: bool
+    created_at: datetime
+
+
+class TemplateListResponse(BaseModel):
+    templates: list[TemplateDto]
+
+
+class TemplateFavoriteCommand(BaseModel):
+    favorite: bool
+
+
+class UseTemplateCommand(BaseModel):
+    variables: dict[str, str] = {}
+
+
+class UseTemplateResponse(BaseModel):
+    task_id: int
+
+
+class CreateTemplateFromTaskCommand(BaseModel):
+    task_id: int
+
+
+class TaskCommandDto(BaseModel):
+    """pause/resume/cancel 命令体。
+
+    expected_version 来自前端最近一次 Task Query（乐观锁，与 M-06 confirm 一致）。
+    idempotency_key 可选：同 key + 同 payload 重放返回首次结果；同 key + 不同 payload
+    抛出 IdempotencyConflictError (409)。DTO 不含任何 Secret。
+    """
+
+    expected_version: int
+    idempotency_key: str | None = None
+    reason: str | None = None
+
+
+class TaskCommandResponse(BaseModel):
+    command: str
+    state: str
+    version: int
+
+
+class PlanGenerateCommand(BaseModel):
+    """Generate + validate + (if legal) auto-start a plan for a confirmed spec."""
+
+    spec_version: int
+    expected_version: int
+
+
+class PlanGenerateResponse(BaseModel):
+    task_id: int
+    plan_version: int
+    validation_status: str
+    node_count: int
+    run_id: int | None
+    workflow_id: str | None
+
+
+class PlanSummaryDto(BaseModel):
+    task_id: int
+    plan_version: int
+    spec_version: int
+    validation_status: str
+    plan_fingerprint: str
+    node_count: int
+    node_types: list[str | None]
+    diff_summary: dict | None
+    trigger_reason: str | None
+    created_at: datetime
+
+
+class PlanListResponse(BaseModel):
+    task_id: int
+    plans: list[PlanSummaryDto]
+
+
+class ReplanCommand(BaseModel):
+    """Replan vN+1：执行策略层调整；改变 Spec 边界的 replan 被 Validator 拒绝。"""
+
+    graph: dict
+    trigger_reason: str
+    evidence_refs: list = []
+    expected_version: int
+
+
+class ApprovalDto(BaseModel):
+    approval_id: int
+    task_id: int
+    state: str
+    action_type: str
+    node_id: str | None
+    node_type: str | None
+    target: str | None
+    reason: str | None
+    approved_scope: str
+    credential_ref: dict | None
+    status_payload: dict | None
+    expires_at: datetime | None
+    created_at: datetime
+
+
+class ApprovalListResponse(BaseModel):
+    task_id: int
+    approvals: list[ApprovalDto]
+
+
+class ApprovalResolutionCommand(BaseModel):
+    """approve/reject/revoke 命令体。不含 Secret。"""
+
+    expected_version: int
+    idempotency_key: str | None = None
+
+
+class WebsiteCredentialCommand(BaseModel):
+    """网站凭据存储命令（D-059）。payload 含 Cookie/用户名密码；API 不回读明文。
+
+    from_saved_credential_id：选择已保存 SAVED_DOMAIN 凭据复制为本任务 CURRENT_TASK 凭据。
+    """
+
+    type: Literal["cookie", "username_password"]
+    payload: dict = {}
+    scope: Literal["CURRENT_TASK", "SAVED_DOMAIN"] = "CURRENT_TASK"
+    domain: str = ""
+    from_saved_credential_id: int | None = None
+
+
+class WebsiteCredentialDto(BaseModel):
+    """脱敏凭据 metadata：只显示 type/domain/scope/masked，永不回读明文。"""
+
+    credential_id: int
+    type: str
+    domain: str | None
+    scope: str | None
+    task_id: int | None
+    masked: str
+    created_at: datetime | None
+
+
+class WebsiteCredentialResponse(BaseModel):
+    credential: WebsiteCredentialDto
+    approval_id: int | None = None
+
+
+class WebsiteCredentialListResponse(BaseModel):
+    credentials: list[WebsiteCredentialDto]

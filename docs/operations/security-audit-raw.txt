@@ -1,0 +1,127 @@
+
+===== OS / kernel =====
+Ubuntu 24.04.4 LTS
+6.8.0-124-generic
+
+===== current user (should be deploy, not root) =====
+deploy
+uid=1002(deploy) gid=1002(deploy) groups=1002(deploy),988(docker)
+
+===== sshd effective config =====
+
+===== listening ports (non-loopback listeners) =====
+State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess
+LISTEN 0      4096         0.0.0.0:443        0.0.0.0:*          
+LISTEN 0      4096         0.0.0.0:80         0.0.0.0:*          
+LISTEN 0      4096         0.0.0.0:22         0.0.0.0:*          
+LISTEN 0      4096            [::]:443           [::]:*          
+LISTEN 0      4096            [::]:80            [::]:*          
+LISTEN 0      4096            [::]:22            [::]:*          
+
+===== firewall (ufw / firewalld / nft / iptables) =====
+active
+inactive
+
+===== fail2ban =====
+active
+
+===== docker daemon TCP exposure =====
+no docker TCP socket
+
+===== docker networks =====
+NETWORK ID     NAME                          DRIVER    SCOPE
+a36fa90c7154   aurora-preview                bridge    local
+a107891d16cd   aurora-preview-private        bridge    local
+e24c51ad4abd   bridge                        bridge    local
+8b501593679e   host                          host      local
+ecb1209da993   kairos-staging-internal       bridge    local
+e9143371c68a   lumina-prod-internal          bridge    local
+d36b5ecaf61a   none                          null      local
+83a38940e52d   stellaris_default             bridge    local
+eeaeea31a615   stellaris_stellaris_default   bridge    local
+
+===== containers + published ports =====
+kairos-web | kairos-web:staging-6a423a2a5e18 | 80/tcp
+kairos-staging-worker-1 | kairos-worker:staging-6a423a2a5e18 | 8000/tcp
+kairos-api | kairos-api:staging-6a423a2a5e18 | 8000/tcp
+kairos-staging-temporal-1 | temporalio/auto-setup:1.26.2 | 6933-6935/tcp, 6939/tcp, 7233-7235/tcp, 7239/tcp
+kairos-staging-postgres-1 | postgres:16-alpine | 5432/tcp
+kairos-staging-minio-1 | minio/minio:latest | 9000/tcp
+stellaris-web | stellaris-web:test | 127.0.0.1:5173->80/tcp
+kairos-staging-otel-collector-1 | otel/opentelemetry-collector:0.105.0 | 4317/tcp, 55678-55679/tcp
+stellaris-backend | stellaris-backend:test | 127.0.0.1:3000->3000/tcp
+aurora-preview-ingestion-api-1 | aurora-preview-api:cd-b3c10de4d1134fabff56ae198b6efe7531e0178d | 8080/tcp
+aurora-preview-ingestion-worker-1 | aurora-preview-worker:cd-b3c10de4d1134fabff56ae198b6efe7531e0178d | 
+aurora-preview-platform-api-1 | aurora-preview-platform-api:cd-b3c10de4d1134fabff56ae198b6efe7531e0178d | 8787/tcp
+aurora-preview-platform-worker-1 | aurora-preview-platform-worker:cd-b3c10de4d1134fabff56ae198b6efe7531e0178d | 
+aurora-preview-console-1 | aurora-preview-console:cd-b3c10de4d1134fabff56ae198b6efe7531e0178d | 80/tcp
+aurora-preview-redis-1 | redis:7.4-alpine | 6379/tcp
+lumina-prod-nginx-1 | lumina-nginx:core-recovery-20260723T085121Z-6d5c23b | 0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp
+stellaris-postgres | postgres:18 | 127.0.0.1:5432->5432/tcp
+aurora-preview-postgres-1 | postgres:17.10-alpine | 5432/tcp
+lumina-prod-backend-1 | lumina-backend:vector-opt-20260724T011317Z-c090a23a | 8000/tcp
+lumina-prod-local-model-1 | lumina-local-model:vector-opt-20260724T011317Z-c090a23a | 8001/tcp
+lumina-prod-mcp-filesystem-1 | lumina-mcp-filesystem:core-recovery-20260723T114103Z-9bb4b28 | 3000/tcp
+lumina-prod-milvus-1 | milvusdb/milvus:v2.5.6 | 
+lumina-prod-etcd-1 | quay.io/coreos/etcd:v3.5.18 | 2379-2380/tcp
+lumina-prod-minio-1 | minio/minio:RELEASE.2025-04-22T22-12-26Z | 9000/tcp
+lumina-prod-redis-checkpoint-1 | redis:8.4.4 | 6379/tcp
+lumina-prod-redis-business-1 | redis:8.4.4 | 6379/tcp
+lumina-prod-mysql-1 | mysql:8.4.9 | 3306/tcp, 33060/tcp
+
+===== srv/kairos env permissions =====
+total 12
+drwx------  2 deploy deploy 4096 Aug 10 18:04 .
+drwxr-xr-x 10 deploy deploy 4096 Aug 10 17:53 ..
+-rw-------  1 deploy deploy  493 Aug 11 10:30 staging.env
+600 deploy:deploy /srv/kairos/env/staging.env
+
+===== certificate status (staging) =====
+  Certificate Name: aurora.ah.cn
+    Domains: aurora.ah.cn ingest.aurora.ah.cn
+    Expiry Date: 2026-11-05 16:44:41+00:00 (VALID: 85 days)
+  Certificate Name: lumina.ac.cn
+    Domains: lumina.ac.cn stellaris.ac.cn www.lumina.ac.cn www.stellaris.ac.cn
+    Expiry Date: 2026-10-27 06:45:31+00:00 (VALID: 75 days)
+  Certificate Name: staging.kairos.ac.cn
+    Domains: staging.kairos.ac.cn
+    Expiry Date: 2026-11-08 09:26:42+00:00 (VALID: 87 days)
+  Certificate Name: stellaris.ac.cn
+    Domains: stellaris.ac.cn
+    Expiry Date: 2026-11-06 17:47:41+00:00 (VALID: 86 days)
+
+===== docker.sock / privileged / host network =====
+/kairos-web privileged=false net=kairos-staging-internal sock=
+/kairos-staging-worker-1 privileged=false net=kairos-staging-internal sock=
+/kairos-api privileged=false net=kairos-staging-internal sock=
+/kairos-staging-temporal-1 privileged=false net=kairos-staging-internal sock=
+/kairos-staging-postgres-1 privileged=false net=kairos-staging-internal sock=
+/kairos-staging-minio-1 privileged=false net=kairos-staging-internal sock=
+/stellaris-web privileged=false net=lumina-prod-internal sock=
+/kairos-staging-otel-collector-1 privileged=false net=kairos-staging-internal sock=
+/stellaris-backend privileged=false net=lumina-prod-internal sock=
+/aurora-preview-ingestion-api-1 privileged=false net=aurora-preview-private sock=
+/aurora-preview-ingestion-worker-1 privileged=false net=aurora-preview-private sock=
+/aurora-preview-platform-api-1 privileged=false net=aurora-preview-private sock=
+/aurora-preview-platform-worker-1 privileged=false net=aurora-preview-private sock=
+/aurora-preview-console-1 privileged=false net=aurora-preview-private sock=
+/aurora-preview-redis-1 privileged=false net=aurora-preview-private sock=
+/lumina-prod-nginx-1 privileged=false net=lumina-prod-internal sock=
+/stellaris-postgres privileged=false net=stellaris_stellaris_default sock=
+/aurora-preview-postgres-1 privileged=false net=aurora-preview-private sock=
+/lumina-prod-backend-1 privileged=false net=lumina-prod-internal sock=
+/lumina-prod-local-model-1 privileged=false net=lumina-prod-internal sock=
+/lumina-prod-mcp-filesystem-1 privileged=false net=lumina-prod-internal sock=
+/lumina-prod-milvus-1 privileged=false net=lumina-prod-internal sock=
+/lumina-prod-etcd-1 privileged=false net=lumina-prod-internal sock=
+/lumina-prod-minio-1 privileged=false net=lumina-prod-internal sock=
+/lumina-prod-redis-checkpoint-1 privileged=false net=lumina-prod-internal sock=
+/lumina-prod-redis-business-1 privileged=false net=lumina-prod-internal sock=
+/lumina-prod-mysql-1 privileged=false net=lumina-prod-internal sock=
+
+===== deploy sudo rules =====
+Matching Defaults entries for deploy on iZj6c7vo9xptz3du2m0mx6Z:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin, use_pty
+
+User deploy may run the following commands on iZj6c7vo9xptz3du2m0mx6Z:
+    (root) NOPASSWD: /usr/bin/certbot, /usr/bin/systemctl restart docker

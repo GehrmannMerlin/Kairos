@@ -133,6 +133,21 @@ def test_definitions_endpoint_lists_registry(client_factory) -> None:
         assert "custom_compatible_search" in search_types
 
 
+def test_probe_ambiguous_no_network_no_echo(client_factory) -> None:
+    client = client_factory()
+    with client:
+        _register(client, "alice@example.com")
+        # Generic sk-* key is AMBIGUOUS: the endpoint must NOT hit the network
+        # and must not echo the key.
+        resp = client.post("/api/providers/models/probe", json={"api_key": "sk-1234567890abcdef"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["detection_confidence"] == "AMBIGUOUS"
+        assert body["status"] is None
+        assert body["detected_provider"] is None
+        assert "sk-1234567890abcdef" not in resp.text
+
+
 def test_cross_user_blocked(client_factory) -> None:
     a = client_factory()
     b = client_factory()
@@ -191,3 +206,62 @@ def test_connection_test_against_stub(client_factory, stub_url: str) -> None:
         tested = client.post(f"/api/providers/models/{created['config_id']}/test")
         assert tested.status_code == 200
         assert tested.json()["status"] == "AVAILABLE"
+
+
+# ---- Search config + probe regression (Tavily must NOT require Base URL) ----
+
+
+def test_create_tavily_search_without_base_url(client_factory) -> None:
+    """Tavily is a managed Search Provider: name + provider + api_key must save
+    without any base_url. Regression for the user-visible drawer error."""
+    client = client_factory()
+    with client:
+        _register(client, "alice@example.com")
+        resp = client.post(
+            "/api/providers/searches",
+            json={"name": "Tavily", "provider_type": "tavily", "api_key": "tvly-secret-123"},
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["provider_type"] == "tavily"
+        assert body["base_url"] is None
+        assert body["credential_configured"] is True
+        assert "tvly-secret-123" not in repr(body)
+
+
+def test_custom_search_without_base_url_rejected(client_factory) -> None:
+    """custom_compatible_search still requires a Base URL — per-definition."""
+    client = client_factory()
+    with client:
+        _register(client, "alice@example.com")
+        resp = client.post(
+            "/api/providers/searches",
+            json={"name": "custom", "provider_type": "custom_compatible_search", "api_key": "sk-x"},
+        )
+        assert resp.status_code == 422, resp.text
+
+
+def test_search_probe_custom_available_against_stub(client_factory, stub_url: str) -> None:
+    """Search probe endpoint performs a real minimal request and returns latency
+    without persisting a config or a credential."""
+    client = client_factory()
+    with client:
+        _register(client, "alice@example.com")
+        resp = client.post(
+            "/api/providers/searches/probe",
+            json={
+                "provider_type": "custom_compatible_search",
+                "api_key": "sk-stub",
+                "base_url": stub_url,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "AVAILABLE"
+        assert body["provider_type"] == "custom_compatible_search"
+        assert body["latency_ms"] is not None
+        assert body["resolved_base_url"] == stub_url
+        assert "sk-stub" not in resp.text
+        # Probe must not create a SearchConfig / Credential.
+        remaining = client.get("/api/providers/searches").json()["configs"]
+        assert remaining == []

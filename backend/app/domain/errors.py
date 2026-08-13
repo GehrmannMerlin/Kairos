@@ -28,3 +28,8 @@ class StaleVersionError(DomainError):
 class IdempotencyConflictError(DomainError):
     code = "IDEMPOTENCY_CONFLICT"
     status_code = 409
+
+
+class SpecValidationError(DomainError):
+    code = "SPEC_VALIDATION_ERROR"
+    status_code = 422

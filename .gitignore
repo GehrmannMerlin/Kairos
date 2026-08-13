@@ -3,6 +3,7 @@
 .env.production
 .env.*
 !.env.example
+!.env.production.example
 
 # ---- Python ----
 __pycache__/
@@ -22,6 +23,9 @@ dist/
 coverage/
 .vite/
 *.local
+test-results/
+playwright-report/
+blob-report/
 
 # ---- IDE / OS ----
 .vscode/
@@ -32,10 +36,16 @@ Thumbs.db
 # ---- Logs / data ----
 *.log
 *.sql.gz
+*.sql
 *.dump
-data/
+/data/
 minio-data/
 playwright-data/
+
+# ---- M-17 backup / restore artifacts ----
+backups/
+restore-drill-data/
+*.tar.gz
 
 # ---- Runtime artifacts ----
 *.pid

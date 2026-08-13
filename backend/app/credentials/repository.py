@@ -20,6 +20,79 @@ class CredentialRepository:
         self._db.refresh(cred)
         return cred
 
+    def create_website(
+        self,
+        user_id: int,
+        kind: str,
+        name: str,
+        *,
+        domain: str,
+        scope: str,
+        task_id: int | None,
+    ) -> Credential:
+        cred = Credential(
+            user_id=user_id,
+            kind=kind,
+            name=name,
+            domain=domain,
+            scope=scope,
+            task_id=task_id,
+            status="active",
+        )
+        self._db.add(cred)
+        self._db.commit()
+        self._db.refresh(cred)
+        return cred
+
+    def list_website_for_task(self, user_id: int, task_id: int) -> list[Credential]:
+        return list(
+            self._db.scalars(
+                select(Credential)
+                .where(
+                    Credential.user_id == user_id,
+                    Credential.scope == "CURRENT_TASK",
+                    Credential.task_id == task_id,
+                    Credential.status == "active",
+                )
+                .order_by(Credential.id.asc())
+            )
+        )
+
+    def list_saved_for_user(self, user_id: int) -> list[Credential]:
+        return list(
+            self._db.scalars(
+                select(Credential)
+                .where(
+                    Credential.user_id == user_id,
+                    Credential.scope == "SAVED_DOMAIN",
+                    Credential.status == "active",
+                )
+                .order_by(Credential.id.asc())
+            )
+        )
+
+    def resolve_for_domain(
+        self, user_id: int, task_id: int, domain: str
+    ) -> Credential | None:
+        """本任务 CURRENT_TASK 凭据（已批准可用的前提由 Frontier 状态机保证）。"""
+        return self._db.scalar(
+            select(Credential)
+            .where(
+                Credential.user_id == user_id,
+                Credential.scope == "CURRENT_TASK",
+                Credential.task_id == task_id,
+                Credential.domain == domain,
+                Credential.status == "active",
+            )
+            .order_by(Credential.id.asc())
+            .limit(1)
+        )
+
+    def delete_owned(self, user_id: int, credential_id: int) -> None:
+        cred = self.get_owned(user_id, credential_id)
+        cred.status = "disabled"
+        self._db.commit()
+
     def get_owned(self, user_id: int, credential_id: int) -> Credential:
         cred = self._db.get(Credential, credential_id)
         if cred is None or cred.user_id != user_id:

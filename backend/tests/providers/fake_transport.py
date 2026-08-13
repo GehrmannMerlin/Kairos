@@ -20,8 +20,11 @@ class FakeHttpClient:
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
         timeout_seconds: float = 15.0,
+        body: dict | None = None,
     ) -> HttpResponse:
-        self.calls.append({"method": method, "url": url, "headers": headers, "params": params})
+        self.calls.append(
+            {"method": method, "url": url, "headers": headers, "params": params, "body": body}
+        )
         if self._raise_network:
             raise ConnectionError("boom")
         return HttpResponse(status_code=self._status, body=self._body)

@@ -1,0 +1,215 @@
+# Kairos production compose 模板 —— M-18 发布时使用；当前不部署。
+#
+# 规则（agent-production-deployment-standards.md）：
+#   - 内部服务（postgres/temporal/minio/otel/migrate/worker）零 host 端口，只走 internal。
+#   - web/api 只加入 internal + edge（lumina-prod-internal，共享 nginx 反代）暴露 80/443。
+#   - 镜像 tag 一律 ${VAR:?} 必填，禁止 latest/main/dev/test。
+#   - Secret 一律 ${VAR:?} 无默认值；默认值只存在于 .env.production.example 变量名。
+#   - 使用独立 production volume / namespace / bucket（与 staging 完全隔离）。
+#   - worker 用同一镜像 + KAIROS_WORKER_ROLES；容量来自部署配置（D-071）。
+name: kairos-production
+
+x-backend-env: &backend-env
+  KAIROS_ENV: production
+  KAIROS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+  KAIROS_TEMPORAL_ADDRESS: temporal:7233
+  KAIROS_TEMPORAL_NAMESPACE: ${KAIROS_TEMPORAL_NAMESPACE:?}
+  KAIROS_S3_ENDPOINT: minio:9000
+  KAIROS_S3_ACCESS_KEY: ${MINIO_ACCESS_KEY:?}
+  KAIROS_S3_SECRET_KEY: ${MINIO_SECRET_KEY:?}
+  KAIROS_S3_BUCKET: ${KAIROS_S3_BUCKET:?}
+  KAIROS_S3_SECURE: "false"
+  KAIROS_OTEL_ENABLED: "true"
+  KAIROS_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  KAIROS_CORS_ORIGINS: '["https://app.kairos.ac.cn"]'
+  KAIROS_SESSION_COOKIE_SECURE: "true"
+  KAIROS_SESSION_COOKIE_SAMESITE: lax
+  KAIROS_CREDENTIAL_MASTER_KEY: ${KAIROS_CREDENTIAL_MASTER_KEY:?}
+  KAIROS_CREDENTIAL_KEY_VERSION: ${KAIROS_CREDENTIAL_KEY_VERSION:-k1}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+x-m17-capacity: &m17-capacity
+  KAIROS_WORKER_ROLES: ${KAIROS_WORKER_ROLES:-all}
+  KAIROS_CAPACITY_GLOBAL_ACTIVE_TASKS: ${KAIROS_CAPACITY_GLOBAL_ACTIVE_TASKS:-4}
+  KAIROS_CAPACITY_PER_USER_ACTIVE_TASKS: ${KAIROS_CAPACITY_PER_USER_ACTIVE_TASKS:-2}
+  KAIROS_CAPACITY_CORE_CONCURRENCY: ${KAIROS_CAPACITY_CORE_CONCURRENCY:-2}
+  KAIROS_CAPACITY_HTTP_CONCURRENCY: ${KAIROS_CAPACITY_HTTP_CONCURRENCY:-2}
+  KAIROS_CAPACITY_BROWSER_CONCURRENCY: ${KAIROS_CAPACITY_BROWSER_CONCURRENCY:-1}
+  KAIROS_CAPACITY_LLM_SEARCH_CONCURRENCY: ${KAIROS_CAPACITY_LLM_SEARCH_CONCURRENCY:-1}
+  KAIROS_CAPACITY_LEASE_TTL_SECONDS: "60"
+  KAIROS_CAPACITY_LEASE_HEARTBEAT_SECONDS: "15"
+  KAIROS_CAPACITY_LEASE_REAP_INTERVAL_SECONDS: "20"
+  KAIROS_CAPACITY_DOMAIN_BREAKER_THRESHOLD: "3"
+  KAIROS_CAPACITY_DOMAIN_BREAKER_COOLDOWN_SECONDS: "30"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?}
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?} -d ${POSTGRES_DB:?}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [internal]
+
+  temporal:
+    image: temporalio/auto-setup:1.26.2
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_SEEDS: postgres
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address $(hostname -i):7233 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+    networks: [internal]
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?}
+    volumes:
+      - minio_data:/data
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [internal]
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.105.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../otel/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    logging: *default-logging
+    networks: [internal]
+
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:?} ${MINIO_SECRET_KEY:?};
+      mc mb --ignore-existing local/${KAIROS_S3_BUCKET:?};
+      exit 0;
+      "
+    networks: [internal]
+
+  temporal-init:
+    image: temporalio/auto-setup:1.26.2
+    restart: "no"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      temporal operator namespace create --namespace ${KAIROS_TEMPORAL_NAMESPACE:?} --address temporal:7233 --retention 3d || echo 'namespace exists (or CLI variant)';
+      exit 0;
+      "
+    networks: [internal]
+
+  migrate:
+    image: ${KAIROS_API_IMAGE:?}
+    restart: "no"
+    environment: *backend-env
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [internal]
+
+  api:
+    image: ${KAIROS_API_IMAGE:?}
+    restart: unless-stopped
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      temporal-init:
+        condition: service_completed_successfully
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/live')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks: [internal, edge]
+
+  worker:
+    image: ${KAIROS_WORKER_IMAGE:?}
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    environment:
+      <<: [*backend-env, *m17-capacity]
+    depends_on:
+      temporal:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      temporal-init:
+        condition: service_completed_successfully
+    logging: *default-logging
+    networks: [internal]
+
+  web:
+    image: ${KAIROS_WEB_IMAGE:?}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [internal, edge]
+
+networks:
+  internal:
+    name: kairos-production-internal
+  edge:
+    name: lumina-prod-internal
+    external: true
+
+volumes:
+  postgres_data:
+    name: kairos-production_postgres_data
+  minio_data:
+    name: kairos-production_minio_data

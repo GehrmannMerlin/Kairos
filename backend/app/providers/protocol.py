@@ -16,12 +16,70 @@ class ProviderTestStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class BaseUrlMode(StrEnum):
+    """How a provider's Base URL is resolved (Registry is the source of truth).
+
+    ``managed``        — built-in endpoint managed by the Registry; users never
+                         type a Base URL (OpenAI/DeepSeek/OpenRouter/Anthropic/Gemini).
+    ``required``       — user must supply a Base URL (custom OpenAI-compatible).
+    ``local_required`` — user must supply a Base URL, no API key (Ollama).
+    """
+
+    MANAGED = "managed"
+    REQUIRED = "required"
+    LOCAL_REQUIRED = "local_required"
+
+
+class DetectionConfidence(StrEnum):
+    """Key fingerprint confidence. AMBIGUOUS/NONE never trigger a network probe."""
+
+    HIGH = "HIGH"
+    AMBIGUOUS = "AMBIGUOUS"
+    NONE = "NONE"
+
+
 @dataclass(frozen=True)
 class ProviderTestResult:
     status: ProviderTestStatus
     error_code: str | None = None
     message: str | None = None
     latency_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class ModelProbeResult:
+    """Result of probing an *unsaved* model provider key (never persisted).
+
+    ``status`` is ``None`` when no network request was attempted (AMBIGUOUS/NONE
+    fingerprint, or a validation stop such as a missing Base URL / API key).
+    """
+
+    status: ProviderTestStatus | None
+    detection_confidence: DetectionConfidence
+    detected_provider: str | None
+    candidates: tuple[str, ...] = ()
+    resolved_base_url: str | None = None
+    latency_ms: int | None = None
+    error_code: str | None = None
+    message: str | None = None
+    probe_method: str | None = None  # "fingerprint" | "manual" | None
+
+
+@dataclass(frozen=True)
+class SearchProbeResult:
+    """Result of probing an *unsaved* search provider key (never persisted).
+
+    ``status`` is ``None`` only for validation stops (missing required Base URL /
+    API key). Otherwise it is one of AVAILABLE / AUTH_FAILED / RATE_LIMITED /
+    NETWORK_ERROR / FAILED from a single real minimal request.
+    """
+
+    status: ProviderTestStatus | None
+    provider_type: str
+    resolved_base_url: str | None = None
+    latency_ms: int | None = None
+    error_code: str | None = None
+    message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +91,7 @@ class ProviderDefinition:
     requires_base_url: bool
     default_base_url: str | None
     protocol_family: str
+    base_url_mode: BaseUrlMode
 
 
 @dataclass(frozen=True)

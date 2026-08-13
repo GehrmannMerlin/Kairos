@@ -11,6 +11,7 @@ from time import perf_counter
 
 from app.providers.adapters.openai_compatible import map_status
 from app.providers.protocol import (
+    BaseUrlMode,
     ProviderDefinition,
     ProviderTestResult,
     ProviderTestStatus,
@@ -28,6 +29,7 @@ class CustomCompatibleSearchProvider:
         requires_base_url=True,
         default_base_url=None,
         protocol_family="compatible_search",
+        base_url_mode=BaseUrlMode.REQUIRED,
     )
 
     def __init__(self, http: HttpClient | None = None) -> None:

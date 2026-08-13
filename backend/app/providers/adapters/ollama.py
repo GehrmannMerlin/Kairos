@@ -6,6 +6,7 @@ from time import perf_counter
 
 from app.providers.adapters.openai_compatible import map_status
 from app.providers.protocol import (
+    BaseUrlMode,
     ProviderDefinition,
     ProviderTestResult,
     ProviderTestStatus,
@@ -23,6 +24,7 @@ class OllamaModelProvider:
         requires_base_url=True,
         default_base_url="http://localhost:11434",
         protocol_family="ollama",
+        base_url_mode=BaseUrlMode.LOCAL_REQUIRED,
     )
 
     def __init__(self, http: HttpClient | None = None) -> None:

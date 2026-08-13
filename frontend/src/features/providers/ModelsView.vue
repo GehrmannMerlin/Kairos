@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 
+import { mapApiError } from '@/app/error/apiErrorMapper'
 import ModelConfigDrawer from '@/features/providers/ModelConfigDrawer.vue'
 import * as providersApi from '@/features/providers/providers.api'
 import type {
@@ -14,8 +15,21 @@ import type {
 import SearchConfigDrawer from '@/features/providers/SearchConfigDrawer.vue'
 
 type Tab = 'models' | 'searches'
+type DrawerKind = 'model' | 'search'
 type DrawerState =
-  { open: false } | { open: true; mode: DrawerMode; config: DrawerConfigRef | null }
+  | { open: false }
+  | { open: true; kind: DrawerKind; mode: DrawerMode; config: DrawerConfigRef | null }
+
+const route = useRoute()
+// D-066：Model Required 返回链。return_to 必须是站内路径（如 /tasks/123/chat），
+// 且不携带用户原始 Prompt；配置后回到同一 Task。
+const returnTo = computed<string | null>(() => {
+  const raw = route.query.return_to
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
+    ? value
+    : null
+})
 
 const activeTab = ref<Tab>('models')
 const modelConfigs = ref<ModelConfigDto[]>([])
@@ -58,8 +72,8 @@ async function loadAll(): Promise<void> {
     searchDefs.value = defs.searches
     modelConfigs.value = models.configs
     searchConfigs.value = searches.configs
-  } catch {
-    error.value = '加载配置失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   } finally {
     loading.value = false
   }
@@ -71,8 +85,8 @@ async function onTestModel(config: ModelConfigDto): Promise<void> {
   try {
     await providersApi.testModelConnection(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '测试连接失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   } finally {
     testingId.value = null
   }
@@ -83,8 +97,8 @@ async function onSetDefault(config: ModelConfigDto): Promise<void> {
   try {
     await providersApi.setModelDefault(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '设置默认失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   }
 }
 
@@ -94,8 +108,8 @@ async function onDeleteModel(config: ModelConfigDto): Promise<void> {
   try {
     await providersApi.deleteModelConfig(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '删除失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   }
 }
 
@@ -105,8 +119,8 @@ async function onTestSearch(config: SearchConfigDto): Promise<void> {
   try {
     await providersApi.testSearchConnection(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '测试连接失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   } finally {
     testingId.value = null
   }
@@ -118,19 +132,19 @@ async function onDeleteSearch(config: SearchConfigDto): Promise<void> {
   try {
     await providersApi.deleteSearchConfig(config.config_id)
     await loadAll()
-  } catch {
-    error.value = '删除失败'
+  } catch (err) {
+    error.value = mapApiError(err).message
   }
 }
 
-function openCreate(): void {
-  drawer.value = { open: true, mode: 'create', config: null }
+function openCreate(kind: DrawerKind): void {
+  drawer.value = { open: true, kind, mode: 'create', config: null }
 }
-function openEdit(config: DrawerConfigRef): void {
-  drawer.value = { open: true, mode: 'edit', config }
+function openEdit(kind: DrawerKind, config: DrawerConfigRef): void {
+  drawer.value = { open: true, kind, mode: 'edit', config }
 }
-function openReplaceKey(config: DrawerConfigRef): void {
-  drawer.value = { open: true, mode: 'replaceKey', config }
+function openReplaceKey(kind: DrawerKind, config: DrawerConfigRef): void {
+  drawer.value = { open: true, kind, mode: 'replaceKey', config }
 }
 function closeDrawer(): void {
   drawer.value = { open: false }
@@ -144,6 +158,11 @@ const drawerMode = computed<DrawerMode>(() => (drawer.value.open ? drawer.value.
 const drawerConfig = computed<DrawerConfigRef | null>(() =>
   drawer.value.open ? drawer.value.config : null,
 )
+// Explicit kind so the two drawers can never cross-wire: only the drawer whose
+// kind matches the current context is mounted open.
+const drawerKind = computed<DrawerKind>(() => (drawer.value.open ? drawer.value.kind : 'model'))
+const modelDrawerOpen = computed(() => drawer.value.open && drawerKind.value === 'model')
+const searchDrawerOpen = computed(() => drawer.value.open && drawerKind.value === 'search')
 
 onMounted(() => {
   void loadAll()
@@ -153,8 +172,8 @@ onMounted(() => {
 <template>
   <section class="models">
     <div class="models__header">
-      <RouterLink to="/app">← 返回工作台</RouterLink>
       <h1>模型与搜索服务配置</h1>
+      <RouterLink v-if="returnTo" :to="returnTo" class="return-link">← 返回刚才的任务</RouterLink>
     </div>
 
     <nav class="tabs">
@@ -179,7 +198,7 @@ onMounted(() => {
 
     <template v-if="activeTab === 'models'">
       <div class="toolbar">
-        <button type="button" @click="openCreate">新增模型</button>
+        <button type="button" @click="openCreate('model')">新增模型</button>
       </div>
       <table v-if="modelConfigs.length" class="config-table">
         <thead>
@@ -202,8 +221,8 @@ onMounted(() => {
             <td>{{ config.credential_configured ? '已配置' : '未配置' }}</td>
             <td>{{ config.is_default ? '默认' : '' }}</td>
             <td class="actions">
-              <button type="button" @click="openEdit(config)">编辑</button>
-              <button type="button" @click="openReplaceKey(config)">更换 Key</button>
+              <button type="button" @click="openEdit('model', config)">编辑</button>
+              <button type="button" @click="openReplaceKey('model', config)">更换 Key</button>
               <button
                 type="button"
                 :disabled="testingId === config.config_id"
@@ -222,7 +241,7 @@ onMounted(() => {
 
     <template v-else>
       <div class="toolbar">
-        <button type="button" @click="openCreate">新增搜索服务</button>
+        <button type="button" @click="openCreate('search')">新增搜索服务</button>
       </div>
       <table v-if="searchConfigs.length" class="config-table">
         <thead>
@@ -243,8 +262,8 @@ onMounted(() => {
             <td>{{ statusLabel(config.connection_status) }}</td>
             <td>{{ config.credential_configured ? '已配置' : '未配置' }}</td>
             <td class="actions">
-              <button type="button" @click="openEdit(config)">编辑</button>
-              <button type="button" @click="openReplaceKey(config)">更换 Key</button>
+              <button type="button" @click="openEdit('search', config)">编辑</button>
+              <button type="button" @click="openReplaceKey('search', config)">更换 Key</button>
               <button
                 type="button"
                 :disabled="testingId === config.config_id"
@@ -261,7 +280,7 @@ onMounted(() => {
     </template>
 
     <ModelConfigDrawer
-      :open="drawer.open"
+      :open="modelDrawerOpen"
       :mode="drawerMode"
       :config="drawerConfig"
       :definitions="modelDefs"
@@ -269,7 +288,7 @@ onMounted(() => {
       @saved="onDrawerSaved"
     />
     <SearchConfigDrawer
-      :open="drawer.open"
+      :open="searchDrawerOpen"
       :mode="drawerMode"
       :config="drawerConfig"
       :definitions="searchDefs"
@@ -293,6 +312,15 @@ onMounted(() => {
 .models__header h1 {
   font-size: 1.3rem;
   margin: 0 0 1rem;
+}
+.return-link {
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+.return-link:hover {
+  text-decoration: underline;
 }
 .tabs {
   display: flex;

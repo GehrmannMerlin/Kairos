@@ -40,15 +40,21 @@ cd backend && .venv/Scripts/python scripts/generate_master_key.py
 
 Registry 为代码注册、typed，禁止 DB 存 class path 动态 import。
 
-| provider_type | protocol_family | 需要 Key | 需要 model | 需要 base_url |
-|---|---|---|---|---|
-| `openai` | openai_compatible | ✅ | ✅ | — |
-| `deepseek` | openai_compatible | ✅ | ✅ | — |
-| `openrouter` | openai_compatible | ✅ | ✅ | — |
-| `custom_openai_compatible` | openai_compatible | ✅ | ✅ | ✅ |
-| `anthropic` | anthropic | ✅ | ✅ | — |
-| `gemini` | gemini | ✅ | ✅ | — |
-| `ollama` | ollama | ❌ | ✅ | ✅ |
+| provider_type | protocol_family | 需要 Key | 需要 model | 需要 base_url | base_url 模式 |
+|---|---|---|---|---|---|
+| `openai` | openai_compatible | ✅ | ✅ | — | managed |
+| `deepseek` | openai_compatible | ✅ | ✅ | — | managed |
+| `openrouter` | openai_compatible | ✅ | ✅ | — | managed |
+| `custom_openai_compatible` | openai_compatible | ✅ | ✅ | ✅ | required |
+| `anthropic` | anthropic | ✅ | ✅ | — | managed |
+| `gemini` | gemini | ✅ | ✅ | — | managed |
+| `ollama` | ollama | ❌ | ✅ | ✅ | local_required |
+
+Base URL 三种模式（Registry 为事实来源，前端不硬编码 URL）：
+
+- `managed`：内置 Provider 的官方/default endpoint 由 Registry 管理，普通用户无需输入 Base URL，前端在高级设置只读展示解析后的地址。
+- `required`：`custom_openai_compatible` 需要用户输入 Base URL（合法 http/https URL 校验）。
+- `local_required`：Ollama 无需 API Key，但需要用户输入 Base URL，仍可测试连接并返回耗时。
 
 OpenAI-compatible 族复用共享核心 Adapter，通过 `ProviderDefinition` 区分，不复制业务逻辑。
 
@@ -62,11 +68,14 @@ OpenAI-compatible 族复用共享核心 Adapter，通过 `ProviderDefinition` �
 
 `search_protocol.py` 独立于 ModelProvider。当前注册：
 
-| provider_type | 说明 |
-|---|---|
-| `custom_compatible_search` | 兼容 HTTP 契约：`GET {base_url}/search?q=&limit=` + `Authorization: Bearer`，返回 `{"results": [{url,title,snippet}]}` |
+| provider_type | 需要 Key | 需要 base_url | base_url 模式 | 说明 |
+|---|---|---|---|---|
+| `tavily` | ✅ | — | managed | 官方 API：`POST https://api.tavily.com/search`（Registry 管 endpoint，用户无需填写 Base URL） |
+| `custom_compatible_search` | ✅ | ✅ | required | 兼容 HTTP 契约：`GET {base_url}/search?q=&limit=` + `Authorization: Bearer`，返回 `{"results": [{url,title,snippet}]}` |
 
-新增商业 Provider（如 Tavily/Brave）在 M-09 前再按注册表接入，不改变 Agent 主流程。
+字段需求（`requires_api_key` / `requires_base_url` / `base_url_mode`）唯一事实来源为 Backend Provider Registry；前端 `GET /api/providers/definitions` 动态渲染表单与校验，不在 Vue 硬编码 URL 表或 per-provider if/else。
+
+新增商业 Provider（如 Brave/Serper/SerpAPI/Bing-compatible）只按注册表接入，不改变 Agent 主流程，也不改前端校验。
 
 ## 6. Provider 连接测试结果
 
@@ -82,6 +91,31 @@ OpenAI-compatible 族复用共享核心 Adapter，通过 `ProviderDefinition` �
 | `FAILED` | 其他 |
 
 错误正文不直接回传前端，只返回安全 `error_code` 与简短脱敏 message。
+
+## 6.1 Model Probe（未保存配置也能调用的检测连接）
+
+`POST /api/providers/models/probe`（D-073）：
+
+- 请求体 `ModelProbeCommand`：`api_key`（`SecretStr`，可选）、`provider_type`（可选，用户手工选择）、`base_url`（可选）、`model_name`（可选）。
+- 响应体 `ModelProbeResultDto`：`status`（未发起请求时为 `null`）、`detection_confidence`（`HIGH`/`AMBIGUOUS`/`NONE`）、`detected_provider`、`candidates`、`resolved_base_url`、`latency_ms`、`error_code`、`message`、`probe_method`（`fingerprint`/`manual`）。
+- 安全策略（一次 Probe 最多把 Key 发送给一个外部 Provider）：
+  1. 阶段 1 本地 fingerprint（确定性 Key 前缀 matcher，纯字符串匹配，不发网络请求）：高置信度如 `sk-ant-` → Anthropic、`sk-or-` → OpenRouter、`sk-proj-`/`sk-svcacct-` → OpenAI、`AIza` → Gemini；通用 `sk-`（OpenAI/DeepSeek 共用）→ `AMBIGUOUS`；其余 → `NONE`。
+  2. 阶段 2 single-provider probe：仅当 fingerprint 高置信度唯一命中，或用户明确选择 `provider_type`，才对该单个 Provider 发起一次真实最小请求（`GET {base_url}/models` 等）。
+  3. `AMBIGUOUS`/`NONE` 或缺少必需 Base URL/API Key 时**不发任何请求**，直接返回安全文案要求用户选择 Provider。
+- 不创建 ModelConfig / Credential，不持久化 API Key；Key 不落库、不写日志/Temporal History/错误 message/响应。
+- `latency_ms` 为发起真实 probe 到收到可判断结果之间的耗时（monotonic timer），非精确网络 ping，超时有界。
+- 原有 `POST /api/providers/models/{id}/test`（已保存配置测试）保持不变并继续兼容。
+
+## 6.2 Search Probe（未保存配置也能调用的测试连接）
+
+`POST /api/providers/searches/probe`（D-074）：
+
+- 请求体 `SearchProbeCommand`：`provider_type`（**必填**，Search 无 Key fingerprint 阶段，用户始终显式选择 Provider）、`api_key`（`SecretStr`）、`base_url`（可选，仅 custom 使用）。
+- 响应体 `SearchProbeResultDto`：`status`（validation stop 时为 `null`，否则为 `AVAILABLE`/`AUTH_FAILED`/`RATE_LIMITED`/`NETWORK_ERROR`/`FAILED`）、`provider_type`、`resolved_base_url`、`latency_ms`、`error_code`、`message`。
+- 字段按 Registry Definition 解析：`tavily`（managed）忽略用户 Base URL，使用默认 endpoint；`custom_compatible_search`（required）必须提供合法 http/https Base URL。
+- 安全：API Key 只经 HTTP body → `SecretStr` → Adapter 临时使用后丢弃；**不创建 SearchConfig / Credential / CredentialVersion、不写库、不写日志/Temporal History/错误 message/响应**。只有用户点击「保存」才进入 CredentialVault。
+- 测试连接不是保存硬门禁：可跳过测试直接保存，配置状态沿用 `untested`；字段必填仍按 Definition 执行。
+- 已保存配置测试继续复用 `POST /api/providers/searches/{config_id}/test`。
 
 ## 7. Key 轮换与撤销行为
 
@@ -112,8 +146,10 @@ npx vitest run src/features/providers/providers.test.ts
 
 ## 9. API 一览（/api/providers）
 
-- `GET /definitions`：Model/Search Provider registry metadata。
+- `GET /definitions`：Model/Search Provider registry metadata（含 `base_url_mode`）。
 - `GET/POST /models`、`PATCH /models/{id}`、`POST /models/{id}/key`、`POST /models/{id}/test`、`POST /models/{id}/default`、`DELETE /models/{id}`。
+- `POST /models/probe`：未保存配置也能调用的检测连接（见 6.1），不创建配置/凭据。
 - Search 同族：`/searches` 下 GET/POST/PATCH/key/test/delete。
+- `POST /searches/probe`：未保存配置也能调用的测试连接（见 6.2），不创建配置/凭据。
 
 API Key 仅写入/更换（`SecretStr` 请求体）；响应只含 `credential_configured` 与安全 metadata，永不回显明文。

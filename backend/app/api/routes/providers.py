@@ -20,11 +20,15 @@ from app.providers.schemas import (
     CreateSearchConfigCommand,
     ModelConfigDto,
     ModelConfigListResponse,
+    ModelProbeCommand,
+    ModelProbeResultDto,
     ProviderDefinitionDto,
     ProviderTestResultDto,
     ReplaceKeyCommand,
     SearchConfigDto,
     SearchConfigListResponse,
+    SearchProbeCommand,
+    SearchProbeResultDto,
     UpdateModelConfigCommand,
     UpdateSearchConfigCommand,
 )
@@ -86,6 +90,31 @@ def list_models(
         definitions=[
             ProviderDefinitionDto.model_validate(d) for d in list_model_provider_definitions()
         ],
+    )
+
+
+@router.post("/models/probe", response_model=ModelProbeResultDto)
+async def probe_model(
+    cmd: ModelProbeCommand,
+    user: User = Depends(require_user),
+    service: ProviderService = Depends(get_provider_service),
+) -> ModelProbeResultDto:
+    result = await service.probe_model(
+        api_key=cmd.api_key.get_secret_value() if cmd.api_key else None,
+        provider_type=cmd.provider_type,
+        base_url=cmd.base_url,
+        model_name=cmd.model_name,
+    )
+    return ModelProbeResultDto(
+        status=result.status,
+        detection_confidence=result.detection_confidence,
+        detected_provider=result.detected_provider,
+        candidates=list(result.candidates),
+        resolved_base_url=result.resolved_base_url,
+        latency_ms=result.latency_ms,
+        error_code=result.error_code,
+        message=result.message,
+        probe_method=result.probe_method,
     )
 
 
@@ -179,6 +208,27 @@ def list_searches(
         definitions=[
             ProviderDefinitionDto.model_validate(d) for d in list_search_provider_definitions()
         ],
+    )
+
+
+@router.post("/searches/probe", response_model=SearchProbeResultDto)
+async def probe_search(
+    cmd: SearchProbeCommand,
+    user: User = Depends(require_user),
+    service: ProviderService = Depends(get_provider_service),
+) -> SearchProbeResultDto:
+    result = await service.probe_search(
+        provider_type=cmd.provider_type,
+        api_key=cmd.api_key.get_secret_value() if cmd.api_key else None,
+        base_url=cmd.base_url,
+    )
+    return SearchProbeResultDto(
+        status=result.status,
+        provider_type=result.provider_type,
+        resolved_base_url=result.resolved_base_url,
+        latency_ms=result.latency_ms,
+        error_code=result.error_code,
+        message=result.message,
     )
 
 

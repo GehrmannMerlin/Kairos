@@ -1148,3 +1148,53 @@
   4. 执行调度使用全局、用户和节点资源池三级限制，具体容量由部署配置决定。
   5. 结构化业务事实长期保留，高体积原始文件按引用安全的生命周期策略清理。
 - 本阶段收束原则：后续 API 字段、告警阈值、测试矩阵和具体部署数值优先从已确认决策推导，不再为非关键参数逐项扩大产品需求讨论。
+
+## D-073：模型 Provider 支持安全自动识别、托管 Base URL 与连接耗时测试
+
+- 状态：已确认
+- 日期：2026-08-13
+- 维度：模型 Provider 配置交互与安全边界
+- 决定：在 D-051 的「模型配置 Drawer」基础上新增「检测连接」能力，并在 Model Provider 未保存前安全识别 Provider 类型、自动解析 Base URL、测量真实连接耗时；**不替代 D-069 的 Model/Search 独立边界**。
+- 扩展 D-051 交互：
+  - 「新增模型」打开「新增 AI 模型」Drawer，表单顺序建议为：配置名称 → API Key → 检测连接 → Provider → Model → 高级设置。
+  - 检测连接可在保存前使用，成功后自动回填 Provider 并展示「连接成功 · Provider · xxx ms」；失败/无法识别时只展示稳定安全文案。
+- Base URL 模式（以 Backend Provider Registry 为事实来源，不在前端硬编码 URL 表）：
+  - `managed`：内置 Provider（OpenAI、DeepSeek、OpenRouter、Anthropic、Gemini）的官方/default endpoint 由 Registry 管理，普通用户无需输入 Base URL，可在高级设置只读查看解析后的地址。
+  - `required`：`custom_openai_compatible` 需要用户输入 Base URL，且 Base URL 做合法 URL 校验。
+  - `local_required`：Ollama 无需 API Key，但需要用户输入 Base URL，仍可测试连接并返回耗时。
+- Probe 安全策略（`POST /api/providers/models/probe`，未保存配置也能调用）：
+  - 接收当前 Drawer 未保存的 API Key，采用 `SecretStr` 写入；**不创建 ModelConfig、不创建 Credential、不持久化 API Key**。
+  - 阶段 1（Key fingerprint）：Registry 维护确定性的 Key 格式 matcher，只在高置信度时识别，返回 `HIGH` / `AMBIGUOUS` / `NONE`；不用过宽 Regex 猜测。
+  - 阶段 2（Single-provider probe）：仅当 fingerprint 得到单一高置信度 Provider，或用户明确手工选择 Provider，才真正发起一次真实、最小、低成本的 Provider 请求。
+  - **一次 Probe 最多把 API Key 发送给一个外部 Provider**；绝不把 Key 依次广播给 OpenAI/Anthropic/DeepSeek/OpenRouter/Gemini 看哪个成功。
+  - Provider 无法仅凭 Key 可靠识别（如通用 `sk-` 同时可能为 OpenAI/DeepSeek）时，返回 AMBIGUOUS，前端提示「无法仅根据 API Key 唯一识别服务商，请选择 Provider 后重新测试」，要求用户选择而非猜测。
+- 测试结果 DTO：在 `ProviderTestResult` 稳定状态（AVAILABLE / AUTH_FAILED / MODEL_NOT_FOUND / RATE_LIMITED / NETWORK_ERROR / FAILED）基础上增加 `detected_provider`、`detection_confidence`、`resolved_base_url`、`latency_ms`（可选 `probe_method`）；错误正文不回传浏览器，只返回稳定 `error_code` 与简短安全 message。
+- 耗时定义：`latency_ms` 为发起真实 Provider probe 到收到可判断结果之间的耗时（monotonic timer），非精确网络 ping，超时有界，本轮一次最小真实请求即可，不为测速多次取平均。
+- 安全：Probe 完成后 API Key 不落库、不写普通日志、不写 DomainEvent/Outbox/Temporal History/OpenTelemetry attribute/错误 message，也不回传前端；原有 CredentialVault 信封加密、Key rotate/revoke、`/models/{id}/test` 已保存配置测试、M-06 ModelInferenceClient 与 M-09 Search Provider 均保持兼容不被破坏。
+- 影响：Model Provider 与 Search Provider 继续使用完全独立的配置类型、DTO、Provider definitions 与 API 调用链；Drawer 内部明确拆分 Model/Search 上下文（`kind = model | search`），关闭后清理 create/edit context，不因当前 Tab 或上一次 Drawer 状态串线。
+
+## D-074：Search Provider 保存前连接测试与按 Registry 驱动的字段校验
+
+- 状态：已确认
+- 日期：2026-08-13
+- 维度：Search Provider 配置交互与安全边界
+- 背景：D-073 已为 Model Provider 建立保存前 Probe 与托管 Base URL 模式；D-069 明确 Search Provider 与 Model Provider 是完全独立的配置类型与执行契约。本轮修复 Tavily 等内置 Search Provider 在「新增搜索服务」时被错误要求 Base URL 的 Bug，并把同样的安全 Probe 能力补到 Search 侧。
+- Bug 修复部分（属于现有规则错误实现，不作为新需求伪造）：
+  - Tavily 是内置 Search Provider，`requires_api_key = true`、`requires_base_url = false`；Base URL 由 Adapter / Registry 管理（`https://api.tavily.com`），用户无需也不得被要求填写 Base URL。
+  - 根因：前端 `SearchConfigDrawer` 无条件校验 `base_url` 非空（Base URL 输入框却按 `requires_base_url` 条件渲染），后端 `Create/UpdateSearchConfigCommand.base_url` 被声明为必填 `str`。两者都必须改为「按 Provider Definition 校验」，不允许只隐藏输入框、后端仍 required，也不允许只删文案。
+  - 字段需求唯一事实来源 = Backend Provider Registry（`GET /api/providers/definitions`），前端按 metadata 动态显示与校验，不在 Vue 硬编码 URL 表或 per-provider if/else。
+- 新产品行为：未保存 Search Provider 可测试连接（`POST /api/providers/searches/probe`）：
+  - 请求体 `SearchProbeCommand`：`provider_type`（必填，Search 无 Key fingerprint 阶段，用户始终显式选择 Provider）、`api_key`（`SecretStr`）、`base_url`（可选，仅 custom 使用）。
+  - Probe 安全策略与 D-073 一致：API Key 只经 HTTP body → Pydantic `SecretStr` → Provider Adapter 临时使用；**不创建 SearchConfig / Credential / CredentialVersion、不写 PostgreSQL / DomainEvent / Outbox / Temporal History / 普通日志 / OTel attributes / 错误 message，也不回传前端**。只有用户点击「保存」才进入既有 CredentialVault 加密存储流程。
+  - 必须是真实、最小、低成本请求（如 Tavily 官方 `POST /search`，`max_results=1` 的 harmless query），不得用「Key 非空 → 连接成功」冒充。
+  - 复用 `ProviderTestResult` 稳定状态（AVAILABLE / AUTH_FAILED / RATE_LIMITED / NETWORK_ERROR / FAILED），在其基础上返回 `provider_type`、`resolved_base_url`、`latency_ms`（monotonic timer，含第三方处理时间，非纯网络 ping）；错误正文不回传，只返回稳定 `error_code` 与简短安全 message。
+  - Search Provider 字段需求：`tavily` = managed（Registry 管 endpoint，无 Base URL 输入）；`custom_compatible_search` = required（用户必须填合法 http/https Base URL，不接受空串）。create/update 保存校验同样按 Definition 执行。
+  - 测试连接不是保存配置的硬门禁：用户可跳过测试直接保存；配置状态沿用现有语义（如 `untested`）。但字段必填要求仍按 Definition 强制执行。
+  - 已保存配置的测试继续复用 `POST /api/providers/searches/{config_id}/test`；新增配置未保存时无 config_id，才使用 probe。
+- 前端 Drawer 交互：
+  - Tavily 表单：配置名称 → Provider → API Key → 高级设置只读 Base URL → [测试连接] → 结果区 → [取消][保存]；不显示 Base URL 必填框。
+  - 测试按钮状态机：`idle / testing / success / error`；testing 时禁止重复点击、不清空已填 API Key、不保存配置；成功显示「连接成功 · Tavily · xxx ms」，认证失败显示「API Key 无效」等稳定安全文案。
+  - 修改 API Key / Provider / Base URL 后，上一次测试结果必须立即失效，不得出现「Key B 仍显示 Key A 测试成功」。
+  - 编辑已有配置时 API Key 不可回读（显示「已配置」），未输入新 Key 不得清空旧 Key；输入新 Key 走既有 rotate / credential version 流程。
+- 影响：不替代 D-069 的 Model/Search 独立边界；未来新增 Brave / Serper / SerpAPI / Bing-compatible / Custom Search 只需在 Registry 注册，前端字段与校验自动适配。
+

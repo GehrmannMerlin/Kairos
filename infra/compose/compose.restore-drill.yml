@@ -1,0 +1,52 @@
+# kairos-restore-drill —— M-17 隔离恢复演练环境。
+#
+# 规则（M-17 brief §44）：
+#   - 独立 volume / 独立 network；绝不触碰 staging volume / 网络 / 域名。
+#   - 不绑定 staging 公网域名，不发布任何 host 端口。
+#   - 只用于 Restore Drill 只读验证（Task/Record/Evidence/Snapshot/CSV），
+#     验证通过 docker run 一次性容器（复用 api 镜像 + app 库），不启动业务 API/Worker。
+#
+# 用法（restore-drill.sh 编排）：
+#   docker compose -f compose.restore-drill.yml --project-name kairos-restore-drill up -d postgres minio
+name: kairos-restore-drill
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      POSTGRES_DB: kairos_restore
+      POSTGRES_USER: kairos_restore
+      POSTGRES_PASSWORD: drill_dev_pw
+    volumes:
+      - drill_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kairos_restore -d kairos_restore"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    restart: "no"
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: drill_minio
+      MINIO_ROOT_PASSWORD: drill_minio_secret
+    volumes:
+      - drill_minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+networks:
+  default:
+    name: kairos-restore-internal
+
+volumes:
+  drill_postgres_data:
+    name: kairos-restore-drill_drill_postgres_data
+  drill_minio_data:
+    name: kairos-restore-drill_drill_minio_data
