@@ -19,11 +19,13 @@ from app.providers.protocol import (
     ModelProbeResult,
     ProviderTestResult,
     ProviderTestStatus,
+    SearchProbeResult,
 )
 from app.providers.registry import (
     build_model_provider,
     build_search_provider,
     get_model_definition,
+    get_search_definition,
     validate_model_provider_type,
     validate_search_provider_type,
 )
@@ -297,6 +299,9 @@ class ProviderService:
         api_key: str | None,
     ) -> SearchConfig:
         validate_search_provider_type(provider_type)
+        definition = get_search_definition(provider_type)
+        if definition.requires_base_url and not _is_valid_http_url(base_url or ""):
+            raise errors.ProviderValidationError(f"{definition.display_name} 需要合法的 Base URL")
         credential_version_id = None
         if api_key:
             info = self._vault.store_secret(
@@ -321,6 +326,9 @@ class ProviderService:
         base_url: str | None,
     ) -> SearchConfig:
         validate_search_provider_type(provider_type)
+        definition = get_search_definition(provider_type)
+        if definition.requires_base_url and not _is_valid_http_url(base_url or ""):
+            raise errors.ProviderValidationError(f"{definition.display_name} 需要合法的 Base URL")
         current = self._search_configs.get_current(user.id, config_id)
         return self._search_configs.append_version(
             config_id=config_id,
@@ -365,6 +373,64 @@ class ProviderService:
             user.id, config_id, result.status.value.lower(), _now()
         )
         return result
+
+    # ---- Search probe (unsaved config; never persists the key) ----
+
+    async def probe_search(
+        self,
+        *,
+        provider_type: str,
+        api_key: str | None,
+        base_url: str | None,
+    ) -> SearchProbeResult:
+        """Probe an unsaved search key (D-074).
+
+        The user always selects the Search Provider explicitly, so no fingerprint
+        stage exists — a single real minimal request is made against the resolved
+        endpoint. The key is used in the request, then discarded: never stored,
+        logged, or returned. ``status`` is ``None`` only for validation stops.
+        """
+        validate_search_provider_type(provider_type)
+        definition = get_search_definition(provider_type)
+
+        resolved = base_url.strip() if base_url else None
+        if definition.requires_base_url:
+            if not resolved:
+                return SearchProbeResult(
+                    status=None,
+                    provider_type=provider_type,
+                    error_code="BASE_URL_REQUIRED",
+                    message=f"{definition.display_name} 需要填写 Base URL",
+                )
+            if not _is_valid_http_url(resolved):
+                return SearchProbeResult(
+                    status=None,
+                    provider_type=provider_type,
+                    error_code="INVALID_BASE_URL",
+                    message="Base URL 无效",
+                )
+        else:
+            resolved = definition.default_base_url
+
+        if definition.requires_api_key and not api_key:
+            return SearchProbeResult(
+                status=None,
+                provider_type=provider_type,
+                resolved_base_url=resolved,
+                error_code="API_KEY_REQUIRED",
+                message=f"{definition.display_name} 需要 API Key",
+            )
+
+        provider = build_search_provider(provider_type, http=self._http)
+        result = await provider.test_connection(api_key=api_key, base_url=resolved)
+        return SearchProbeResult(
+            status=result.status,
+            provider_type=provider_type,
+            resolved_base_url=resolved,
+            latency_ms=result.latency_ms,
+            error_code=result.error_code,
+            message=_PROBE_MESSAGES.get(result.status),
+        )
 
     def delete_search_config(self, user: Any, *, config_id: str) -> None:
         current = self._search_configs.get_current(user.id, config_id)

@@ -114,6 +114,15 @@ def list_search_provider_definitions() -> list[ProviderDefinition]:
     return [CustomCompatibleSearchProvider.definition, TavilySearchProvider.definition]
 
 
+def get_search_definition(provider_type: str) -> ProviderDefinition:
+    validate_search_provider_type(provider_type)
+    for definition in list_search_provider_definitions():
+        if definition.provider_type == provider_type:
+            return definition
+    # Unreachable: validate_search_provider_type already guards the key.
+    raise errors.ProviderValidationError(f"不支持的搜索 Provider: {provider_type}")
+
+
 def validate_search_provider_type(provider_type: str) -> None:
     if provider_type not in _SEARCH_PROVIDER_BUILDERS:
         raise errors.ProviderValidationError(f"不支持的搜索 Provider: {provider_type}")

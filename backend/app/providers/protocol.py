@@ -66,6 +66,23 @@ class ModelProbeResult:
 
 
 @dataclass(frozen=True)
+class SearchProbeResult:
+    """Result of probing an *unsaved* search provider key (never persisted).
+
+    ``status`` is ``None`` only for validation stops (missing required Base URL /
+    API key). Otherwise it is one of AVAILABLE / AUTH_FAILED / RATE_LIMITED /
+    NETWORK_ERROR / FAILED from a single real minimal request.
+    """
+
+    status: ProviderTestStatus | None
+    provider_type: str
+    resolved_base_url: str | None = None
+    latency_ms: int | None = None
+    error_code: str | None = None
+    message: str | None = None
+
+
+@dataclass(frozen=True)
 class ProviderDefinition:
     provider_type: str
     display_name: str

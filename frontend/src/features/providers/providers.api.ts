@@ -56,6 +56,15 @@ export interface ModelProbeResultDto {
   probe_method: string | null
 }
 
+export interface SearchProbeResultDto {
+  status: string | null
+  provider_type: string
+  resolved_base_url: string | null
+  latency_ms: number | null
+  error_code: string | null
+  message: string | null
+}
+
 export type DrawerMode = 'create' | 'edit' | 'replaceKey'
 
 /** Structural subset shared by ModelConfigDto / SearchConfigDto for the drawers. */
@@ -149,6 +158,14 @@ export function replaceSearchKey(configId: string, apiKey: string): Promise<Sear
 
 export function testSearchConnection(configId: string): Promise<ProviderTestResultDto> {
   return apiClient.post<ProviderTestResultDto>(`/providers/searches/${configId}/test`)
+}
+
+export function probeSearch(body: {
+  provider_type: string
+  api_key?: string
+  base_url?: string
+}): Promise<SearchProbeResultDto> {
+  return apiClient.post<SearchProbeResultDto>('/providers/searches/probe', body)
 }
 
 export function deleteSearchConfig(configId: string): Promise<void> {

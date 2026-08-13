@@ -68,11 +68,14 @@ OpenAI-compatible 族复用共享核心 Adapter，通过 `ProviderDefinition` �
 
 `search_protocol.py` 独立于 ModelProvider。当前注册：
 
-| provider_type | 说明 |
-|---|---|
-| `custom_compatible_search` | 兼容 HTTP 契约：`GET {base_url}/search?q=&limit=` + `Authorization: Bearer`，返回 `{"results": [{url,title,snippet}]}` |
+| provider_type | 需要 Key | 需要 base_url | base_url 模式 | 说明 |
+|---|---|---|---|---|
+| `tavily` | ✅ | — | managed | 官方 API：`POST https://api.tavily.com/search`（Registry 管 endpoint，用户无需填写 Base URL） |
+| `custom_compatible_search` | ✅ | ✅ | required | 兼容 HTTP 契约：`GET {base_url}/search?q=&limit=` + `Authorization: Bearer`，返回 `{"results": [{url,title,snippet}]}` |
 
-新增商业 Provider（如 Tavily/Brave）在 M-09 前再按注册表接入，不改变 Agent 主流程。
+字段需求（`requires_api_key` / `requires_base_url` / `base_url_mode`）唯一事实来源为 Backend Provider Registry；前端 `GET /api/providers/definitions` 动态渲染表单与校验，不在 Vue 硬编码 URL 表或 per-provider if/else。
+
+新增商业 Provider（如 Brave/Serper/SerpAPI/Bing-compatible）只按注册表接入，不改变 Agent 主流程，也不改前端校验。
 
 ## 6. Provider 连接测试结果
 
@@ -102,6 +105,17 @@ OpenAI-compatible 族复用共享核心 Adapter，通过 `ProviderDefinition` �
 - 不创建 ModelConfig / Credential，不持久化 API Key；Key 不落库、不写日志/Temporal History/错误 message/响应。
 - `latency_ms` 为发起真实 probe 到收到可判断结果之间的耗时（monotonic timer），非精确网络 ping，超时有界。
 - 原有 `POST /api/providers/models/{id}/test`（已保存配置测试）保持不变并继续兼容。
+
+## 6.2 Search Probe（未保存配置也能调用的测试连接）
+
+`POST /api/providers/searches/probe`（D-074）：
+
+- 请求体 `SearchProbeCommand`：`provider_type`（**必填**，Search 无 Key fingerprint 阶段，用户始终显式选择 Provider）、`api_key`（`SecretStr`）、`base_url`（可选，仅 custom 使用）。
+- 响应体 `SearchProbeResultDto`：`status`（validation stop 时为 `null`，否则为 `AVAILABLE`/`AUTH_FAILED`/`RATE_LIMITED`/`NETWORK_ERROR`/`FAILED`）、`provider_type`、`resolved_base_url`、`latency_ms`、`error_code`、`message`。
+- 字段按 Registry Definition 解析：`tavily`（managed）忽略用户 Base URL，使用默认 endpoint；`custom_compatible_search`（required）必须提供合法 http/https Base URL。
+- 安全：API Key 只经 HTTP body → `SecretStr` → Adapter 临时使用后丢弃；**不创建 SearchConfig / Credential / CredentialVersion、不写库、不写日志/Temporal History/错误 message/响应**。只有用户点击「保存」才进入 CredentialVault。
+- 测试连接不是保存硬门禁：可跳过测试直接保存，配置状态沿用 `untested`；字段必填仍按 Definition 执行。
+- 已保存配置测试继续复用 `POST /api/providers/searches/{config_id}/test`。
 
 ## 7. Key 轮换与撤销行为
 
@@ -136,5 +150,6 @@ npx vitest run src/features/providers/providers.test.ts
 - `GET/POST /models`、`PATCH /models/{id}`、`POST /models/{id}/key`、`POST /models/{id}/test`、`POST /models/{id}/default`、`DELETE /models/{id}`。
 - `POST /models/probe`：未保存配置也能调用的检测连接（见 6.1），不创建配置/凭据。
 - Search 同族：`/searches` 下 GET/POST/PATCH/key/test/delete。
+- `POST /searches/probe`：未保存配置也能调用的测试连接（见 6.2），不创建配置/凭据。
 
 API Key 仅写入/更换（`SecretStr` 请求体）；响应只含 `credential_configured` 与安全 metadata，永不回显明文。

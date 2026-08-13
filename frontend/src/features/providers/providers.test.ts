@@ -3,17 +3,32 @@ import { mount } from '@vue/test-utils'
 
 import { router } from '@/app/router'
 import ModelConfigDrawer from '@/features/providers/ModelConfigDrawer.vue'
+import SearchConfigDrawer from '@/features/providers/SearchConfigDrawer.vue'
 
 vi.mock('@/features/providers/providers.api', () => ({
   fetchDefinitions: vi.fn(),
   listModelConfigs: vi.fn(),
   listSearchConfigs: vi.fn(),
   createModelConfig: vi.fn(),
+  updateModelConfig: vi.fn(),
+  replaceModelKey: vi.fn(),
+  testModelConnection: vi.fn(),
   probeModel: vi.fn(),
+  setModelDefault: vi.fn(),
+  deleteModelConfig: vi.fn(),
+  createSearchConfig: vi.fn(),
+  updateSearchConfig: vi.fn(),
+  replaceSearchKey: vi.fn(),
+  testSearchConnection: vi.fn(),
+  probeSearch: vi.fn(),
+  deleteSearchConfig: vi.fn(),
 }))
 
 import * as providersApi from '@/features/providers/providers.api'
-import type { ProviderDefinitionDto } from '@/features/providers/providers.api'
+import type {
+  ProviderDefinitionDto,
+  SearchProbeResultDto,
+} from '@/features/providers/providers.api'
 import ModelsView from '@/features/providers/ModelsView.vue'
 
 const modelConfig = {
@@ -78,9 +93,20 @@ const searchDef: ProviderDefinitionDto = {
   protocol_family: 'compatible_search',
   base_url_mode: 'required',
 }
+const tavilySearchDef: ProviderDefinitionDto = {
+  provider_type: 'tavily',
+  display_name: 'Tavily',
+  requires_api_key: true,
+  requires_model_name: false,
+  requires_base_url: false,
+  default_base_url: 'https://api.tavily.com',
+  protocol_family: 'tavily',
+  base_url_mode: 'managed',
+}
 
 const modelDefinitions = [openaiDef, managedDef]
 const searchDefinitions = [searchDef]
+const searchDefsWithTavily = [tavilySearchDef, searchDef]
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -284,5 +310,180 @@ describe('ModelConfigDrawer', () => {
 
     expect(wrapper.text()).toContain('API Key 无效')
     expect(wrapper.text()).not.toContain('sk-secret-123')
+  })
+})
+
+describe('SearchConfigDrawer', () => {
+  async function mountSearchDrawer(defs = searchDefsWithTavily) {
+    const wrapper = mount(SearchConfigDrawer, {
+      props: { open: false, mode: 'create', config: null, definitions: defs },
+    })
+    await wrapper.setProps({ open: true })
+    await flush()
+    return wrapper
+  }
+
+  async function selectProvider(wrapper: ReturnType<typeof mount>, value: string): Promise<void> {
+    await wrapper.find('select').setValue(value)
+    await flush()
+  }
+
+  async function submitForm(wrapper: ReturnType<typeof mount>): Promise<void> {
+    await wrapper.find('form').trigger('submit')
+    await flush()
+  }
+
+  async function findButton(wrapper: ReturnType<typeof mount>, text: string) {
+    const btn = wrapper.findAll('button').find((b) => b.text().trim() === text)
+    expect(btn, `button "${text}"`).toBeTruthy()
+    return btn!
+  }
+
+  it('selecting Tavily hides the Base URL input', async () => {
+    const wrapper = await mountSearchDrawer()
+    await selectProvider(wrapper, 'tavily')
+    const baseUrlLabels = wrapper.findAll('label').filter((l) => l.text().includes('Base URL'))
+    expect(baseUrlLabels.length).toBe(0)
+  })
+
+  it('Tavily saves with name + provider + api key (no base_url error)', async () => {
+    const wrapper = await mountSearchDrawer()
+    await selectProvider(wrapper, 'tavily')
+    await wrapper.findAll('input')[0].setValue('Tavily')
+    await wrapper.find('input[type="password"]').setValue('tvly-key-123')
+    await submitForm(wrapper)
+
+    expect(wrapper.text()).not.toContain('请填写配置名称、Provider 与 Base URL')
+    expect(providersApi.createSearchConfig).toHaveBeenCalledWith({
+      name: 'Tavily',
+      provider_type: 'tavily',
+      base_url: undefined,
+      api_key: 'tvly-key-123',
+    })
+  })
+
+  it('custom search shows a Base URL input', async () => {
+    const wrapper = await mountSearchDrawer([searchDef])
+    const baseUrlLabels = wrapper.findAll('label').filter((l) => l.text().includes('Base URL'))
+    expect(baseUrlLabels.length).toBe(1)
+  })
+
+  it('custom search without Base URL blocks save', async () => {
+    const wrapper = await mountSearchDrawer([searchDef])
+    await wrapper.findAll('input')[0].setValue('custom')
+    await wrapper.find('input[type="password"]').setValue('sk-x')
+    await submitForm(wrapper)
+
+    expect(wrapper.text()).toContain('请填写 Base URL')
+    expect(providersApi.createSearchConfig).not.toHaveBeenCalled()
+  })
+
+  it('Tavily probe success shows latency and safe label', async () => {
+    vi.mocked(providersApi.probeSearch).mockResolvedValue({
+      status: 'AVAILABLE',
+      provider_type: 'tavily',
+      resolved_base_url: 'https://api.tavily.com',
+      latency_ms: 286,
+      error_code: null,
+      message: '连接成功',
+    })
+
+    const wrapper = await mountSearchDrawer()
+    await selectProvider(wrapper, 'tavily')
+    await wrapper.find('input[type="password"]').setValue('tvly-key-123')
+    await clickButton(wrapper, '测试连接')
+
+    expect(wrapper.text()).toContain('连接成功 · Tavily · 286 ms')
+  })
+
+  it('Tavily probe auth failure shows a safe message, never the key', async () => {
+    vi.mocked(providersApi.probeSearch).mockResolvedValue({
+      status: 'AUTH_FAILED',
+      provider_type: 'tavily',
+      resolved_base_url: null,
+      latency_ms: 90,
+      error_code: 'HTTP_401',
+      message: 'API Key 无效',
+    })
+
+    const wrapper = await mountSearchDrawer()
+    await selectProvider(wrapper, 'tavily')
+    await wrapper.find('input[type="password"]').setValue('tvly-bad-key')
+    await clickButton(wrapper, '测试连接')
+
+    expect(wrapper.text()).toContain('API Key 无效')
+    expect(wrapper.text()).not.toContain('tvly-bad-key')
+  })
+
+  it('editing the API Key invalidates a previous success', async () => {
+    vi.mocked(providersApi.probeSearch).mockResolvedValue({
+      status: 'AVAILABLE',
+      provider_type: 'tavily',
+      resolved_base_url: 'https://api.tavily.com',
+      latency_ms: 100,
+      error_code: null,
+      message: '连接成功',
+    })
+
+    const wrapper = await mountSearchDrawer()
+    await selectProvider(wrapper, 'tavily')
+    await wrapper.find('input[type="password"]').setValue('tvly-key-a')
+    await clickButton(wrapper, '测试连接')
+    expect(wrapper.text()).toContain('连接成功')
+
+    await wrapper.find('input[type="password"]').setValue('tvly-key-b')
+    expect(wrapper.text()).not.toContain('连接成功')
+  })
+
+  it('changing the Provider invalidates a previous success', async () => {
+    vi.mocked(providersApi.probeSearch).mockResolvedValue({
+      status: 'AVAILABLE',
+      provider_type: 'tavily',
+      resolved_base_url: 'https://api.tavily.com',
+      latency_ms: 100,
+      error_code: null,
+      message: '连接成功',
+    })
+
+    const wrapper = await mountSearchDrawer()
+    await selectProvider(wrapper, 'tavily')
+    await wrapper.find('input[type="password"]').setValue('tvly-key')
+    await clickButton(wrapper, '测试连接')
+    expect(wrapper.text()).toContain('连接成功')
+
+    await selectProvider(wrapper, 'custom_compatible_search')
+    expect(wrapper.text()).not.toContain('连接成功')
+  })
+
+  it('testing state blocks re-submission', async () => {
+    let resolveProbe!: (v: SearchProbeResultDto) => void
+    vi.mocked(providersApi.probeSearch).mockImplementation(
+      () => new Promise((resolve) => (resolveProbe = resolve)),
+    )
+
+    const wrapper = await mountSearchDrawer()
+    await selectProvider(wrapper, 'tavily')
+    await wrapper.find('input[type="password"]').setValue('tvly-key')
+
+    const testBtn = await findButton(wrapper, '测试连接')
+    await testBtn.trigger('click')
+    await flush()
+
+    // While in flight the button is disabled and shows 正在测试…
+    expect(providersApi.probeSearch).toHaveBeenCalledTimes(1)
+    const inFlight = wrapper.findAll('button').find((b) => b.text().trim() === '正在测试…')
+    expect(inFlight).toBeTruthy()
+    expect((inFlight!.element as HTMLButtonElement).disabled).toBe(true)
+
+    resolveProbe({
+      status: 'AVAILABLE',
+      provider_type: 'tavily',
+      resolved_base_url: null,
+      latency_ms: 100,
+      error_code: null,
+      message: '连接成功',
+    })
+    await flush()
+    expect(providersApi.probeSearch).toHaveBeenCalledTimes(1)
   })
 })

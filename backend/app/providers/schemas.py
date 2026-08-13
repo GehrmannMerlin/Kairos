@@ -112,14 +112,38 @@ class SearchConfigDto(BaseModel):
 class CreateSearchConfigCommand(BaseModel):
     name: str
     provider_type: str
-    base_url: str
+    base_url: str | None = None
     api_key: SecretStr | None = None
 
 
 class UpdateSearchConfigCommand(BaseModel):
     name: str
     provider_type: str
-    base_url: str
+    base_url: str | None = None
+
+
+class SearchProbeCommand(BaseModel):
+    """Unsaved search probe payload. api_key is write-only, never persisted.
+
+    ``provider_type`` is required — search providers are always selected
+    explicitly by the user (no key fingerprint stage like Model probe).
+    """
+
+    provider_type: str
+    api_key: SecretStr | None = None
+    base_url: str | None = None
+
+
+class SearchProbeResultDto(BaseModel):
+    """Desensitized search probe result. Never contains the api_key or the raw
+    third-party response body."""
+
+    status: ProviderTestStatus | None = None
+    provider_type: str
+    resolved_base_url: str | None = None
+    latency_ms: int | None = None
+    error_code: str | None = None
+    message: str | None = None
 
 
 class SearchConfigListResponse(BaseModel):
