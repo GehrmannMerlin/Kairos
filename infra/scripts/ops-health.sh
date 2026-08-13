@@ -20,9 +20,22 @@ fi
 
 SCRIPTS_DIR="${SCRIPTS_DIR:-/srv/kairos/scripts}"
 BACKUP_DIR="${BACKUP_DIR:-/srv/kairos/backups}"
-API_CONTAINER="${API_CONTAINER:-kairos-api}"
-WORKER_CONTAINER="${WORKER_CONTAINER:-kairos-staging-worker-1}"
-WEB_CONTAINER="${WEB_CONTAINER:-kairos-web}"
+# 环境隔离：staging 用固定 container_name（kairos-api/kairos-web），
+# production 无 container_name → compose 派生名 kairos-production-{api,worker,web}-1。
+ENV_NAME="${ENV_NAME:-staging}"
+if [ "$ENV_NAME" = "production" ]; then
+  API_CONTAINER="${API_CONTAINER:-kairos-production-api-1}"
+  WORKER_CONTAINER="${WORKER_CONTAINER:-kairos-production-worker-1}"
+  WEB_CONTAINER="${WEB_CONTAINER:-kairos-production-web-1}"
+  PG_VOL="kairos-production_postgres_data"
+  MINIO_VOL="kairos-production_minio_data"
+else
+  API_CONTAINER="${API_CONTAINER:-kairos-api}"
+  WORKER_CONTAINER="${WORKER_CONTAINER:-kairos-staging-worker-1}"
+  WEB_CONTAINER="${WEB_CONTAINER:-kairos-web}"
+  PG_VOL="kairos-staging_postgres_data"
+  MINIO_VOL="kairos-staging_minio_data"
+fi
 
 status=PASS
 declare -A checks=()
@@ -62,8 +75,8 @@ done
 
 # --- 磁盘：根 / Docker data-root / PG / MinIO / backups ---
 for spec in "root:/" "docker:/var/lib/docker" \
-  "pg:/var/lib/docker/volumes/kairos-staging_postgres_data" \
-  "minio:/var/lib/docker/volumes/kairos-staging_minio_data" \
+  "pg:/var/lib/docker/volumes/$PG_VOL" \
+  "minio:/var/lib/docker/volumes/$MINIO_VOL" \
   "backups:$BACKUP_DIR"; do
   name="${spec%%:*}"; path="${spec#*:}"
   df_line="$(df -P "$path" 2>/dev/null | tail -1)" || continue
