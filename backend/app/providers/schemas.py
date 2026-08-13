@@ -10,7 +10,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, SecretStr
 
-from app.providers.protocol import ProviderTestStatus
+from app.providers.protocol import DetectionConfidence, ProviderTestStatus
 
 
 class ProviderDefinitionDto(BaseModel):
@@ -22,6 +22,7 @@ class ProviderDefinitionDto(BaseModel):
     requires_base_url: bool
     default_base_url: str | None
     protocol_family: str
+    base_url_mode: str
 
 
 class ModelConfigDto(BaseModel):
@@ -70,6 +71,29 @@ class ProviderTestResultDto(BaseModel):
     error_code: str | None = None
     message: str | None = None
     latency_ms: int | None = None
+
+
+class ModelProbeCommand(BaseModel):
+    """Unsaved probe payload. api_key is write-only and never persisted/echoed."""
+
+    api_key: SecretStr | None = None
+    provider_type: str | None = None
+    base_url: str | None = None
+    model_name: str | None = None
+
+
+class ModelProbeResultDto(BaseModel):
+    """Desensitized probe result. Never contains the api_key or raw responses."""
+
+    status: ProviderTestStatus | None = None
+    detection_confidence: DetectionConfidence
+    detected_provider: str | None = None
+    candidates: list[str] = []
+    resolved_base_url: str | None = None
+    latency_ms: int | None = None
+    error_code: str | None = None
+    message: str | None = None
+    probe_method: str | None = None
 
 
 class SearchConfigDto(BaseModel):

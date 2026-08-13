@@ -14,7 +14,7 @@ from app.providers.adapters.gemini import GeminiModelProvider
 from app.providers.adapters.ollama import OllamaModelProvider
 from app.providers.adapters.openai_compatible import OpenAICompatibleModelProvider
 from app.providers.adapters.tavily_search import TavilySearchProvider
-from app.providers.protocol import ModelProvider, ProviderDefinition
+from app.providers.protocol import BaseUrlMode, ModelProvider, ProviderDefinition
 from app.providers.search_protocol import SearchProvider
 from app.providers.transport import HttpClient
 
@@ -27,6 +27,7 @@ _OPENAI_COMPATIBLE_DEFS: list[ProviderDefinition] = [
         requires_base_url=False,
         default_base_url="https://api.openai.com/v1",
         protocol_family="openai_compatible",
+        base_url_mode=BaseUrlMode.MANAGED,
     ),
     ProviderDefinition(
         provider_type="deepseek",
@@ -36,6 +37,7 @@ _OPENAI_COMPATIBLE_DEFS: list[ProviderDefinition] = [
         requires_base_url=False,
         default_base_url="https://api.deepseek.com/v1",
         protocol_family="openai_compatible",
+        base_url_mode=BaseUrlMode.MANAGED,
     ),
     ProviderDefinition(
         provider_type="openrouter",
@@ -45,6 +47,7 @@ _OPENAI_COMPATIBLE_DEFS: list[ProviderDefinition] = [
         requires_base_url=False,
         default_base_url="https://openrouter.ai/api/v1",
         protocol_family="openai_compatible",
+        base_url_mode=BaseUrlMode.MANAGED,
     ),
     ProviderDefinition(
         provider_type="custom_openai_compatible",
@@ -54,6 +57,7 @@ _OPENAI_COMPATIBLE_DEFS: list[ProviderDefinition] = [
         requires_base_url=True,
         default_base_url=None,
         protocol_family="openai_compatible",
+        base_url_mode=BaseUrlMode.REQUIRED,
     ),
 ]
 
@@ -75,6 +79,15 @@ def list_model_provider_definitions() -> list[ProviderDefinition]:
         GeminiModelProvider.definition,
         OllamaModelProvider.definition,
     ]
+
+
+def get_model_definition(provider_type: str) -> ProviderDefinition:
+    validate_model_provider_type(provider_type)
+    for definition in list_model_provider_definitions():
+        if definition.provider_type == provider_type:
+            return definition
+    # Unreachable: validate_model_provider_type already guards the key.
+    raise errors.ProviderValidationError(f"不支持的模型 Provider: {provider_type}")
 
 
 def validate_model_provider_type(provider_type: str) -> None:

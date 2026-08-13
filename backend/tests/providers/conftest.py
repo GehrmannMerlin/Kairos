@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 FIXTURE_MASTER_KEY = "ab" * 32
 
 
-def _build_service(tmp_path: object) -> tuple[ProviderService, DbSession]:
+def _build_service(tmp_path: object, *, http: object = None) -> tuple[ProviderService, DbSession]:
     engine = create_engine(
         f"sqlite:///{tmp_path / 'prov.db'}", connect_args={"check_same_thread": False}
     )
@@ -40,6 +40,7 @@ def _build_service(tmp_path: object) -> tuple[ProviderService, DbSession]:
         vault=vault,
         model_configs=ModelConfigRepository(db),
         search_configs=SearchConfigRepository(db),
+        http=http,
     )
     return service, db
 
@@ -49,6 +50,19 @@ def service_and_db(tmp_path) -> tuple[ProviderService, DbSession]:
     service, db = _build_service(tmp_path)
     yield service, db
     db.close()
+
+
+@pytest.fixture()
+def probe_factory(tmp_path):
+    """Return a factory building (service, db, user) with an injectable http."""
+    from app.auth.repository import UserRepository
+
+    def _make(http=None):
+        service, db = _build_service(tmp_path, http=http)
+        user = UserRepository(db).create("probe@example.com", "hash", None)
+        return service, db, user
+
+    return _make
 
 
 @pytest.fixture()

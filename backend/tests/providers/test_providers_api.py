@@ -133,6 +133,21 @@ def test_definitions_endpoint_lists_registry(client_factory) -> None:
         assert "custom_compatible_search" in search_types
 
 
+def test_probe_ambiguous_no_network_no_echo(client_factory) -> None:
+    client = client_factory()
+    with client:
+        _register(client, "alice@example.com")
+        # Generic sk-* key is AMBIGUOUS: the endpoint must NOT hit the network
+        # and must not echo the key.
+        resp = client.post("/api/providers/models/probe", json={"api_key": "sk-1234567890abcdef"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["detection_confidence"] == "AMBIGUOUS"
+        assert body["status"] is None
+        assert body["detected_provider"] is None
+        assert "sk-1234567890abcdef" not in resp.text
+
+
 def test_cross_user_blocked(client_factory) -> None:
     a = client_factory()
     b = client_factory()

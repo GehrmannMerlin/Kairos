@@ -17,7 +17,12 @@ from __future__ import annotations
 from time import perf_counter
 
 from app.providers.adapters.openai_compatible import map_status
-from app.providers.protocol import ProviderDefinition, ProviderTestResult, ProviderTestStatus
+from app.providers.protocol import (
+    BaseUrlMode,
+    ProviderDefinition,
+    ProviderTestResult,
+    ProviderTestStatus,
+)
 from app.providers.search_protocol import SearchResult
 from app.providers.transport import HttpClient, HttpxTransport
 
@@ -33,6 +38,7 @@ class TavilySearchProvider:
         requires_base_url=False,
         default_base_url=_DEFAULT_BASE_URL,
         protocol_family="tavily",
+        base_url_mode=BaseUrlMode.MANAGED,
     )
 
     def __init__(self, http: HttpClient | None = None) -> None:

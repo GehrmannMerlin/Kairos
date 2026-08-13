@@ -9,6 +9,7 @@ from __future__ import annotations
 from time import perf_counter
 
 from app.providers.protocol import (
+    BaseUrlMode,
     ProviderDefinition,
     ProviderTestResult,
     ProviderTestStatus,
@@ -38,6 +39,7 @@ class GeminiModelProvider:
         requires_base_url=False,
         default_base_url="https://generativelanguage.googleapis.com/v1beta",
         protocol_family="gemini",
+        base_url_mode=BaseUrlMode.MANAGED,
     )
 
     def __init__(self, http: HttpClient | None = None) -> None:

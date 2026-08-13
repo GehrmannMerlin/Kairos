@@ -20,6 +20,8 @@ from app.providers.schemas import (
     CreateSearchConfigCommand,
     ModelConfigDto,
     ModelConfigListResponse,
+    ModelProbeCommand,
+    ModelProbeResultDto,
     ProviderDefinitionDto,
     ProviderTestResultDto,
     ReplaceKeyCommand,
@@ -86,6 +88,31 @@ def list_models(
         definitions=[
             ProviderDefinitionDto.model_validate(d) for d in list_model_provider_definitions()
         ],
+    )
+
+
+@router.post("/models/probe", response_model=ModelProbeResultDto)
+async def probe_model(
+    cmd: ModelProbeCommand,
+    user: User = Depends(require_user),
+    service: ProviderService = Depends(get_provider_service),
+) -> ModelProbeResultDto:
+    result = await service.probe_model(
+        api_key=cmd.api_key.get_secret_value() if cmd.api_key else None,
+        provider_type=cmd.provider_type,
+        base_url=cmd.base_url,
+        model_name=cmd.model_name,
+    )
+    return ModelProbeResultDto(
+        status=result.status,
+        detection_confidence=result.detection_confidence,
+        detected_provider=result.detected_provider,
+        candidates=list(result.candidates),
+        resolved_base_url=result.resolved_base_url,
+        latency_ms=result.latency_ms,
+        error_code=result.error_code,
+        message=result.message,
+        probe_method=result.probe_method,
     )
 
 

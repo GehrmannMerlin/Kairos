@@ -6,6 +6,7 @@ from time import perf_counter
 
 from app.providers.adapters.openai_compatible import map_status
 from app.providers.protocol import (
+    BaseUrlMode,
     ProviderDefinition,
     ProviderTestResult,
     ProviderTestStatus,
@@ -25,6 +26,7 @@ class AnthropicModelProvider:
         requires_base_url=False,
         default_base_url="https://api.anthropic.com",
         protocol_family="anthropic",
+        base_url_mode=BaseUrlMode.MANAGED,
     )
 
     def __init__(self, http: HttpClient | None = None) -> None:
