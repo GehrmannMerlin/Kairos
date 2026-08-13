@@ -18,4 +18,9 @@ RUN npm run build
 FROM nginx:1.27-alpine AS prod
 COPY --from=prod-build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+# OCI annotation: connects the pushed GHCR package to the source repository so
+# GITHUB_TOKEN-based pushes can keep writing the same private package (GHCR
+# bootstrap pattern). Placed last so it never invalidates the build layers.
+# Metadata only — no runtime effect.
+LABEL org.opencontainers.image.source=https://github.com/GehrmannMerlin/Kairos
 EXPOSE 80
