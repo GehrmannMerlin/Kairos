@@ -150,6 +150,8 @@ services:
   worker:
     build:
       context: ../../backend
+      args:
+        KAIROS_INCLUDE_BROWSER: 1
     environment: *backend-env
     command: ["python", "-m", "app.worker"]
     depends_on:

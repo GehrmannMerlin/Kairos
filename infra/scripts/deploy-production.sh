@@ -21,13 +21,20 @@ SHA="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
 WEB_IMAGE="kairos-web:$RELEASE_VERSION-$SHA"
 API_IMAGE="kairos-api:$RELEASE_VERSION-$SHA"
 WORKER_IMAGE="kairos-worker:$RELEASE_VERSION-$SHA"
+# Optional PyPI mirror override (empty = Dockerfile default = official PyPI).
+PIP_INDEX_URL="${PIP_INDEX_URL:-}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+PIP_ARGS=()
+[ -n "$PIP_INDEX_URL" ] && PIP_ARGS+=(--build-arg "PIP_INDEX_URL=$PIP_INDEX_URL")
+
 echo "==> building immutable production images (release=$RELEASE_VERSION sha=$SHA)"
 docker buildx build --platform "$PLATFORM" --load -t "$WEB_IMAGE" "$ROOT/frontend/" || fail "web image build"
-docker buildx build --platform "$PLATFORM" --load -t "$API_IMAGE" "$ROOT/backend/" || fail "api image build"
-docker buildx build --platform "$PLATFORM" --load -t "$WORKER_IMAGE" "$ROOT/backend/" || fail "worker image build"
+# API image: no browser deps. Worker image: include browser deps (playwright) for
+# the browser render role (api/worker share one backend Dockerfile; see Dockerfile ARG).
+docker buildx build --platform "$PLATFORM" --load "${PIP_ARGS[@]}" -t "$API_IMAGE" "$ROOT/backend/" || fail "api image build"
+docker buildx build --platform "$PLATFORM" --load "${PIP_ARGS[@]}" --build-arg KAIROS_INCLUDE_BROWSER=1 -t "$WORKER_IMAGE" "$ROOT/backend/" || fail "worker image build"
 for img in "$WEB_IMAGE" "$API_IMAGE" "$WORKER_IMAGE"; do
   docker image inspect "$img" >/dev/null 2>&1 || fail "image not found: $img"
 done

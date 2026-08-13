@@ -28,15 +28,20 @@ SHA="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
 WEB_IMAGE="kairos-web:staging-$SHA"
 API_IMAGE="kairos-api:staging-$SHA"
 WORKER_IMAGE="kairos-worker:staging-$SHA"
+# Optional PyPI mirror override (empty = Dockerfile default = official PyPI).
+PIP_INDEX_URL="${PIP_INDEX_URL:-}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+PIP_ARGS=()
+[ -n "$PIP_INDEX_URL" ] && PIP_ARGS+=(--build-arg "PIP_INDEX_URL=$PIP_INDEX_URL")
 
 echo "==> building immutable images (platform=$PLATFORM, sha=$SHA)"
 docker buildx build --platform "$PLATFORM" --load -t "$WEB_IMAGE" "$ROOT/frontend/" \
   || fail "web image build failed"
-docker buildx build --platform "$PLATFORM" --load -t "$API_IMAGE" "$ROOT/backend/" \
+docker buildx build --platform "$PLATFORM" --load "${PIP_ARGS[@]}" -t "$API_IMAGE" "$ROOT/backend/" \
   || fail "api image build failed"
-docker buildx build --platform "$PLATFORM" --load -t "$WORKER_IMAGE" "$ROOT/backend/" \
+docker buildx build --platform "$PLATFORM" --load "${PIP_ARGS[@]}" --build-arg KAIROS_INCLUDE_BROWSER=1 -t "$WORKER_IMAGE" "$ROOT/backend/" \
   || fail "worker image build failed"
 
 for img in "$WEB_IMAGE" "$API_IMAGE" "$WORKER_IMAGE"; do
