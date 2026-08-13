@@ -35,6 +35,12 @@ COPY alembic ./alembic
 COPY scripts ./scripts
 RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --timeout 120 --retries 5 .
 
+# OCI annotation: connects the pushed GHCR package to the source repository so
+# GITHUB_TOKEN-based pushes can keep writing the same private package (GHCR
+# bootstrap pattern). Placed last so it never invalidates the dependency layers.
+# Metadata only — no runtime effect.
+LABEL org.opencontainers.image.source=https://github.com/GehrmannMerlin/Kairos
+
 EXPOSE 8000
 
 # Default: run the API. The `worker` compose service overrides the command.
