@@ -17,3 +17,13 @@ docker compose -f infra/compose/compose.yaml up -d --build
 ```
 
 详见 `docs/operations/local-run.md`。
+
+## 线上环境
+
+| 环境 | URL | 状态 |
+|---|---|---|
+| Production | https://app.kairos.ac.cn | RELEASED（v0.1.0） |
+| Staging | https://staging.kairos.ac.cn | HEALTHY |
+
+部署/回滚/备份 runbook：`docs/runbooks/`。发布记录：`docs/implementation/M-18-execution.md`。
+
