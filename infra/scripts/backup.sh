@@ -35,10 +35,17 @@ else
 fi
 
 compose() {  # compose <args...>
-  if [ "$COMPOSE_DIR" = "$SERVICE_ROOT/compose" ]; then
-    (cd "$COMPOSE_DIR" && docker compose -f compose.base.yml -f "compose.${ENV_NAME}.yml" "$@")
+  local env_file="/srv/kairos/env/${ENV_NAME}.env"
+  # backup 只解析配置、exec postgres，不部署 app 镜像；给镜像变量占位值满足 ${VAR:?}。
+  local img_opts=(
+    KAIROS_API_IMAGE="kairos-api:backup-placeholder"
+    KAIROS_WORKER_IMAGE="kairos-worker:backup-placeholder"
+    KAIROS_WEB_IMAGE="kairos-web:backup-placeholder"
+  )
+  if [ -f "$env_file" ]; then
+    (cd "$COMPOSE_DIR" && env "${img_opts[@]}" docker compose --env-file "$env_file" -f compose.base.yml -f "compose.${ENV_NAME}.yml" "$@")
   else
-    (cd "$COMPOSE_DIR" && docker compose -f compose.base.yml -f "compose.${ENV_NAME}.yml" "$@")
+    (cd "$COMPOSE_DIR" && env "${img_opts[@]}" docker compose -f compose.base.yml -f "compose.${ENV_NAME}.yml" "$@")
   fi
 }
 
@@ -71,8 +78,10 @@ with acquire_lock('$BACKUP_DIR/.backup.lock'):
 
 SHA="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || true)"
 if [ -z "$SHA" ]; then
-  # 服务器无 git 仓库：从已部署 api 镜像 tag（staging-<sha>）取部署 SHA
-  SHA="$(docker inspect -f '{{.Config.Image}}' "${API_CONTAINER:-kairos-api}" 2>/dev/null | sed -E 's/.*:staging-([0-9a-f]{12}).*/\1/')" || true
+  # 服务器无 git 仓库：从已部署 api 镜像 tag 取部署 SHA。
+  # staging tag 形如 staging-<sha>，production tag 形如 v<ver>-<sha>（都取末尾 12 hex）。
+  API_CONTAINER_DEFAULT="kairos-${ENV_NAME}-api-1"
+  SHA="$(docker inspect -f '{{.Config.Image}}' "${API_CONTAINER:-${API_CONTAINER_DEFAULT}}" 2>/dev/null | sed -E 's/.*-([0-9a-f]{12})$/\1/')" || true
 fi
 SHA="${SHA:-unknown}"
 BACKUP_ID="${ENV_NAME}-$(date -u +%Y%m%d-%H%M%S)-${SHA}"
@@ -87,10 +96,12 @@ REC_COUNT="$(compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTG
 sha256sum "$DEST/postgres/postgres.dump" | cut -d' ' -f1 > "$DEST/postgres/postgres.dump.sha256"
 
 echo "==> object storage backup (MinIO data volume, read-only tar)"
-# 从运行中的 minio 容器解析 /data 实际挂载 volume（compose config --volumes 只给短名）
-MINIO_VOL="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "${MINIO_CONTAINER:-kairos-staging-minio-1}" 2>/dev/null || true)"
+# 从运行中的 minio 容器解析 /data 实际挂载 volume（compose config --volumes 只给短名）。
+# 容器名按环境解析：kairos-<env>-minio-1（staging 与 production 同名规则，绝不跨环境）。
+MINIO_CONTAINER_DEFAULT="kairos-${ENV_NAME}-minio-1"
+MINIO_VOL="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "${MINIO_CONTAINER:-${MINIO_CONTAINER_DEFAULT}}" 2>/dev/null || true)"
 if [ -z "$MINIO_VOL" ]; then
-  MINIO_VOL="$(compose config --volumes 2>/dev/null | grep -i minio | head -1 || echo kairos-staging_minio_data)"
+  MINIO_VOL="$(compose config --volumes 2>/dev/null | grep -i minio | head -1 || echo "kairos-${ENV_NAME}_minio_data")"
 fi
 echo "   minio volume: $MINIO_VOL"
 # 容器内 tar 输出到 stdout，宿主机重定向 → 文件属主是 deploy（避免 root 属主无法 chmod）
@@ -101,8 +112,9 @@ sha256sum "$DEST/objects/objects.tar.gz" | cut -d' ' -f1 > "$DEST/objects/object
 echo "==> config backup"
 if [ "$COMPOSE_DIR" = "$SERVICE_ROOT/compose" ]; then
   (cd "$SERVICE_ROOT" && tar czf "$DEST/config/config.tar.gz" compose 2>/dev/null || true)
-  if [ -f "$SERVICE_ROOT/deploy/nginx/conf.d/zz-kairos-staging-tls.conf" ]; then
-    (cd "$SERVICE_ROOT/deploy/nginx/conf.d" && tar czf "$DEST/config/vhost.tar.gz" zz-kairos-staging-tls.conf)
+  VHOST="zz-kairos-${ENV_NAME}-tls.conf"
+  if [ -f "$SERVICE_ROOT/deploy/nginx/conf.d/$VHOST" ]; then
+    (cd "$SERVICE_ROOT/deploy/nginx/conf.d" && tar czf "$DEST/config/vhost.tar.gz" "$VHOST")
   fi
 else
   (cd "$ROOT" && tar czf "$DEST/config/config.tar.gz" infra/compose infra/reverse-proxy infra/otel)
