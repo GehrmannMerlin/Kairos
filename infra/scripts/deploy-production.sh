@@ -1,11 +1,24 @@
 #!/usr/bin/env bash
-# Production immutable deploy。
-# 本地构建 kairos-{web,api,worker}:<RELEASE_VERSION>-<gitsha12> 不可变镜像 → docker save/load 到服务器 →
-# 同步 compose.production.yml / release-manifest.sh → compose 校验 → 写 release manifest → 分阶段 up。
-# 服务器只做 docker load + compose up，绝不现场构建源码（Deployment Standards §10A.1）。
-#   RELEASE_VERSION=v0.1.0 ./infra/scripts/deploy-production.sh
+# kairos-production immutable deploy via the OCI container registry (standard path).
+#
+# Server pulls immutable images by tag (registry login must already exist on the
+# server), syncs compose.production.yml + release-manifest.sh, validates compose,
+# writes the release manifest, and brings the stack up in two stages (infra first,
+# then migrate -> api -> worker -> web). The infra `up` deliberately omits `--wait`
+# because one-shot init containers (minio-init/temporal-init, restart:no) make
+# docker compose misjudge readiness for the whole batch.
+#
+# Usage (from repository root):
+#   REGISTRY=ghcr.io NAMESPACE=gehrmannmerlin \
+#   RELEASE_TAG=v0.1.2-dbbd7b5e2fb9 BACKUP_ID=production-... \
+#   PREVIOUS_RELEASE=v0.1.1-3538e8841fd6 ROLLBACK_TARGET=kairos-*:v0.1.1-3538e8841fd6 \
+#   ./infra/scripts/deploy-production.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+REGISTRY="${REGISTRY:?REGISTRY required}"
+NAMESPACE="${NAMESPACE:?NAMESPACE required}"
+RELEASE_TAG="${RELEASE_TAG:?RELEASE_TAG required (from registry-push.sh)}"
 DEPLOY_HOST="${DEPLOY_HOST:-47.238.145.24}"
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/kairos_staging_deploy_rsa}"
@@ -13,36 +26,21 @@ SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o UserKnownHostsFile="$HOME/.ssh/known_
 SCP=(scp -i "$SSH_KEY" -o BatchMode=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
 SERVER_COMPOSE_DIR="/srv/kairos/compose"
 SERVER_RELEASES="/srv/kairos/releases"
-PLATFORM="${PLATFORM:-linux/amd64}"   # server arch confirmed x86_64
-RELEASE_VERSION="${RELEASE_VERSION:-v0.1.0}"
 
-[[ -f "$SSH_KEY" ]] || { echo "missing SSH key: $SSH_KEY"; exit 1; }
-SHA="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
-WEB_IMAGE="kairos-web:$RELEASE_VERSION-$SHA"
-API_IMAGE="kairos-api:$RELEASE_VERSION-$SHA"
-WORKER_IMAGE="kairos-worker:$RELEASE_VERSION-$SHA"
-# Optional PyPI mirror override (empty = Dockerfile default = official PyPI).
-PIP_INDEX_URL="${PIP_INDEX_URL:-}"
+WEB_IMAGE="${REGISTRY}/${NAMESPACE}/kairos-web:${RELEASE_TAG}"
+API_IMAGE="${REGISTRY}/${NAMESPACE}/kairos-api:${RELEASE_TAG}"
+WORKER_IMAGE="${REGISTRY}/${NAMESPACE}/kairos-worker:${RELEASE_TAG}"
+
+# Release manifest inputs (recorded on the server; never secrets).
+BACKUP_ID="${BACKUP_ID:-not-yet}"
+PREVIOUS_RELEASE="${PREVIOUS_RELEASE:-none-first-release}"
+ROLLBACK_TARGET="${ROLLBACK_TARGET:-none-first-release}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-PIP_ARGS=()
-[ -n "$PIP_INDEX_URL" ] && PIP_ARGS+=(--build-arg "PIP_INDEX_URL=$PIP_INDEX_URL")
-
-echo "==> building immutable production images (release=$RELEASE_VERSION sha=$SHA)"
-docker buildx build --platform "$PLATFORM" --load -t "$WEB_IMAGE" "$ROOT/frontend/" || fail "web image build"
-# API image: no browser deps. Worker image: include browser deps (playwright) for
-# the browser render role (api/worker share one backend Dockerfile; see Dockerfile ARG).
-docker buildx build --platform "$PLATFORM" --load "${PIP_ARGS[@]}" -t "$API_IMAGE" "$ROOT/backend/" || fail "api image build"
-docker buildx build --platform "$PLATFORM" --load "${PIP_ARGS[@]}" --build-arg KAIROS_INCLUDE_BROWSER=1 -t "$WORKER_IMAGE" "$ROOT/backend/" || fail "worker image build"
-for img in "$WEB_IMAGE" "$API_IMAGE" "$WORKER_IMAGE"; do
-  docker image inspect "$img" >/dev/null 2>&1 || fail "image not found: $img"
-done
-echo "    images: $WEB_IMAGE / $API_IMAGE / $WORKER_IMAGE"
-
-echo "==> transferring images (docker save | ssh docker load)"
-docker save "$WEB_IMAGE" "$API_IMAGE" "$WORKER_IMAGE" \
-  | "${SSH[@]}" "docker load" || fail "image transfer failed"
+echo "==> server: docker pull immutable images (tag=$RELEASE_TAG)"
+"${SSH[@]}" "docker pull ${WEB_IMAGE} && docker pull ${API_IMAGE} && docker pull ${WORKER_IMAGE}" \
+  || fail "docker pull (is the server logged into ${REGISTRY}?)"
 
 echo "==> syncing compose.production.yml + release-manifest.sh"
 "${SCP[@]}" "$ROOT"/infra/compose/compose.production.yml \
@@ -57,17 +55,22 @@ echo "==> validating compose config on server"
     --env-file /srv/kairos/env/production.env config -q" || fail "compose config validation failed"
 
 echo "==> writing release manifest"
-"${SSH[@]}" "cd /srv/kairos && RELEASE_VERSION=${RELEASE_VERSION} RELEASE_SHA=${SHA} \
+# RELEASE_TAG=vX.Y.Z-<sha12> -> RELEASE_VERSION=vX.Y.Z, RELEASE_SHA=<sha12>
+RELEASE_VERSION="${RELEASE_TAG%-*}"
+RELEASE_SHA="${RELEASE_TAG##*-}"
+"${SSH[@]}" "cd /srv/kairos && RELEASE_VERSION=${RELEASE_VERSION} RELEASE_SHA=${RELEASE_SHA} \
+    BACKUP_ID=${BACKUP_ID} PREVIOUS_RELEASE=${PREVIOUS_RELEASE} \
+    ROLLBACK_TARGET=${ROLLBACK_TARGET} \
     bash /srv/kairos/scripts/release-manifest.sh" || fail "release manifest failed"
 
-echo "==> production up: infra first (storage/db/temporal/init)"
+echo "==> production up: infra first (storage/db/temporal/init) — no --wait (init containers)"
 "${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
     KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
     docker compose -p kairos-production -f compose.base.yml -f compose.production.yml \
-    --env-file /srv/kairos/env/production.env up -d postgres minio temporal minio-init temporal-init --wait" \
+    --env-file /srv/kairos/env/production.env up -d postgres minio temporal minio-init temporal-init" \
   || fail "infra up failed"
 
-echo "==> production up: full stack (migrate → api → worker → web)"
+echo "==> production up: app stack (migrate → api → worker → web) with readiness wait"
 "${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
     KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
     docker compose -p kairos-production -f compose.base.yml -f compose.production.yml \

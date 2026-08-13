@@ -268,6 +268,208 @@ docker build .
 
 ---
 
+## 4A. Container Registry 与增量镜像发布
+
+> Kairos 当前**默认 Registry 为 GitHub Container Registry（GHCR）**，镜像保持私有。
+
+### 4A.1 标准发布路径
+
+```text
+Developer
+↓
+fix / feature branch
+↓
+PR / CI（GitHub Actions）
+↓
+main / Release Tag
+↓
+Docker BuildKit（Actions runner）
+↓
+immutable images → GHCR push（GITHUB_TOKEN）
+↓
+Staging docker pull
+↓
+Staging Smoke
+↓
+Release Tag
+↓
+Production docker pull
+↓
+Migration（如适用）
+↓
+Compose
+↓
+Health / Readiness
+↓
+Production Smoke
+```
+
+镜像身份（不可变）：
+
+```text
+ghcr.io/gehrmannmerlin/kairos-web:   <sha12>           # main push
+ghcr.io/gehrmannmerlin/kairos-api:   vX.Y.Z-<sha12>    # release tag
+ghcr.io/gehrmannmerlin/kairos-worker:<immutable-tag>
+```
+
+禁止使用 `latest` / `main` / `dev` / `test` 作为唯一可追溯镜像标识。每次 Release 必须能对应 Git tag、commit SHA、web/api/worker image digest、migration version、deploy time。
+
+### 4A.2 Layer 增量原则
+
+OCI/Docker Registry 按 layer **content digest** 去重：
+
+```text
+已有 layer → reuse（不上传 / 不下载）
+新增 layer → transfer（上传 / 下载）
+```
+
+因此“增量部署”指 **增量传输 Docker layers**，而不是上传 Git/source diff 覆盖服务器文件。服务器最终仍运行完整 immutable image。
+
+### 4A.3 禁止源码增量覆盖 Production
+
+禁止以下作为正式发布方式：
+
+```text
+rsync changed source
+scp changed source
+git diff patch
+container source overwrite
+```
+
+理由：Production Release 必须继续对应一个完整、不可变、可追溯的镜像身份。
+
+### 4A.4 GitHub Actions 构建与推送
+
+- 标准构建在 `.github/workflows/ci-build-push.yml`（`main` push → `<sha12>` tag；`v*` tag push → `vX.Y.Z-<sha12>`）。
+- 使用仓库 `GITHUB_TOKEN`（`packages: write`）完成 `docker login ghcr.io` 与 push，**不把长期 Registry 密码写入仓库**。
+- 启用 BuildKit layer cache（`type=gha`）：dependency 未变化时只重新构建 application layer。
+- 仓库需开启 package write 权限（Settings → Actions → General → Workflow permissions 允许 GITHUB_TOKEN 写 packages），镜像默认私有。
+
+### 4A.5 Dockerfile Layer 规则
+
+目标顺序：
+
+```text
+base/runtime
+↓
+dependency manifest（pyproject / requirements / package.json + lock）
+↓
+install dependencies
+↓
+application source
+```
+
+- backend：`COPY pyproject.toml` 后先 `pip install`（stub `app/__init__.py` 满足 setuptools 包发现），再 `COPY app` + 快速重装本地包。业务代码修改不会让 dependency layer 全部失效。
+- frontend：`COPY package.json + lock` → `npm ci` → `COPY .` → `npm run build`。
+- 两个 `.dockerignore` 排除 `.git`、`.env*`、`node_modules`、`dist`、`tests` 等，避免无关文件进层。
+
+### 4A.6 服务器端标准行为
+
+服务器（47.238.145.24）正常发布时只允许：
+
+```text
+docker login（凭据在 ~/.docker/config.json，0600）
+docker pull <immutable image>
+migration
+docker compose up
+health / readiness
+smoke test
+rollback
+```
+
+禁止：
+
+```text
+git pull
+docker build .
+pip install
+npm install / npm build
+rsync / scp application source
+vim source
+docker exec 修改源码
+```
+
+服务器是 **deployment target**，不是 build machine，也不是 development workspace。
+
+### 4A.7 服务器 pull 凭据
+
+- Staging / Production 服务器使用**最小权限 `read:packages`** 凭据（fine-grained PAT，或 GitHub App `packages: read`），只允许 pull private images。
+- `docker login ghcr.io` 在服务器交互执行，密码/PAT **不得进入 Claude 对话、Git 或部署脚本**；Docker 将其存入 `/home/deploy/.docker/config.json`（0600）。
+
+### 4A.8 Staging 发布
+
+```text
+registry 上已存在 immutable tag（CI push 或 registry-push.sh）
+↓
+REGISTRY=ghcr.io NAMESPACE=gehrmannmerlin RELEASE_TAG=<tag> ./infra/scripts/deploy-staging.sh
+  = 服务器 docker pull → 同步 compose/vhost/otel → compose config -q → compose up
+↓
+smoke-staging.sh（health / auth / ownership / credential / checkpoint / secret scan）
+↓
+Provider smoke（如适用）
+```
+
+### 4A.9 Production 发布
+
+```text
+Staging RC PASS
+↓
+创建 Release Tag（vX.Y.Z）
+↓
+确认 immutable images/digests（CI push vX.Y.Z-<sha12>）
+↓
+Pre-release Backup（ENV=production ./infra/scripts/backup.sh）
+↓
+BACKUP_ID / PREVIOUS_RELEASE / ROLLBACK_TARGET 记录
+↓
+RELEASE_TAG=vX.Y.Z-<sha12> ./infra/scripts/deploy-production.sh
+  = 服务器 docker pull → 写 release manifest → infra up（无 --wait，init 容器兼容）
+  → migrate/api/worker/web up（--wait）→ health / readiness
+↓
+Production Smoke（含 secret log scan）
+↓
+Rollback readiness 记录
+```
+
+### 4A.10 回滚
+
+部署前记录当前 digest；失败时：
+
+```text
+compose 指向上组 image digest
+↓
+docker pull（如本地无该层）
+↓
+compose up
+↓
+health / smoke
+```
+
+若 DB migration 不可逆：遵守 expand/contract 规范，**不把镜像回滚与数据库回滚混为一谈**。
+
+### 4A.11 docker save / SSH 传输（EMERGENCY ONLY）
+
+`docker save | ssh docker load` **不再是标准发布方式**。仅允许 Break-glass / Registry outage / Disaster Recovery 场景：
+
+- 明确记录原因与时间；
+- 保留 image digest；
+- 验证传输完整性；
+- 完成 Smoke；
+- 事后恢复 Registry 标准路径。
+
+Break-glass 脚本：`infra/scripts/deploy-staging-breakglass.sh`、`deploy-production-breakglass.sh`。
+
+### 4A.12 Deployment Fail Fast
+
+任何 `build / push / pull / migration / compose / health / smoke` 失败，部署脚本必须返回 **non-zero**。禁止“后台任务显示 exit 0 但内部部署已经失败”（例如用 `| tail` 掩盖脚本退出码）。
+
+### 4A.13 部署前后检查
+
+部署前：重新读取本规范 → 确认 release identity / image digests / rollback target / backup 状态。
+部署后：Liveness → Readiness → 登录 → 小任务 → Workflow/Worker → 数据写入 → Evidence/CSV → 日志无 Secrets → 发布记录归档。
+
+---
+
 ## 5. 网络边界
 
 公网只开放必要端口：
