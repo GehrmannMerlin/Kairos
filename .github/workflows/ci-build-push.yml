@@ -1,0 +1,98 @@
+# Kairos CI: build + push immutable images to GHCR.
+#
+# Standard image delivery path (agent-production-deployment-standards.md
+# "Container Registry 与增量镜像发布"): CI builds on push to `main` (tag =
+# <sha12>) and on version tags (tag = vX.Y.Z-<sha12>), pushes to ghcr.io using the
+# repository GITHUB_TOKEN (no long-lived registry password in the repo). Servers
+# `docker pull` by immutable tag, using an OCI layer digest for incremental
+# transfer. Layer cache (type=gha) keeps dependency layers when only application
+# source changes.
+#
+# Package write permission must be enabled for the GITHUB_TOKEN in the repo
+# (Settings -> Actions -> General -> Workflow permissions -> Read and write, and
+# package write for this repo). Packages are private by default.
+name: build-push
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute immutable tag
+        id: tag
+        run: |
+          SHA="${GITHUB_SHA::12}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          # GHCR requires lowercase image names.
+          OWNER_LOWER="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "owner_lower=${OWNER_LOWER}" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME}-${SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # On pull_request this job only BUILDS (validates the change). Pushing to
+      # GHCR happens only on push to main / version tags.
+      - name: Build and push web
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
+          tags: ghcr.io/${{ steps.tag.outputs.owner_lower }}/kairos-web:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push api
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
+          tags: ghcr.io/${{ steps.tag.outputs.owner_lower }}/kairos-api:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push worker
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
+          build-args: KAIROS_INCLUDE_BROWSER=1
+          tags: ghcr.io/${{ steps.tag.outputs.owner_lower }}/kairos-worker:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Print image digests
+        if: github.event_name != 'pull_request'
+        run: |
+          docker buildx imagetools inspect \
+            ghcr.io/${{ steps.tag.outputs.owner_lower }}/kairos-web:${{ steps.tag.outputs.tag }}
+          docker buildx imagetools inspect \
+            ghcr.io/${{ steps.tag.outputs.owner_lower }}/kairos-api:${{ steps.tag.outputs.tag }}
+          docker buildx imagetools inspect \
+            ghcr.io/${{ steps.tag.outputs.owner_lower }}/kairos-worker:${{ steps.tag.outputs.tag }}

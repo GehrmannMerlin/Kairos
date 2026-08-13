@@ -14,18 +14,26 @@ ARG KAIROS_INCLUDE_BROWSER=0
 
 WORKDIR /app
 
+# ---- Layer 1: dependency manifest -> install deps (cache boundary) ----
+# setuptools package discovery (pyproject `include = ["app*"]`) needs the `app`
+# package to exist, so we install a stub package here. This layer only rebuilds
+# when pyproject.toml / alembic.ini changes — NOT when application source changes
+# (OCI registry layer reuse / incremental pull depends on this boundary).
 COPY pyproject.toml alembic.ini ./
-COPY app ./app
-COPY alembic ./alembic
-COPY scripts ./scripts
-
-# Bounded network tolerance: --timeout 120 --retries 5 so large wheels survive
-# slow/flaky links without infinite retries.
-RUN if [ "$KAIROS_INCLUDE_BROWSER" = "1" ]; then \
+RUN mkdir -p app && touch app/__init__.py && \
+    if [ "$KAIROS_INCLUDE_BROWSER" = "1" ]; then \
         pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --timeout 120 --retries 5 '.[browser]'; \
     else \
         pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --timeout 120 --retries 5 .; \
     fi
+
+# ---- Layer 2: application source (rebuilds on any app change) ----
+# Deps are already satisfied from Layer 1, so this re-install is fast (no
+# downloads) and the real `app` package is copied into site-packages.
+COPY app ./app
+COPY alembic ./alembic
+COPY scripts ./scripts
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --timeout 120 --retries 5 .
 
 EXPOSE 8000
 

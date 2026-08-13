@@ -296,6 +296,55 @@ agent-project-implementation-plan.md 中对应 DEPLOY-GATE 完整章节
 + 与 Release 相关的代码/业务规范
 ```
 
+### 3.5.1 部署前必须重新读取部署规范（不可模糊解释）
+
+**任何一次 Staging 或 Production Deployment，即使在同一 Claude Code 会话中此前已经读取过，在真正执行服务器/镜像写操作之前，必须重新读取当前最新版本的 `agent-production-deployment-standards.md`。**
+
+触发动作包括但不限于：
+
+```text
+docker build for release
+registry login / push / pull
+服务器 compose update
+Migration
+Staging deploy
+Production deploy
+release rollback
+```
+
+执行部署写操作前，Claude Code 必须明确输出：
+
+```text
+Deployment Standard reread: PASS
+Target environment:
+Release identity:
+Image digests:
+Rollback target:
+```
+
+未重新读取 → **禁止执行部署写操作**。
+
+### 3.5.2 默认部署路线
+
+Kairos 默认部署路线（Registry 增量镜像交付，见部署规范 4A 章）：
+
+```text
+Git
+→ GitHub Actions CI
+→ OCI Registry（GHCR）
+→ Staging docker pull
+→ Smoke
+→ Production docker pull
+```
+
+禁止 Claude Code 为了“方便”自行退回：
+
+```text
+docker save → SSH → docker load
+```
+
+除非：Registry 确认不可用，**并且**用户明确批准 Break-glass deployment（EMERGENCY ONLY 脚本：`deploy-*-breakglass.sh`）。
+
 ---
 
 # 4. 每个模块的标准工作流程
