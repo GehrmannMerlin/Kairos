@@ -1,0 +1,7 @@
+# Force LF line endings for files that are scp'ed to / executed on the Linux
+# production server by infra/scripts/deploy-*.sh. On Windows with
+# core.autocrlf=true these files otherwise check out as CRLF, which breaks bash
+# on the server (`set -euo pipefail` -> "pipefail\r") and can break docker compose.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
