@@ -1277,3 +1277,84 @@ Git 分支
 ```
 
 这个顺序不属于当前必须实施项，只有监控数据证明瓶颈后才执行。
+
+
+---
+
+## 25. Production Bugfix Default Deployment（已上线功能 Bug 修复默认闭环）
+
+> 用户已确认的长期规则：已上线 Production 功能的 Bug 修复，默认必须部署到 Production。
+> 部署到 Production 是 Bug Fix 本身的一部分，不是可选的后续步骤。
+
+### 25.1 默认目标
+
+```text
+默认目标服务器：47.238.145.24
+默认用户验收入口：https://app.kairos.ac.cn/
+```
+
+### 25.2 正常路径
+
+```text
+fix branch
+→ scoped tests
+→ PR / CI
+→ main
+→ immutable GHCR images
+→ Staging pull
+→ Staging smoke
+→ patch release
+→ Production pull
+→ migration (如有)
+→ compose
+→ health / readiness
+→ user-facing smoke
+```
+
+### 25.3 硬性验收
+
+修复后的最终网页必须来自最新修复 Release。禁止出现：
+
+```text
+Local fixed
+但
+app.kairos.ac.cn 仍运行旧版本
+```
+
+然后宣布完成。发布身份必须记录：
+
+```text
+Git commit SHA
+Release tag
+Web image digest
+API image digest
+Worker image digest
+Migration head
+Deploy timestamp
+```
+
+禁止使用 `latest` 作为唯一部署身份。
+
+### 25.4 GitHub 网络阻断时的降级
+
+若 `github.com` 不可达（无法 Push / 开 PR / 触发 CI）：
+
+- 以本地完整等价门禁代替 CI（全量测试 / ruff / mypy / vue-tsc / lint / build / secret scan）；
+- 使用 `infra/scripts/registry-push.sh` 本地构建不可变镜像并推 GHCR；
+- 仍必须完成 Staging → Staging Smoke → Production → Production Smoke 全链路；
+- 报告明确把 `PR / CI PASS` 标记为 **PENDING（网络阻断）**，不得伪称已通过；
+- 网络恢复后必须补 Push / PR 闭环。
+
+### 25.5 不可绕过的 Gate
+
+默认部署不得绕过以下安全 Gate；任一失败必须 BLOCK：
+
+```text
+Production health 不通过
+Staging smoke 不通过
+Secret 缺失
+Migration 风险不明确
+需要新的付费基础设施
+需要产品决策
+部署可能造成不可逆数据损坏
+```
