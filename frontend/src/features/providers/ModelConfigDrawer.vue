@@ -32,6 +32,14 @@ const probeOk = ref(false)
 const providerSelected = ref(false)
 const resolvedBaseUrl = ref<string | null>(null)
 
+// Real provider catalog. No hardcoded or cached fallback may satisfy this state.
+const catalogModels = ref<string[]>([])
+const catalogLoading = ref(false)
+const catalogMessage = ref<string | null>(null)
+const legacyModelMissing = ref(false)
+let catalogTimer: ReturnType<typeof setTimeout> | null = null
+let catalogRequestSequence = 0
+
 const selectedDef = computed(() =>
   props.definitions.find((d) => d.provider_type === providerType.value),
 )
@@ -59,12 +67,22 @@ function reset(): void {
   probeOk.value = false
   providerSelected.value = false
   resolvedBaseUrl.value = null
+  catalogModels.value = []
+  catalogLoading.value = false
+  catalogMessage.value = null
+  legacyModelMissing.value = false
+  catalogRequestSequence += 1
+  if (catalogTimer) clearTimeout(catalogTimer)
+  catalogTimer = null
 }
 
 watch(
   () => props.open,
   (open) => {
-    if (open) reset()
+    if (open) {
+      reset()
+      scheduleCatalogLoad()
+    }
   },
 )
 
@@ -73,6 +91,91 @@ function onProviderChange(): void {
   resolvedBaseUrl.value = null
   probeMessage.value = null
   probeOk.value = false
+  catalogModels.value = []
+  catalogMessage.value = null
+  legacyModelMissing.value = false
+  modelName.value = ''
+  scheduleCatalogLoad()
+}
+
+function catalogCanLoad(): boolean {
+  if (!selectedDef.value || props.mode === 'replaceKey') return false
+  if (showBaseUrlInput.value && !baseUrl.value) return false
+  if (!selectedDef.value.requires_api_key) return true
+  if (apiKey.value) return true
+  return props.mode === 'edit' && Boolean(props.config?.credential_configured)
+}
+
+function scheduleCatalogLoad(): void {
+  if (catalogTimer) clearTimeout(catalogTimer)
+  if (!props.open || !catalogCanLoad()) {
+    catalogLoading.value = false
+    if (selectedDef.value?.requires_api_key && !apiKey.value && props.mode === 'create') {
+      catalogMessage.value = '输入 API Key 后将自动加载服务商模型'
+    }
+    return
+  }
+  catalogLoading.value = true
+  catalogMessage.value = '正在从服务商加载模型…'
+  catalogTimer = setTimeout(() => {
+    void loadCatalog()
+  }, 250)
+}
+
+function onCatalogInputChange(): void {
+  catalogModels.value = []
+  catalogMessage.value = null
+  legacyModelMissing.value = false
+  if (props.mode === 'create') modelName.value = ''
+  scheduleCatalogLoad()
+}
+
+async function loadCatalog(): Promise<void> {
+  if (!catalogCanLoad()) return
+  const sequence = ++catalogRequestSequence
+  catalogLoading.value = true
+  catalogMessage.value = '正在从服务商加载模型…'
+  const previousModel = modelName.value
+  try {
+    const payload: {
+      provider_type: string
+      api_key?: string
+      base_url?: string
+      config_id?: string
+    } = { provider_type: providerType.value }
+    if (apiKey.value) payload.api_key = apiKey.value
+    else if (props.mode === 'edit' && props.config) payload.config_id = props.config.config_id
+    if (showBaseUrlInput.value && baseUrl.value) payload.base_url = baseUrl.value
+
+    const result = await providersApi.listAvailableModels(payload)
+    if (sequence !== catalogRequestSequence) return
+    resolvedBaseUrl.value = result.resolved_base_url
+    if (result.status !== 'AVAILABLE' || result.models.length === 0) {
+      catalogModels.value = []
+      modelName.value = ''
+      catalogMessage.value = result.message ?? '未能读取服务商模型，请重试'
+      return
+    }
+    catalogModels.value = result.models
+    if (previousModel && result.models.includes(previousModel)) {
+      modelName.value = previousModel
+      legacyModelMissing.value = false
+    } else if (props.mode === 'create' && !previousModel) {
+      modelName.value = result.models[0]
+      legacyModelMissing.value = false
+    } else {
+      modelName.value = ''
+      legacyModelMissing.value = Boolean(previousModel)
+    }
+    catalogMessage.value = `已从服务商加载 ${result.models.length} 个模型`
+  } catch {
+    if (sequence !== catalogRequestSequence) return
+    catalogModels.value = []
+    modelName.value = ''
+    catalogMessage.value = '无法加载服务商模型，请重试'
+  } finally {
+    if (sequence === catalogRequestSequence) catalogLoading.value = false
+  }
 }
 
 async function onProbe(): Promise<void> {
@@ -100,6 +203,7 @@ async function onProbe(): Promise<void> {
       resolvedBaseUrl.value = result.resolved_base_url
       probeOk.value = true
       probeMessage.value = `连接成功 · ${label} · ${result.latency_ms ?? '—'} ms`
+      scheduleCatalogLoad()
     } else {
       // Failed attempt, or no attempt (AMBIGUOUS / NONE / validation). Backend
       // returns only a safe, stable message — never a raw response or the key.
@@ -124,6 +228,12 @@ async function onSubmit(): Promise<void> {
     (selectedDef.value?.requires_model_name && !modelName.value)
   ) {
     error.value = '请填写配置名称、Provider 与模型名称'
+    return
+  } else if (
+    selectedDef.value?.requires_model_name &&
+    !catalogModels.value.includes(modelName.value)
+  ) {
+    error.value = '请从服务商当前模型目录中选择模型'
     return
   } else if (showBaseUrlInput.value && !baseUrl.value) {
     error.value = '请填写 Base URL'
@@ -186,7 +296,7 @@ async function onSubmit(): Promise<void> {
           </label>
           <label>
             Provider
-            <select v-model="providerType" @change="onProviderChange">
+            <select v-model="providerType" disabled @change="onProviderChange">
               <option
                 v-for="defn in definitions"
                 :key="defn.provider_type"
@@ -196,10 +306,31 @@ async function onSubmit(): Promise<void> {
               </option>
             </select>
           </label>
+          <p class="catalog-status">如需更换 Provider，请新建模型配置，避免复用原凭证。</p>
           <label v-if="selectedDef?.requires_model_name">
             模型名称
-            <input v-model="modelName" type="text" required />
+            <select
+              v-model="modelName"
+              :disabled="catalogLoading || !catalogModels.length"
+              required
+            >
+              <option v-for="modelId in catalogModels" :key="modelId" :value="modelId">
+                {{ modelId }}
+              </option>
+            </select>
           </label>
+          <p v-if="legacyModelMissing" class="catalog-warn">
+            原模型已不在服务商当前目录中，请重新选择。
+          </p>
+          <p v-if="catalogMessage" class="catalog-status">{{ catalogMessage }}</p>
+          <button
+            v-if="!catalogLoading && catalogCanLoad() && !catalogModels.length"
+            type="button"
+            class="catalog-retry"
+            @click="loadCatalog"
+          >
+            重新加载模型
+          </button>
           <label v-if="showBaseUrlInput">
             Base URL
             <input
@@ -207,6 +338,7 @@ async function onSubmit(): Promise<void> {
               type="text"
               :placeholder="selectedDef?.default_base_url ?? ''"
               required
+              @input="onCatalogInputChange"
             />
           </label>
           <details v-if="isManaged" class="advanced">
@@ -222,20 +354,6 @@ async function onSubmit(): Promise<void> {
             <input v-model="name" type="text" required />
           </label>
 
-          <label v-if="showApiKey">
-            API Key（仅写入，不会回显）
-            <input v-model="apiKey" type="password" autocomplete="new-password" />
-          </label>
-
-          <div class="probe-row">
-            <button type="button" class="probe-btn" :disabled="probing" @click="onProbe">
-              {{ probing ? '正在检测连接…' : '检测连接' }}
-            </button>
-            <p v-if="probeMessage" :class="probeOk ? 'probe-ok' : 'probe-warn'">
-              {{ probeMessage }}
-            </p>
-          </div>
-
           <label>
             Provider
             <select v-model="providerType" @change="onProviderChange">
@@ -249,9 +367,14 @@ async function onSubmit(): Promise<void> {
             </select>
           </label>
 
-          <label v-if="selectedDef?.requires_model_name">
-            模型名称
-            <input v-model="modelName" type="text" required />
+          <label v-if="showApiKey">
+            API Key（仅写入，不会回显）
+            <input
+              v-model="apiKey"
+              type="password"
+              autocomplete="new-password"
+              @input="onCatalogInputChange"
+            />
           </label>
 
           <label v-if="showBaseUrlInput">
@@ -261,8 +384,40 @@ async function onSubmit(): Promise<void> {
               type="text"
               :placeholder="selectedDef?.default_base_url ?? ''"
               required
+              @input="onCatalogInputChange"
             />
           </label>
+
+          <label v-if="selectedDef?.requires_model_name">
+            模型名称
+            <select
+              v-model="modelName"
+              :disabled="catalogLoading || !catalogModels.length"
+              required
+            >
+              <option v-for="modelId in catalogModels" :key="modelId" :value="modelId">
+                {{ modelId }}
+              </option>
+            </select>
+          </label>
+          <p v-if="catalogMessage" class="catalog-status">{{ catalogMessage }}</p>
+          <button
+            v-if="!catalogLoading && catalogCanLoad() && !catalogModels.length"
+            type="button"
+            class="catalog-retry"
+            @click="loadCatalog"
+          >
+            重新加载模型
+          </button>
+
+          <div class="probe-row">
+            <button type="button" class="probe-btn" :disabled="probing" @click="onProbe">
+              {{ probing ? '正在检测连接…' : '检测连接' }}
+            </button>
+            <p v-if="probeMessage" :class="probeOk ? 'probe-ok' : 'probe-warn'">
+              {{ probeMessage }}
+            </p>
+          </div>
 
           <details v-if="isManaged" class="advanced">
             <summary>高级设置</summary>
@@ -370,6 +525,19 @@ select {
   color: var(--color-warning, #b26a00);
   font-size: 0.8rem;
   margin: 0;
+}
+.catalog-status {
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  margin: -0.35rem 0 0.75rem;
+}
+.catalog-warn {
+  color: var(--color-warning, #b26a00);
+  font-size: 0.8rem;
+  margin: -0.35rem 0 0.5rem;
+}
+.catalog-retry {
+  margin: -0.25rem 0 0.75rem;
 }
 .advanced {
   margin-bottom: 0.75rem;

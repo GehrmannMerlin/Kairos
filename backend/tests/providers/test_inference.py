@@ -78,6 +78,7 @@ async def test_gemini_wire_format() -> None:
 @pytest.mark.parametrize(
     ("status", "exc_type"),
     [
+        (400, errors.ProviderInferenceError),
         (401, errors.ProviderAuthFailedError),
         (403, errors.ProviderAuthFailedError),
         (404, errors.ProviderModelNotFoundError),

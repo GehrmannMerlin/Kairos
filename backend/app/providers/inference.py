@@ -35,6 +35,8 @@ class InferenceResult:
 
 
 def _map_http_error(http_status: int) -> errors.ProviderError:
+    if http_status == 400:
+        return errors.ProviderInferenceError("HTTP_400")
     if http_status in (401, 403):
         return errors.ProviderAuthFailedError(f"HTTP_{http_status}")
     if http_status == 404:

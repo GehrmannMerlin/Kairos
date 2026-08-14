@@ -16,6 +16,7 @@ from app.providers import errors
 from app.providers.fingerprint import fingerprint_api_key
 from app.providers.protocol import (
     DetectionConfidence,
+    ModelCatalogResult,
     ModelProbeResult,
     ProviderTestResult,
     ProviderTestStatus,
@@ -123,6 +124,10 @@ class ProviderService:
         if definition.requires_base_url and not _is_valid_http_url(base_url or ""):
             raise errors.ProviderValidationError(f"{definition.display_name} 需要合法的 Base URL")
         current = self._model_configs.get_current(user.id, config_id)
+        if current.provider_type != provider_type:
+            raise errors.ProviderValidationError(
+                "已有凭证不能切换 Provider；请为新的 Provider 新建模型配置"
+            )
         return self._model_configs.append_version(
             config_id=config_id,
             user_id=user.id,
@@ -164,7 +169,7 @@ class ProviderService:
             api_key = self._vault.read_for_execution(
                 user_id=user.id, credential_version_id=current.credential_version_id
             )
-        provider = build_model_provider(current.provider_type)
+        provider = build_model_provider(current.provider_type, http=self._http)
         result = await provider.test_connection(
             api_key=api_key, model=current.model_name, base_url=current.base_url
         )
@@ -187,6 +192,51 @@ class ProviderService:
 
     def get_default_model(self, user: Any) -> ModelConfig | None:
         return self._model_configs.get_default(user.id)
+
+    async def list_available_models(
+        self,
+        user: Any,
+        *,
+        provider_type: str,
+        api_key: str | None,
+        base_url: str | None,
+        config_id: str | None,
+    ) -> ModelCatalogResult:
+        """Load a real catalog using a transient key or one owned config credential."""
+        validate_model_provider_type(provider_type)
+        if api_key and config_id:
+            raise errors.ProviderValidationError("模型目录只能使用一种凭证来源")
+
+        current = None
+        if config_id:
+            current = self._model_configs.get_current(user.id, config_id)
+            if current.provider_type != provider_type:
+                raise errors.ProviderValidationError(
+                    "已有凭证不能用于其他 Provider；请新建模型配置"
+                )
+            if current.credential_version_id is not None:
+                api_key = self._vault.read_for_execution(
+                    user_id=user.id,
+                    credential_version_id=current.credential_version_id,
+                )
+
+        definition = get_model_definition(provider_type)
+        resolved = base_url.strip() if base_url else None
+        if definition.requires_base_url:
+            if not resolved and current is not None and current.provider_type == provider_type:
+                resolved = current.base_url
+            if not _is_valid_http_url(resolved or ""):
+                raise errors.ProviderValidationError(
+                    f"{definition.display_name} 需要合法的 Base URL"
+                )
+        else:
+            resolved = definition.default_base_url
+
+        if definition.requires_api_key and not api_key:
+            raise errors.ProviderValidationError(f"{definition.display_name} 需要 API Key")
+
+        provider = build_model_provider(provider_type, http=self._http)
+        return await provider.list_models(api_key=api_key, base_url=resolved)
 
     # ---- Model probe (unsaved config; never persists the key) ----
 

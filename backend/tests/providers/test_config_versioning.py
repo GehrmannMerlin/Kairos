@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from app.auth.models import User
 from app.auth.repository import UserRepository
+from app.providers import errors
 from app.providers.service import ProviderService
 from sqlalchemy.orm import Session as DbSession
 
@@ -36,6 +38,34 @@ def test_edit_creates_new_version(service_and_db: tuple[ProviderService, DbSessi
     assert edited.model_name == "gpt-4o"
     old = service.get_model_config_version(user, config_id=created.config_id, version=1)
     assert old.model_name == "gpt-4o-mini"
+
+
+def test_edit_cannot_reuse_a_credential_with_another_provider(
+    service_and_db: tuple[ProviderService, DbSession],
+) -> None:
+    service, db = service_and_db
+    user = _user(db, "alice@example.com")
+    created = service.create_model_config(
+        user,
+        name="openai",
+        provider_type="openai",
+        model_name="gpt-4o-mini",
+        base_url=None,
+        api_key="stored-openai-fixture-key",
+    )
+
+    with pytest.raises(errors.ProviderValidationError, match="Provider"):
+        service.update_model_config(
+            user,
+            config_id=created.config_id,
+            name="deepseek",
+            provider_type="deepseek",
+            model_name="deepseek-v4-flash",
+            base_url=None,
+        )
+
+    current = service.get_model_config_version(user, config_id=created.config_id, version=1)
+    assert current.provider_type == "openai"
 
 
 def test_replace_key_bumps_credential_and_config_version(
