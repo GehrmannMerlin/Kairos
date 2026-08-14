@@ -96,6 +96,24 @@ class ModelProbeResultDto(BaseModel):
     probe_method: str | None = None
 
 
+class ModelCatalogCommand(BaseModel):
+    """Load IDs from one explicitly selected provider without persisting a key."""
+
+    provider_type: str
+    api_key: SecretStr | None = None
+    base_url: str | None = None
+    config_id: str | None = None
+
+
+class ModelCatalogResultDto(BaseModel):
+    status: ProviderTestStatus
+    models: list[str] = []
+    resolved_base_url: str | None = None
+    latency_ms: int | None = None
+    error_code: str | None = None
+    message: str | None = None
+
+
 class SearchConfigDto(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     config_id: str

@@ -29,7 +29,12 @@ def env_master_key(monkeypatch) -> None:
 
 class _StubHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        body = json.dumps({"results": []}).encode()
+        body = json.dumps(
+            {
+                "object": "list",
+                "data": [{"id": "gpt-4o-mini", "object": "model", "owned_by": "fixture"}],
+            }
+        ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -206,6 +211,29 @@ def test_connection_test_against_stub(client_factory, stub_url: str) -> None:
         tested = client.post(f"/api/providers/models/{created['config_id']}/test")
         assert tested.status_code == 200
         assert tested.json()["status"] == "AVAILABLE"
+
+
+def test_transient_model_catalog_returns_ids_without_persisting_or_echoing_key(
+    client_factory, stub_url: str
+) -> None:
+    client = client_factory()
+    with client:
+        _register(client, "alice@example.com")
+        resp = client.post(
+            "/api/providers/models/catalog",
+            json={
+                "provider_type": "custom_openai_compatible",
+                "base_url": stub_url,
+                "api_key": "transient-fixture-secret",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "AVAILABLE"
+        assert body["models"] == ["gpt-4o-mini"]
+        assert body["resolved_base_url"] == stub_url
+        assert "transient-fixture-secret" not in resp.text
+        assert client.get("/api/providers/models").json()["configs"] == []
 
 
 # ---- Search config + probe regression (Tavily must NOT require Base URL) ----

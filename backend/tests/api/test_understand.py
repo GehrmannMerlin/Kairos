@@ -17,6 +17,7 @@ from app.domain.task_types import TaskType
 from app.infra.db import Base
 from app.infra.deps import get_db
 from app.main import create_app
+from app.providers.errors import ProviderNetworkError
 from app.providers.repository import ModelConfigRepository, SearchConfigRepository
 from app.providers.service import ProviderService
 from fastapi import Depends
@@ -38,15 +39,29 @@ class FakeAgent:
     def __init__(self, result: GoalUnderstandingResult) -> None:
         self._result = result
         self.called_with: list[GoalInput] = []
+        self.resolved_seen = None
+        self.api_key_seen = None
 
     async def understand(
         self, *, goal_input, chat_context, resolved, api_key
     ) -> GoalUnderstandingResult:
         self.called_with.append(goal_input)
+        self.resolved_seen = resolved
+        self.api_key_seen = api_key
         return self._result
 
 
-def _make_app(factory, *, fake_result: GoalUnderstandingResult | None = None):
+class FailingAgent:
+    async def understand(self, *, goal_input, chat_context, resolved, api_key):
+        raise ProviderNetworkError("fixture transport failure")
+
+
+def _make_app(
+    factory,
+    *,
+    fake_result: GoalUnderstandingResult | None = None,
+    agent_override=None,
+):
     def _override_db():
         session = factory()
         try:
@@ -59,7 +74,7 @@ def _make_app(factory, *, fake_result: GoalUnderstandingResult | None = None):
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_login_limiter] = lambda: limiter
 
-    if fake_result is not None:
+    if fake_result is not None or agent_override is not None:
 
         def _override_service(db: DbSession = Depends(get_db)):
             vault = CredentialVault(
@@ -73,7 +88,10 @@ def _make_app(factory, *, fake_result: GoalUnderstandingResult | None = None):
                 search_configs=SearchConfigRepository(db),
             )
             return GoalUnderstandingService(
-                db, provider_service=provider, vault=vault, agent=FakeAgent(fake_result)
+                db,
+                provider_service=provider,
+                vault=vault,
+                agent=agent_override or FakeAgent(fake_result),
             )
 
         app.dependency_overrides[get_goal_understanding_service] = _override_service
@@ -103,6 +121,20 @@ def client_no_model(tmp_path):
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     app, limiter = _make_app(factory, fake_result=None)
+    with TestClient(app) as test_client:
+        yield {"client": test_client, "factory": factory, "limiter": limiter}
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def client_provider_failure(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'provider-failure.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    app, limiter = _make_app(factory, agent_override=FailingAgent())
     with TestClient(app) as test_client:
         yield {"client": test_client, "factory": factory, "limiter": limiter}
     app.dependency_overrides.clear()
@@ -181,3 +213,25 @@ def test_understand_model_not_configured_preserves_input(client_no_model: dict) 
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert "深圳" in messages[0]["content"]
+
+
+def test_provider_failure_preserves_one_task_and_one_user_message(
+    client_provider_failure: dict,
+) -> None:
+    c, factory = client_provider_failure["client"], client_provider_failure["factory"]
+    user = _register(c, "alice@example.com")["user"]
+    _seed_available_model(factory, user["id"])
+
+    created = c.post("/api/tasks", json={"content": "帮我采集上海市政府任前公示"})
+    task_id = created.json()["task_id"]
+    failed = c.post(f"/api/tasks/{task_id}/understand")
+
+    assert failed.status_code == 503
+    assert failed.json()["detail"]["code"] == "NETWORK_ERROR"
+    tasks = c.get("/api/tasks").json()["tasks"]
+    assert [task["task_id"] for task in tasks] == [task_id]
+    messages = c.get(f"/api/tasks/{task_id}/chat").json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert sum(message["role"] == "user" for message in messages) == 1
+    assert messages[1]["ref_type"] == "error"
+    assert messages[1]["meta"]["error_code"] == "NETWORK_ERROR"

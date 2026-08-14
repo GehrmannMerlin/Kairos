@@ -56,6 +56,15 @@ export interface ModelProbeResultDto {
   probe_method: string | null
 }
 
+export interface ModelCatalogResultDto {
+  status: string
+  models: string[]
+  resolved_base_url: string | null
+  latency_ms: number | null
+  error_code: string | null
+  message: string | null
+}
+
 export interface SearchProbeResultDto {
   status: string | null
   provider_type: string
@@ -127,6 +136,15 @@ export function probeModel(body: {
   model_name?: string
 }): Promise<ModelProbeResultDto> {
   return apiClient.post<ModelProbeResultDto>('/providers/models/probe', body)
+}
+
+export function listAvailableModels(body: {
+  provider_type: string
+  api_key?: string
+  base_url?: string
+  config_id?: string
+}): Promise<ModelCatalogResultDto> {
+  return apiClient.post<ModelCatalogResultDto>('/providers/models/catalog', body)
 }
 
 export function setModelDefault(configId: string): Promise<ModelConfigDto> {

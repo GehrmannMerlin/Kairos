@@ -4,7 +4,7 @@ Runs inside the kairos-production api container. Drives the REAL product API ove
 the internal network (localhost:8000/api) for one tiny SPECIFIED_SOURCE task:
 
     register/login (production test user)
-    -> DeepSeek model config
+    -> DeepSeek real model catalog -> model config
     -> create directed task with seed_urls=[example.com]
     -> understand -> spec-confirm -> plan (auto-start workflow)
     -> poll to terminal (COMPLETED / PARTIALLY_COMPLETED / FAILED)
@@ -15,9 +15,9 @@ the internal network (localhost:8000/api) for one tiny SPECIFIED_SOURCE task:
 
 Exit 0 = PASS, 1 = FAIL. Secrets (DeepSeek key) come from env and are never printed.
 """
+
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
@@ -40,6 +40,16 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {name} {detail}")
 
 
+def select_catalog_model(catalog: dict) -> str:
+    """Select only an ID the live provider returned; never invent a smoke model."""
+    models = catalog.get("models") if catalog.get("status") == "AVAILABLE" else None
+    if not isinstance(models, list) or not models:
+        raise ValueError("no provider-returned DeepSeek model is available")
+    if "deepseek-v4-flash" in models:
+        return "deepseek-v4-flash"
+    return str(models[0])
+
+
 def main() -> None:
     ds_key = os.environ.get("PROD_SMOKE_DEEPSEEK_KEY", "").strip()
     check("deepseek key provided", bool(ds_key), "key from env (not echoed)")
@@ -50,7 +60,11 @@ def main() -> None:
 
     # 1) Register (real auth path; brief §57 requires Login).
     r = base.post("/auth/register", json={"email": email, "password": pw, "confirm_password": pw})
-    check("register production test user", r.status_code == 201, f"email={email} status={r.status_code}")
+    check(
+        "register production test user",
+        r.status_code == 201,
+        f"email={email} status={r.status_code}",
+    )
     if r.status_code != 201:
         sys.exit(1)
 
@@ -69,13 +83,31 @@ def main() -> None:
     if r.status_code != 200:
         sys.exit(1)
 
-    # 2) DeepSeek model config (real provider, key from env never printed).
+    # 2) Discover a real DeepSeek model ID, then persist exactly that ID.
+    r = base.post(
+        "/providers/models/catalog",
+        json={
+            "provider_type": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": ds_key,
+        },
+    )
+    catalog = r.json() if r.status_code == 200 else {}
+    catalog_ok = r.status_code == 200 and catalog.get("status") == "AVAILABLE"
+    check("load DeepSeek model catalog", catalog_ok, f"status={r.status_code}")
+    try:
+        model_name = select_catalog_model(catalog)
+    except ValueError as exc:
+        check("select provider-returned DeepSeek model", False, str(exc))
+        sys.exit(1)
+    check("select provider-returned DeepSeek model", True, f"model={model_name}")
+
     r = base.post(
         "/providers/models",
         json={
             "name": "prod-smoke-deepseek",
             "provider_type": "deepseek",
-            "model_name": "deepseek-chat",
+            "model_name": model_name,
             "base_url": "https://api.deepseek.com/v1",
             "api_key": ds_key,
             "set_default": True,
@@ -87,7 +119,11 @@ def main() -> None:
     # which understand() requires (require_available_model_config).
     if model_config_id:
         r = base.post(f"/providers/models/{model_config_id}/test")
-        check("test DeepSeek connection", r.status_code == 200, f"status={r.status_code} body={r.text[:120]}")
+        check(
+            "test DeepSeek connection",
+            r.status_code == 200,
+            f"status={r.status_code} body={r.text[:120]}",
+        )
 
     # 3) Create directed task with SPECIFIED source (seed URL, no search).
     r = base.post(
@@ -111,20 +147,32 @@ def main() -> None:
     payload = r.json()["payload"]
     adv = payload.setdefault("advanced_settings", {})
     adv["max_pages"] = 1
-    payload["completion_conditions"] = [{"kind": "min_records", "target": 1, "threshold": None, "note": "prod smoke"}]
+    payload["completion_conditions"] = [
+        {"kind": "min_records", "target": 1, "threshold": None, "note": "prod smoke"}
+    ]
 
     r = base.get(f"/tasks/{task_id}")
     exp_ver = r.json()["version"]
-    r = base.post(f"/tasks/{task_id}/spec-confirm", json={"expected_version": exp_ver, "payload": payload})
+    r = base.post(
+        f"/tasks/{task_id}/spec-confirm",
+        json={"expected_version": exp_ver, "payload": payload},
+    )
     check("spec confirm", r.status_code == 200, f"status={r.status_code}")
     spec_version = r.json()["spec_version"]
 
     r = base.get(f"/tasks/{task_id}")
     exp_ver = r.json()["version"]
-    r = base.post(f"/tasks/{task_id}/plan", json={"spec_version": spec_version, "expected_version": exp_ver})
+    r = base.post(
+        f"/tasks/{task_id}/plan",
+        json={"spec_version": spec_version, "expected_version": exp_ver},
+    )
     body = r.json()
     check("plan generated", r.status_code == 200, f"status={r.status_code}")
-    check("workflow started", bool(body.get("run_id")), f"run={body.get('run_id')} wf={body.get('workflow_id')}")
+    check(
+        "workflow started",
+        bool(body.get("run_id")),
+        f"run={body.get('run_id')} wf={body.get('workflow_id')}",
+    )
     print(f"TASK_ID={task_id} RUN_ID={body.get('run_id')} WORKFLOW_ID={body.get('workflow_id')}")
 
     # 5) Poll to terminal state.
@@ -162,15 +210,27 @@ def main() -> None:
 
     # 9) CSV artifact: export first (D-060), then list + download.
     r = base.post(f"/tasks/{task_id}/artifacts/export", json={"export_type": "formal"})
-    check("csv export", r.status_code == 200, f"status={r.status_code} body={r.text[:120]}")
+    check(
+        "csv export",
+        r.status_code == 200,
+        f"status={r.status_code} body={r.text[:120]}",
+    )
     r = base.get(f"/tasks/{task_id}/artifacts")
     arts = r.json()
     art_list = arts if isinstance(arts, list) else arts.get("items", arts.get("artifacts", []))
-    check("artifacts present", isinstance(art_list, list) and len(art_list) >= 1, f"artifacts={len(art_list) if isinstance(art_list, list) else 'n/a'}")
+    check(
+        "artifacts present",
+        isinstance(art_list, list) and len(art_list) >= 1,
+        f"artifacts={len(art_list) if isinstance(art_list, list) else 'n/a'}",
+    )
     if isinstance(art_list, list) and art_list:
         aid = art_list[0]["artifact_id"]
         r = base.get(f"/tasks/{task_id}/artifacts/{aid}/download")
-        check("csv downloadable", r.status_code == 200, f"status={r.status_code} type={r.headers.get('content-type')}")
+        check(
+            "csv downloadable",
+            r.status_code == 200,
+            f"status={r.status_code} type={r.headers.get('content-type')}",
+        )
 
     ok = all(ok for _, ok in _results)
     print(f"SMOKE_RESULT={'PASS' if ok else 'FAIL'} total={len(_results)} task_id={task_id}")

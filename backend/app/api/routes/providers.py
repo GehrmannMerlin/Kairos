@@ -18,6 +18,8 @@ from app.providers.registry import (
 from app.providers.schemas import (
     CreateModelConfigCommand,
     CreateSearchConfigCommand,
+    ModelCatalogCommand,
+    ModelCatalogResultDto,
     ModelConfigDto,
     ModelConfigListResponse,
     ModelProbeCommand,
@@ -115,6 +117,29 @@ async def probe_model(
         error_code=result.error_code,
         message=result.message,
         probe_method=result.probe_method,
+    )
+
+
+@router.post("/models/catalog", response_model=ModelCatalogResultDto)
+async def model_catalog(
+    cmd: ModelCatalogCommand,
+    user: User = Depends(require_user),
+    service: ProviderService = Depends(get_provider_service),
+) -> ModelCatalogResultDto:
+    result = await service.list_available_models(
+        user,
+        provider_type=cmd.provider_type,
+        api_key=cmd.api_key.get_secret_value() if cmd.api_key else None,
+        base_url=cmd.base_url,
+        config_id=cmd.config_id,
+    )
+    return ModelCatalogResultDto(
+        status=result.status,
+        models=list(result.models),
+        resolved_base_url=result.resolved_base_url,
+        latency_ms=result.latency_ms,
+        error_code=result.error_code,
+        message=result.message,
     )
 
 

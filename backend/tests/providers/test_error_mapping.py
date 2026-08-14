@@ -20,7 +20,12 @@ from tests.providers.fake_transport import FakeHttpClient
     ],
 )
 async def test_openai_compatible_status_mapping(status: int, expected: ProviderTestStatus) -> None:
-    provider = build_model_provider("openai", http=FakeHttpClient(status_code=status, body={}))
+    body = (
+        {"object": "list", "data": [{"id": "gpt-4o-mini", "object": "model"}]}
+        if status == 200
+        else {}
+    )
+    provider = build_model_provider("openai", http=FakeHttpClient(status_code=status, body=body))
     result = await provider.test_connection(api_key="sk-test", model="gpt-4o-mini", base_url=None)
     assert result.status is expected
 
@@ -32,6 +37,28 @@ async def test_network_error_maps_to_network_error() -> None:
         api_key="sk-test", model="claude-3-5-sonnet", base_url=None
     )
     assert result.status is ProviderTestStatus.NETWORK_ERROR
+
+
+@pytest.mark.asyncio
+async def test_saved_connection_rejects_model_missing_from_successful_catalog() -> None:
+    provider = build_model_provider(
+        "deepseek",
+        http=FakeHttpClient(
+            status_code=200,
+            body={
+                "object": "list",
+                "data": [
+                    {"id": "deepseek-v4-flash", "object": "model", "owned_by": "deepseek"},
+                    {"id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek"},
+                ],
+            },
+        ),
+    )
+
+    result = await provider.test_connection(api_key="fixture-key", model="DeepSeek", base_url=None)
+
+    assert result.status is ProviderTestStatus.MODEL_NOT_FOUND
+    assert result.error_code == "MODEL_NOT_FOUND"
 
 
 @pytest.mark.asyncio

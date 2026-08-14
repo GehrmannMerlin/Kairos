@@ -47,6 +47,18 @@ class ProviderTestResult:
 
 
 @dataclass(frozen=True)
+class ModelCatalogResult:
+    """Secret-free model IDs reported by one explicitly selected Provider."""
+
+    status: ProviderTestStatus
+    models: tuple[str, ...] = ()
+    resolved_base_url: str | None = None
+    error_code: str | None = None
+    message: str | None = None
+    latency_ms: int | None = None
+
+
+@dataclass(frozen=True)
 class ModelProbeResult:
     """Result of probing an *unsaved* model provider key (never persisted).
 
@@ -106,6 +118,10 @@ class ResolvedModel:
 
 class ModelProvider(Protocol):
     definition: ProviderDefinition
+
+    async def list_models(
+        self, *, api_key: str | None, base_url: str | None
+    ) -> ModelCatalogResult: ...
 
     async def test_connection(
         self, *, api_key: str | None, model: str | None, base_url: str | None

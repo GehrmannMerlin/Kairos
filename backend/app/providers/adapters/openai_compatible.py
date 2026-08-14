@@ -10,6 +10,7 @@ from __future__ import annotations
 from time import perf_counter
 
 from app.providers.protocol import (
+    ModelCatalogResult,
     ProviderDefinition,
     ProviderTestResult,
     ProviderTestStatus,
@@ -41,10 +42,9 @@ class OpenAICompatibleModelProvider:
         self.definition = definition
         self._http = http or HttpxTransport()
 
-    async def test_connection(
-        self, *, api_key: str | None, model: str | None, base_url: str | None
-    ) -> ProviderTestResult:
-        endpoint = (base_url or self.definition.default_base_url or "").rstrip("/") + "/models"
+    async def list_models(self, *, api_key: str | None, base_url: str | None) -> ModelCatalogResult:
+        resolved_base_url = base_url or self.definition.default_base_url or ""
+        endpoint = resolved_base_url.rstrip("/") + "/models"
         headers = {"Authorization": f"Bearer {api_key or ''}"}
         started = perf_counter()
         try:
@@ -52,18 +52,53 @@ class OpenAICompatibleModelProvider:
                 method="GET", url=endpoint, headers=headers, params=None, timeout_seconds=15.0
             )
         except Exception:
-            return ProviderTestResult(
+            return ModelCatalogResult(
                 status=ProviderTestStatus.NETWORK_ERROR,
+                resolved_base_url=resolved_base_url,
                 error_code="NETWORK_ERROR",
                 message="无法连接 Provider",
                 latency_ms=int((perf_counter() - started) * 1000),
             )
         status, code = map_status(resp.status_code)
+        models: tuple[str, ...] = ()
+        message = None
+        if status is ProviderTestStatus.AVAILABLE:
+            rows = resp.body.get("data") if isinstance(resp.body, dict) else None
+            ids = (
+                [row.get("id") for row in rows if isinstance(row, dict)]
+                if isinstance(rows, list)
+                else []
+            )
+            models = tuple(
+                dict.fromkeys(value for value in ids if isinstance(value, str) and value)
+            )
+            if not models:
+                status = ProviderTestStatus.FAILED
+                code = "INVALID_CATALOG_RESPONSE"
+                message = "无法读取模型目录"
+        return ModelCatalogResult(
+            status=status,
+            models=models,
+            resolved_base_url=resolved_base_url,
+            error_code=code,
+            message=message,
+            latency_ms=int((perf_counter() - started) * 1000),
+        )
+
+    async def test_connection(
+        self, *, api_key: str | None, model: str | None, base_url: str | None
+    ) -> ProviderTestResult:
+        catalog = await self.list_models(api_key=api_key, base_url=base_url)
+        status = catalog.status
+        code = catalog.error_code
+        if status is ProviderTestStatus.AVAILABLE and model and model not in catalog.models:
+            status = ProviderTestStatus.MODEL_NOT_FOUND
+            code = "MODEL_NOT_FOUND"
         return ProviderTestResult(
             status=status,
             error_code=code,
-            message="连接成功" if status is ProviderTestStatus.AVAILABLE else None,
-            latency_ms=int((perf_counter() - started) * 1000),
+            message="连接成功" if status is ProviderTestStatus.AVAILABLE else catalog.message,
+            latency_ms=catalog.latency_ms,
         )
 
     def resolve_model(

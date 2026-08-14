@@ -19,7 +19,7 @@ async def _run(probe_factory, http, **kwargs):
 
 @pytest.mark.asyncio
 async def test_probe_fingerprint_success(probe_factory) -> None:
-    http = FakeHttpClient(200, {"data": []})
+    http = FakeHttpClient(200, {"data": [{"id": "claude-opus-4-1", "type": "model"}]})
     service, db, user, result = await _run(
         probe_factory,
         http,
@@ -119,7 +119,13 @@ async def test_probe_none_requires_manual(probe_factory) -> None:
 
 @pytest.mark.asyncio
 async def test_probe_manual_selection(probe_factory) -> None:
-    http = FakeHttpClient(200, {"data": []})
+    http = FakeHttpClient(
+        200,
+        {
+            "object": "list",
+            "data": [{"id": "deepseek-v4-flash", "object": "model"}],
+        },
+    )
     _, _, _, result = await _run(
         probe_factory,
         http,
@@ -170,7 +176,7 @@ async def test_probe_invalid_base_url(probe_factory) -> None:
 
 @pytest.mark.asyncio
 async def test_probe_ollama_requires_no_key(probe_factory) -> None:
-    http = FakeHttpClient(200, {"models": []})
+    http = FakeHttpClient(200, {"models": [{"name": "qwen3:latest", "model": "qwen3:latest"}]})
     _, _, _, result = await _run(
         probe_factory,
         http,

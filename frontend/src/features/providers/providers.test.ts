@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 import { router } from '@/app/router'
@@ -14,6 +14,7 @@ vi.mock('@/features/providers/providers.api', () => ({
   replaceModelKey: vi.fn(),
   testModelConnection: vi.fn(),
   probeModel: vi.fn(),
+  listAvailableModels: vi.fn(),
   setModelDefault: vi.fn(),
   deleteModelConfig: vi.fn(),
   createSearchConfig: vi.fn(),
@@ -110,6 +111,10 @@ const searchDefsWithTavily = [tavilySearchDef, searchDef]
 
 beforeEach(() => {
   vi.clearAllMocks()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 function mountModelsView() {
@@ -247,6 +252,135 @@ describe('ModelConfigDrawer', () => {
     const wrapper = await mountDrawer([customDef])
     const baseUrlLabels = wrapper.findAll('label').filter((l) => l.text().includes('Base URL'))
     expect(baseUrlLabels.length).toBe(1)
+  })
+
+  it('uses provider-supplied model IDs instead of a free-text model name', async () => {
+    vi.mocked(providersApi.listAvailableModels).mockResolvedValue({
+      status: 'AVAILABLE',
+      models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      resolved_base_url: 'https://api.deepseek.com/v1',
+      latency_ms: 120,
+      error_code: null,
+      message: null,
+    })
+    const wrapper = await mountDrawer([openaiDef, managedDef])
+    vi.useFakeTimers()
+
+    await wrapper.find('input[type="password"]').setValue('transient-fixture-key')
+    await wrapper.find('select').setValue('deepseek')
+    await vi.advanceTimersByTimeAsync(300)
+    await wrapper.vm.$nextTick()
+
+    const modelLabel = wrapper.findAll('label').find((label) => label.text().includes('模型名称'))
+    expect(modelLabel).toBeTruthy()
+    expect(modelLabel!.find('input').exists()).toBe(false)
+    expect(modelLabel!.find('select').exists()).toBe(true)
+    expect(modelLabel!.findAll('option').map((option) => option.text())).toEqual([
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+    ])
+    expect((modelLabel!.find('select').element as HTMLSelectElement).value).toBe(
+      'deepseek-v4-flash',
+    )
+    expect(providersApi.listAvailableModels).toHaveBeenCalledWith({
+      provider_type: 'deepseek',
+      api_key: 'transient-fixture-key',
+    })
+    vi.useRealTimers()
+  })
+
+  it('editing loads the catalog through the owned config without exposing a key', async () => {
+    vi.mocked(providersApi.listAvailableModels).mockResolvedValue({
+      status: 'AVAILABLE',
+      models: ['gpt-4o-mini', 'gpt-5-mini'],
+      resolved_base_url: 'https://api.openai.com/v1',
+      latency_ms: 90,
+      error_code: null,
+      message: null,
+    })
+    const wrapper = mount(ModelConfigDrawer, {
+      props: {
+        open: false,
+        mode: 'edit',
+        config: modelConfig,
+        definitions: [openaiDef, managedDef],
+      },
+    })
+    vi.useFakeTimers()
+    await wrapper.setProps({ open: true })
+    await vi.advanceTimersByTimeAsync(300)
+    await wrapper.vm.$nextTick()
+
+    expect(providersApi.listAvailableModels).toHaveBeenCalledWith({
+      provider_type: 'openai',
+      config_id: 'c1',
+    })
+    expect(wrapper.text()).not.toContain('fixture-key')
+    const modelLabel = wrapper.findAll('label').find((label) => label.text().includes('模型名称'))
+    expect(modelLabel!.findAll('option').map((option) => option.text())).toEqual([
+      'gpt-4o-mini',
+      'gpt-5-mini',
+    ])
+    vi.useRealTimers()
+  })
+
+  it('does not allow an existing credential to be reused with another Provider', async () => {
+    vi.mocked(providersApi.listAvailableModels).mockResolvedValue({
+      status: 'AVAILABLE',
+      models: ['gpt-4o-mini'],
+      resolved_base_url: 'https://api.openai.com/v1',
+      latency_ms: 90,
+      error_code: null,
+      message: null,
+    })
+    const wrapper = mount(ModelConfigDrawer, {
+      props: {
+        open: false,
+        mode: 'edit',
+        config: modelConfig,
+        definitions: [openaiDef, managedDef],
+      },
+    })
+    vi.useFakeTimers()
+    await wrapper.setProps({ open: true })
+    await vi.advanceTimersByTimeAsync(300)
+    await wrapper.vm.$nextTick()
+
+    const providerSelect = wrapper
+      .findAll('label')
+      .find((label) => label.text().includes('Provider'))
+    expect((providerSelect!.find('select').element as HTMLSelectElement).disabled).toBe(true)
+
+    vi.useRealTimers()
+  })
+
+  it('does not silently keep a legacy model missing from the provider catalog', async () => {
+    vi.mocked(providersApi.listAvailableModels).mockResolvedValue({
+      status: 'AVAILABLE',
+      models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      resolved_base_url: 'https://api.deepseek.com/v1',
+      latency_ms: 80,
+      error_code: null,
+      message: null,
+    })
+    const legacy = { ...modelConfig, provider_type: 'deepseek', model_name: 'DeepSeek' }
+    const wrapper = mount(ModelConfigDrawer, {
+      props: {
+        open: false,
+        mode: 'edit',
+        config: legacy,
+        definitions: [openaiDef, managedDef],
+      },
+    })
+    vi.useFakeTimers()
+    await wrapper.setProps({ open: true })
+    await vi.advanceTimersByTimeAsync(300)
+    await wrapper.vm.$nextTick()
+
+    const modelLabel = wrapper.findAll('label').find((label) => label.text().includes('模型名称'))
+    expect((modelLabel!.find('select').element as HTMLSelectElement).value).toBe('')
+    expect(wrapper.text()).toContain('原模型已不在服务商当前目录中')
+    vi.useRealTimers()
   })
 
   it('probe success auto-fills provider and shows latency', async () => {
