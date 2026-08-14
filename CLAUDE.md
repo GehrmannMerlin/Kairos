@@ -786,3 +786,102 @@ rollback readiness
 ```
 
 **如果不确定该读哪份文档，宁可先读取，不要猜。**
+
+
+---
+
+# 20. Production Bugfix Default Closure（已上线功能 Bug 修复默认闭环）
+
+> 用户已确认的长期规则：**Kairos 已上线功能的 Bug 修复，默认必须部署到 Production。**
+> 适用于用户报告 `app.kairos.ac.cn` 或 Production 已上线功能存在 Bug 并要求“修复”时。
+
+## 20.1 默认任务范围
+
+除非用户明确说“只修代码，不部署”，否则修复已上线功能的 Bug 时，任务范围**自动包含**：
+
+```text
+Diagnosis
+→ Fix
+→ Scoped Tests
+→ Git
+→ PR / CI
+→ Staging
+→ Staging Smoke
+→ Production
+→ Production Smoke
+```
+
+不得在代码测试完成后停下来问“是否要部署？”——用户已给出长期默认授权。
+
+## 20.2 完成措辞
+
+禁止“修复完成”当任务实际只是 local code fixed。
+
+必须区分并使用真实状态：
+
+```text
+IMPLEMENTED
+VERIFIED
+STAGING_DEPLOYED
+PRODUCTION_DEPLOYED
+```
+
+只有 Production Smoke PASS 才能：
+
+```text
+DONE / DEPLOYED
+```
+
+## 20.3 必须 BLOCK 的情况
+
+“默认部署”不能绕过安全 Gate。以下任一情况必须 BLOCK 并请求用户决策：
+
+- Production health 不通过；
+- Staging smoke 不通过；
+- Secret 缺失；
+- Migration 风险不明确；
+- 需要新的付费基础设施；
+- 需要产品决策；
+- 部署可能造成不可逆数据损坏。
+
+## 20.4 部署身份
+
+默认目标服务器：`47.238.145.24`；用户验收入口：`https://app.kairos.ac.cn/`。
+
+修复后的最终网页必须来自最新修复 Release：
+
+```text
+fix branch
+→ scoped tests
+→ PR / CI
+→ main
+→ immutable GHCR images
+→ Staging pull
+→ Staging smoke
+→ patch release
+→ Production pull
+→ migration (如有)
+→ compose
+→ health / readiness
+→ user-facing smoke
+```
+
+禁止出现：
+
+```text
+Local fixed
+但
+app.kairos.ac.cn 仍运行旧版本
+```
+
+然后宣布完成。
+
+## 20.5 GitHub 网络阻断时的降级
+
+若 `github.com` 网络不可达导致无法 Push / 开 PR / 触发 CI：
+
+- 以本地完整等价门禁（全量测试 / ruff / mypy / vue-tsc / lint / build / secret scan）代替 CI；
+- 使用 `infra/scripts/registry-push.sh` 本地构建不可变镜像并推 GHCR；
+- 仍必须完成 Staging → Staging Smoke → Production → Production Smoke 全链路；
+- 在最终报告中明确把 `PR / CI PASS` 标记为 **PENDING（网络阻断）**，不得伪称已通过；
+- 网络恢复后必须补 Push / PR 闭环，并在下个会话记录。
