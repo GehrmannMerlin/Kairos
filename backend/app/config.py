@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     credential_master_key: str | None = None
     credential_key_version: str = "k1"
     provider_test_timeout_seconds: float = 15.0
+    # 同步模型调用（Goal Understanding / Plan 生成 / 语义提取）的 Provider 有界超时。
+    # 浏览器 AI 超时（60s）与反代 read timeout（90s）都必须显著大于此值，避免外层先断。
+    provider_inference_timeout_seconds: float = 45.0
 
     # --- API / CORS ---
     api_port: int = 8000

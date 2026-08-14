@@ -117,7 +117,11 @@ class SemanticExtractionAgent:
     settings: ExtractionSettings = field(default_factory=ExtractionSettings)
 
     def __post_init__(self) -> None:
-        self._inference = self.inference or ModelInferenceClient()
+        from app.config import get_settings
+
+        self._inference = self.inference or ModelInferenceClient(
+            timeout_seconds=get_settings().provider_inference_timeout_seconds
+        )
         self._resolved: ResolvedModel | None = None
         self._api_key: str | None = None
 

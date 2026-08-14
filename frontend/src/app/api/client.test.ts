@@ -145,4 +145,40 @@ describe('ApiClient request-level timeout contract', () => {
       vi.useRealTimers()
     }
   })
+
+  it('timeoutMs null disables the automatic timer (server/Provider is the ceiling)', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolveFetch!: (r: Response) => void
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(
+          (_input, init?: { signal?: AbortSignal }) =>
+            new Promise<Response>((resolve, reject) => {
+              resolveFetch = resolve
+              init?.signal?.addEventListener('abort', () =>
+                reject(new DOMException('aborted', 'AbortError')),
+              )
+            }),
+        ),
+      )
+      const client = new ApiClient({ baseUrl: '/api' })
+      const promise = client.get<{ status: string }>('/slow', { timeoutMs: null })
+      // 远超过默认 10s 甚至 60s：没有自动 timer，请求仍 pending。
+      await vi.advanceTimersByTimeAsync(120_000)
+      resolveFetch({ ok: true, status: 200, json: async () => ({ status: 'ok' }) } as Response)
+      await expect(promise).resolves.toEqual({ status: 'ok' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('timeoutMs null still honors an external AbortSignal (user cancel path)', async () => {
+    fetchThatHonorsAbort()
+    const controller = new AbortController()
+    const client = new ApiClient({ baseUrl: '/api' })
+    const promise = client.get('/health/live', { timeoutMs: null, signal: controller.signal })
+    controller.abort()
+    await expect(promise).rejects.toMatchObject({ code: 'CLIENT_ABORTED' })
+  })
 })

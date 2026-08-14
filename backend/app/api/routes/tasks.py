@@ -31,6 +31,7 @@ from app.api.schemas import (
     TaskShellDto,
     TaskShellListResponse,
     TemplateDto,
+    UnderstandCommand,
     UnderstandResponse,
     UpdateSpecDraftCommand,
 )
@@ -248,16 +249,24 @@ def create_template_from_task(
 @router.post("/{task_id}/understand", response_model=UnderstandResponse)
 async def understand_task(
     task_id: int,
+    cmd: UnderstandCommand | None = None,
     user: User = Depends(require_user),
     service: GoalUnderstandingService = Depends(get_goal_understanding_service),
 ) -> UnderstandResponse:
-    """Run Goal Understanding once. Errors keep the Draft + user message (D-066)."""
-    outcome = await service.understand_for_task(user=user, task_id=task_id)
+    """Run Goal Understanding once (server-side idempotent). Errors keep the
+    Draft + user message (D-066); auto triggers reuse existing attempts."""
+    trigger_source = cmd.trigger_source if cmd is not None else "AUTO_INITIAL"
+    outcome = await service.understand_for_task(
+        user=user, task_id=task_id, trigger_source=trigger_source
+    )
     return UnderstandResponse(
         task_id=task_id,
-        message=_chat_dto(outcome.message),
-        result=outcome.result.model_dump(mode="json"),
+        status=outcome.status,
+        message=_chat_dto(outcome.message) if outcome.message is not None else None,
+        result=outcome.result.model_dump(mode="json") if outcome.result is not None else None,
         spec_draft=outcome.spec_draft,
+        attempt_id=outcome.attempt_id,
+        trigger_source=outcome.trigger_source,
     )
 
 

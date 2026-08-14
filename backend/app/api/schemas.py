@@ -82,11 +82,22 @@ class AddSeedUrlCommand(BaseModel):
     url: str
 
 
+class UnderstandCommand(BaseModel):
+    """Goal Understanding 触发来源。自动触发不会产生新 attempt（服务器幂等）；用户显式
+    「重新理解」（USER_REUNDERSTAND）才允许新的模型 attempt / 新费用。"""
+
+    trigger_source: str = "AUTO_INITIAL"
+
+
 class UnderstandResponse(BaseModel):
     task_id: int
-    message: ChatMessageDto
-    result: dict
-    spec_draft: dict
+    # SUCCEEDED（本次新结果） | ALREADY_SUCCEEDED（复用已有结果） | IN_PROGRESS（有 attempt 在途）
+    status: str
+    message: ChatMessageDto | None = None
+    result: dict | None = None
+    spec_draft: dict | None = None
+    attempt_id: int | None = None
+    trigger_source: str = "AUTO_INITIAL"
 
 
 class ConfirmSpecCommand(BaseModel):

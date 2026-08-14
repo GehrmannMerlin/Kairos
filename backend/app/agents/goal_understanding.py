@@ -128,7 +128,11 @@ def _build_user_prompt(goal_input: GoalInput, chat_context: list[str]) -> str:
 
 class GoalUnderstandingAgent:
     def __init__(self, inference: ModelInferenceClient | None = None) -> None:
-        self._inference = inference or ModelInferenceClient()
+        from app.config import get_settings
+
+        self._inference = inference or ModelInferenceClient(
+            timeout_seconds=get_settings().provider_inference_timeout_seconds
+        )
 
     def _build_function(self, resolved: ResolvedModel, api_key: str | None):
         async def _call(messages: list[ModelMessage], agent_info: AgentInfo) -> ModelResponse:

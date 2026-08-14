@@ -12,12 +12,15 @@ export interface ApiClientOptions {
 }
 
 /**
- * Per-request overrides. Every timeout is bounded (production paths always pass
- * an explicit positive value); `timeoutMs: 0` disables the timer for tests.
+ * Per-request overrides.
+ * - `undefined`: use the client's default timeout.
+ * - `number`: this request uses the given timeout (0 disables the timer for tests).
+ * - `null`: no frontend automatic timeout — the request still honors an external
+ *   `signal`; the server's bounded provider timeout is the real ceiling.
  */
 export interface RequestOptions {
   signal?: AbortSignal
-  timeoutMs?: number
+  timeoutMs?: number | null
 }
 
 /** 普通 CRUD 请求默认超时（保持既有行为）。 */
@@ -82,7 +85,7 @@ export class ApiClient {
     const controller = new AbortController()
     let timedOut = false
     const timer =
-      timeoutMs > 0
+      timeoutMs !== null && timeoutMs > 0
         ? setTimeout(() => {
             timedOut = true
             controller.abort()

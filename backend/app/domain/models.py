@@ -642,6 +642,66 @@ class IdempotencyKey(Base):
     )
 
 
+class UnderstandingAttempt(Base):
+    """Goal Understanding 幂等 attempt（M-06 request-lifecycle 修复）。
+
+    身份 = (task_id, source_message_id, input_fingerprint)。partial unique index
+    (status='running') 是跨 API 进程的并发兜底：同一输入同时两个 /understand，
+    只有第一个能真正调 Provider，第二个返回 IN_PROGRESS。
+    只存安全审计 metadata（config_id/version/provider/model/duration），绝不存 Secret。
+    """
+
+    __tablename__ = "understanding_attempts"
+    __table_args__ = (
+        Index(
+            "ix_understanding_attempts_running",
+            "task_id",
+            "source_message_id",
+            "input_fingerprint",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+            sqlite_where=text("status = 'running'"),
+        ),
+        Index(
+            "ix_understanding_attempts_identity",
+            "task_id",
+            "source_message_id",
+            "input_fingerprint",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    trigger_source: Mapped[str] = mapped_column(String(30), nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 审计 metadata（无 Secret）
+    model_config_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # 成功时保存结果，供 reload/reconcile 复用（不再次调 Provider）
+    result_ref_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    spec_draft_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class Checkpoint(Base):
     __tablename__ = "checkpoints"
     __table_args__ = (UniqueConstraint("run_id", "batch_identity", name="uq_cp_run_batch"),)
