@@ -1,4 +1,4 @@
-import { apiClient } from '@/app/api/client'
+import { AI_REQUEST_TIMEOUT_MS, apiClient } from '@/app/api/client'
 
 export type ChatRole = 'user' | 'assistant' | 'system'
 
@@ -64,7 +64,11 @@ export function sendMessage(
 }
 
 export function runUnderstanding(taskId: string | number): Promise<UnderstandDto> {
-  return apiClient.post<UnderstandDto>(`/tasks/${taskId}/understand`)
+  // 目标理解是同步有界模型调用（backend ModelInferenceClient 单次 ≤30s）；
+  // 使用 AI 专用超时，避免 10s CRUD 默认把 15s 的 DeepSeek 响应误杀。
+  return apiClient.post<UnderstandDto>(`/tasks/${taskId}/understand`, undefined, {
+    timeoutMs: AI_REQUEST_TIMEOUT_MS,
+  })
 }
 
 export function getSpecDraft(taskId: string | number): Promise<SpecDraftResponse> {

@@ -32,7 +32,9 @@ describe('mapApiError', () => {
   })
 
   it('maps network failure', () => {
-    expect(mapApiError(new ApiError(0, '网络请求失败或超时')).kind).toBe('network')
+    expect(mapApiError(new ApiError(0, '网络连接失败，请稍后重试。', 'CLIENT_NETWORK_ERROR')).kind).toBe(
+      'network',
+    )
   })
 
   it('maps generic errors to unknown', () => {
@@ -42,5 +44,21 @@ describe('mapApiError', () => {
   it('guides to /models when a model is required', () => {
     const mapped = mapApiError(new ApiError(409, 'x', 'MODEL_NOT_CONFIGURED'))
     expect(mapped.action).toBe('/models')
+  })
+
+  it('distinguishes client timeout from network error and abort', () => {
+    expect(mapApiError(new ApiError(0, '请求处理时间较长', 'CLIENT_TIMEOUT')).kind).toBe(
+      'client_timeout',
+    )
+    expect(mapApiError(new ApiError(0, '网络连接失败', 'CLIENT_NETWORK_ERROR')).kind).toBe(
+      'network',
+    )
+    expect(mapApiError(new ApiError(0, '请求已取消', 'CLIENT_ABORTED')).kind).toBe(
+      'request_aborted',
+    )
+  })
+
+  it('keeps legacy status-0 errors mapped to network', () => {
+    expect(mapApiError(new ApiError(0, 'legacy')).kind).toBe('network')
   })
 })

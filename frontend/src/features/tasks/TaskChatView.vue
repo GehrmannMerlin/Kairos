@@ -2,7 +2,6 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { ApiError } from '@/app/error/ApiError'
 import { mapApiError } from '@/app/error/apiErrorMapper'
 import { openDrawer } from '@/app/overlay/drawer.store'
 import { openModal } from '@/app/overlay/modal.store'
@@ -64,6 +63,10 @@ function alreadyUnderstood(): boolean {
   )
 }
 
+function hasGoalResult(): boolean {
+  return messages.value.some((m) => m.role === 'assistant' && m.ref_type === 'goal_result')
+}
+
 function openModelRequired(): void {
   openModal('MODEL_REQUIRED', { returnTo: `/tasks/${taskId.value}/chat` })
 }
@@ -104,6 +107,7 @@ async function runPlanGeneration(): Promise<void> {
   if (!currentSpecVersion.value || taskVersion.value === null) return
   planning.value = true
   errorMsg.value = null
+  const prevPlanVersion = planSummary.value?.plan_version ?? null
   try {
     await generatePlan(taskId.value, {
       spec_version: currentSpecVersion.value,
@@ -112,7 +116,24 @@ async function runPlanGeneration(): Promise<void> {
     await refreshTaskMeta()
     void loadChat()
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    const mapped = mapApiError(err)
+    // 组件卸载/导航离开：静默，不把客户端取消误报为失败。
+    if (mapped.kind === 'request_aborted') return
+    // Plan 生成是同步模型调用；客户端超时/断连后以服务器持久化的 Plan 版本为准。
+    try {
+      await refreshTaskMeta()
+    } catch {
+      /* keep last known values */
+    }
+    const planAdvanced = !!planSummary.value && planSummary.value.plan_version !== prevPlanVersion
+    if (planAdvanced) {
+      if (mapped.kind === 'client_timeout') {
+        noticeMsg.value = '执行计划已生成（处理时间较长，结果已同步）。'
+      }
+      void loadChat()
+      return
+    }
+    errorMsg.value = mapped.message
   } finally {
     planning.value = false
   }
@@ -142,6 +163,8 @@ async function maybeAutoUnderstand(): Promise<void> {
 }
 
 async function runUnderstand(): Promise<void> {
+  // 防并发重复理解：一次只允许一个 Goal Understanding 请求在途，避免重复模型扣费。
+  if (understanding.value) return
   understanding.value = true
   errorMsg.value = null
   try {
@@ -150,17 +173,27 @@ async function runUnderstand(): Promise<void> {
     messages.value = (await getChat(taskId.value)).messages
     void refreshTaskMeta()
   } catch (err) {
-    if (err instanceof ApiError && mapApiError(err).kind === 'model_not_configured') {
+    const mapped = mapApiError(err)
+    if (mapped.kind === 'model_not_configured') {
       openModelRequired()
-    } else {
-      // Backend already persisted a recoverable error message; reload to show it.
-      try {
-        messages.value = (await getChat(taskId.value)).messages
-      } catch {
-        /* keep current messages */
-      }
-      errorMsg.value = err instanceof Error ? err.message : String(err)
+      return
     }
+    // 组件卸载/导航离开：静默，不把客户端取消误报为失败。
+    if (mapped.kind === 'request_aborted') return
+    // 浏览器 timeout 不能覆盖已持久化的业务事实（PostgreSQL 是事实来源）：
+    // 重新拉取 Chat，若后端已完成则以其结果为准，不再显示“网络请求失败或超时”。
+    try {
+      messages.value = (await getChat(taskId.value)).messages
+    } catch {
+      /* keep current messages */
+    }
+    if (alreadyUnderstood()) {
+      if (mapped.kind === 'client_timeout' && hasGoalResult()) {
+        noticeMsg.value = '目标理解已完成（处理时间较长，结果已同步）。'
+      }
+      return
+    }
+    errorMsg.value = mapped.message
   } finally {
     understanding.value = false
   }

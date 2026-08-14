@@ -118,3 +118,82 @@ describe('TaskChatView 对话工作区', () => {
     expect(chatApi.sendMessage).toHaveBeenCalledWith('1', '补充：再加邮箱字段')
   })
 })
+
+describe('TaskChatView 客户端超时 vs 服务器事实（竞态修复）', () => {
+  const goalMsg: ChatMessageDto = {
+    id: 2,
+    role: 'assistant',
+    content: '任务类型：EXPLORATORY',
+    ref_type: 'goal_result',
+    ref_id: null,
+    meta: null,
+    created_at: '2026-08-10T00:00:00Z',
+  }
+
+  it('后端已成功但浏览器超时：以服务器结果为准，不显示网络超时错误', async () => {
+    vi.mocked(chatApi.getChat)
+      .mockResolvedValueOnce({ messages: [userMsg] })
+      .mockResolvedValueOnce({ messages: [userMsg, goalMsg] })
+    vi.mocked(chatApi.runUnderstanding).mockRejectedValue(
+      new ApiError(0, '请求处理时间较长，服务器可能仍在处理中，正在确认结果…', 'CLIENT_TIMEOUT'),
+    )
+
+    const wrapper = mount(TaskChatView)
+    await flushPromises()
+
+    expect(wrapper.find('.chat__error').exists()).toBe(false)
+    expect(wrapper.text()).toContain('任务类型：EXPLORATORY')
+    expect(wrapper.text()).toContain('目标理解已完成')
+  })
+
+  it('真正网络失败仍显示 NETWORK_ERROR，且不与超时混淆', async () => {
+    vi.mocked(chatApi.getChat)
+      .mockResolvedValueOnce({ messages: [userMsg] })
+      .mockResolvedValueOnce({ messages: [userMsg] })
+    vi.mocked(chatApi.runUnderstanding).mockRejectedValue(
+      new ApiError(0, '网络连接失败，请稍后重试。', 'CLIENT_NETWORK_ERROR'),
+    )
+
+    const wrapper = mount(TaskChatView)
+    await flushPromises()
+
+    const errorText = wrapper.find('.chat__error').text()
+    expect(errorText).toContain('网络连接失败')
+    expect(errorText).not.toContain('目标理解已完成')
+  })
+
+  it('客户端超时且服务器尚未持久化：显示确认文案而非 Provider 故障', async () => {
+    vi.mocked(chatApi.getChat)
+      .mockResolvedValueOnce({ messages: [userMsg] })
+      .mockResolvedValueOnce({ messages: [userMsg] })
+    vi.mocked(chatApi.runUnderstanding).mockRejectedValue(
+      new ApiError(0, '请求处理时间较长，服务器可能仍在处理中，正在确认结果…', 'CLIENT_TIMEOUT'),
+    )
+
+    const wrapper = mount(TaskChatView)
+    await flushPromises()
+
+    expect(wrapper.find('.chat__error').text()).toContain('请求处理时间较长')
+  })
+
+  it('REQUEST_ABORTED 静默处理，不当作失败', async () => {
+    vi.mocked(chatApi.getChat).mockResolvedValueOnce({ messages: [userMsg] })
+    vi.mocked(chatApi.runUnderstanding).mockRejectedValue(
+      new ApiError(0, '请求已取消', 'CLIENT_ABORTED'),
+    )
+
+    const wrapper = mount(TaskChatView)
+    await flushPromises()
+
+    expect(wrapper.find('.chat__error').exists()).toBe(false)
+  })
+
+  it('已有 goal_result 时不再自动重复触发理解', async () => {
+    vi.mocked(chatApi.getChat).mockResolvedValueOnce({ messages: [userMsg, goalMsg] })
+
+    mount(TaskChatView)
+    await flushPromises()
+
+    expect(chatApi.runUnderstanding).not.toHaveBeenCalled()
+  })
+})

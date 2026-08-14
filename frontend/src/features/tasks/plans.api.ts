@@ -1,4 +1,4 @@
-import { apiClient } from '@/app/api/client'
+import { AI_REQUEST_TIMEOUT_MS, apiClient } from '@/app/api/client'
 
 /** Plan 生成（D-038：合法低风险 Plan 自动启动，不弹二次确认）。 */
 export interface PlanGenerateCommand {
@@ -33,7 +33,11 @@ export function generatePlan(
   taskId: string | number,
   cmd: PlanGenerateCommand,
 ): Promise<PlanGenerateDto> {
-  return apiClient.post<PlanGenerateDto>(`/tasks/${taskId}/plan`, cmd)
+  // Plan 生成是同步模型调用（生成 + 有界 repair），不是长执行链；HTTP 提交受该
+  // 模型调用时长约束，使用 AI 专用超时。
+  return apiClient.post<PlanGenerateDto>(`/tasks/${taskId}/plan`, cmd, {
+    timeoutMs: AI_REQUEST_TIMEOUT_MS,
+  })
 }
 
 export function getPlanSummary(

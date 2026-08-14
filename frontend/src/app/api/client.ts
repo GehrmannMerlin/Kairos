@@ -1,10 +1,31 @@
-import { ApiError } from '@/app/error/ApiError'
+import {
+  ApiError,
+  ClientTimeoutError,
+  NetworkError,
+  RequestAbortedError,
+} from '@/app/error/ApiError'
 
 export interface ApiClientOptions {
   /** Base path of the API, e.g. `/api` (same-origin behind a reverse proxy). */
   baseUrl: string
   timeoutMs?: number
 }
+
+/**
+ * Per-request overrides. Every timeout is bounded (production paths always pass
+ * an explicit positive value); `timeoutMs: 0` disables the timer for tests.
+ */
+export interface RequestOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+}
+
+/** 普通 CRUD 请求默认超时（保持既有行为）。 */
+export const DEFAULT_TIMEOUT_MS = 10_000
+/** Provider Probe / 目录 / 连接测试：单次真实 provider 请求，有界 AI 超时。 */
+export const PROBE_REQUEST_TIMEOUT_MS = 45_000
+/** 同步模型调用（Goal Understanding / Plan 生成）：backend 单次 30s 窗口 + 校验重试余量。 */
+export const AI_REQUEST_TIMEOUT_MS = 60_000
 
 interface ApiErrorBody {
   detail?: unknown
@@ -17,6 +38,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Thin JSON fetch wrapper. Later modules add auth headers, SSE, and command/query
  * DTOs on top of this single entry point.
+ *
+ * 超时契约：默认 CRUD 10s；`RequestOptions.timeoutMs` 可对单个请求覆盖（模型调用、
+ * Provider Probe 使用各自明确的有界超时）。浏览器主动 abort 不能伪装成网络/Provider
+ * 故障——超时 → CLIENT_TIMEOUT、外部取消 → CLIENT_ABORTED、真实网络失败 → NETWORK_ERROR。
  */
 export class ApiClient {
   private readonly baseUrl: string
@@ -24,37 +49,45 @@ export class ApiClient {
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '')
-    this.timeoutMs = options.timeoutMs ?? 10_000
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   }
 
-  async get<T>(path: string, signal?: AbortSignal): Promise<T> {
-    return this.request<T>('GET', path, undefined, signal)
+  async get<T>(path: string, options?: RequestOptions): Promise<T> {
+    return this.request<T>('GET', path, undefined, options)
   }
 
-  async post<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    return this.request<T>('POST', path, body, signal)
+  async post<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>('POST', path, body, options)
   }
 
-  async patch<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    return this.request<T>('PATCH', path, body, signal)
+  async patch<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>('PATCH', path, body, options)
   }
 
-  async put<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    return this.request<T>('PUT', path, body, signal)
+  async put<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>('PUT', path, body, options)
   }
 
-  async delete<T>(path: string, signal?: AbortSignal): Promise<T> {
-    return this.request<T>('DELETE', path, undefined, signal)
+  async delete<T>(path: string, options?: RequestOptions): Promise<T> {
+    return this.request<T>('DELETE', path, undefined, options)
   }
 
   private async request<T>(
     method: string,
     path: string,
     body?: unknown,
-    externalSignal?: AbortSignal,
+    options: RequestOptions = {},
   ): Promise<T> {
+    const { signal: externalSignal, timeoutMs = this.timeoutMs } = options
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
+    let timedOut = false
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true
+            controller.abort()
+          }, timeoutMs)
+        : undefined
     const abortFromOutside = () => controller.abort()
 
     externalSignal?.addEventListener('abort', abortFromOutside, { once: true })
@@ -77,9 +110,19 @@ export class ApiClient {
       if (error instanceof ApiError) {
         throw error
       }
-      throw new ApiError(0, '网络请求失败或超时', '', error)
+      // 先区分「本次是否由本客户端的超时计时器主动 abort」；否则外部 signal 取消；
+      // 都不是才视为真实网络失败。超时绝不映射成 Provider/网络故障。
+      if (timedOut) {
+        throw new ClientTimeoutError(error)
+      }
+      if (externalSignal?.aborted) {
+        throw new RequestAbortedError(error)
+      }
+      throw new NetworkError(error)
     } finally {
-      clearTimeout(timer)
+      if (timer !== undefined) {
+        clearTimeout(timer)
+      }
       externalSignal?.removeEventListener('abort', abortFromOutside)
     }
   }
@@ -110,4 +153,4 @@ export class ApiClient {
 
 const DEFAULT_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
-export const apiClient = new ApiClient({ baseUrl: DEFAULT_BASE_URL, timeoutMs: 10_000 })
+export const apiClient = new ApiClient({ baseUrl: DEFAULT_BASE_URL, timeoutMs: DEFAULT_TIMEOUT_MS })
