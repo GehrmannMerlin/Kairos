@@ -111,7 +111,11 @@ class PlanGeneratorAgent:
     inference: ModelInferenceClient | None = None
 
     def __post_init__(self) -> None:
-        self._inference = self.inference or ModelInferenceClient()
+        from app.config import get_settings
+
+        self._inference = self.inference or ModelInferenceClient(
+            timeout_seconds=get_settings().provider_inference_timeout_seconds
+        )
 
     def _build_function(self, resolved: ResolvedModel, api_key: str | None, inp: PlanInput):
         async def _call(messages: list[ModelMessage], agent_info: AgentInfo) -> ModelResponse:

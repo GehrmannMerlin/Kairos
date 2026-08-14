@@ -21,7 +21,9 @@ from app.providers.transport import HttpClient, HttpxTransport
 from app.reliability.provider_limit import ProviderLimiter
 
 ANTHROPIC_VERSION = "2023-06-01"
-_DEFAULT_TIMEOUT_SECONDS = 30.0
+# Provider 有界推理超时默认值；实际值由 KAIROS_PROVIDER_INFERENCE_TIMEOUT_SECONDS
+# 注入（外层浏览器 60s / 反代 90s 都必须显著大于此值）。
+_DEFAULT_TIMEOUT_SECONDS = 45.0
 
 # M-16 进程内 provider 限流缓存（key = 安全 metadata hash，非明文 Key）
 _LIMITERS: dict[str, ProviderLimiter] = {}

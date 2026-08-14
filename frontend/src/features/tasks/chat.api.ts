@@ -28,10 +28,18 @@ export interface CreateTaskCommand {
 
 export interface UnderstandDto {
   task_id: number
-  message: ChatMessageDto
-  result: Record<string, unknown>
-  spec_draft: Record<string, unknown>
+  status: 'SUCCEEDED' | 'ALREADY_SUCCEEDED' | 'IN_PROGRESS'
+  message: ChatMessageDto | null
+  result: Record<string, unknown> | null
+  spec_draft: Record<string, unknown> | null
+  attempt_id: number | null
+  trigger_source: string
 }
+
+/** Goal Understanding 触发来源：自动触发不产生新 attempt（服务器幂等），
+ * 只有用户显式「重新理解」才允许新的模型 attempt / 新费用。 */
+export type UnderstandTriggerSource =
+  'AUTO_INITIAL' | 'USER_SEND' | 'USER_REUNDERSTAND' | 'RECOVERY'
 
 export interface ConfirmSpecDto {
   task_id: number
@@ -63,12 +71,17 @@ export function sendMessage(
   })
 }
 
-export function runUnderstanding(taskId: string | number): Promise<UnderstandDto> {
-  // 目标理解是同步有界模型调用（backend ModelInferenceClient 单次 ≤30s）；
-  // 使用 AI 专用超时，避免 10s CRUD 默认把 15s 的 DeepSeek 响应误杀。
-  return apiClient.post<UnderstandDto>(`/tasks/${taskId}/understand`, undefined, {
-    timeoutMs: AI_REQUEST_TIMEOUT_MS,
-  })
+export function runUnderstanding(
+  taskId: string | number,
+  triggerSource: UnderstandTriggerSource = 'AUTO_INITIAL',
+): Promise<UnderstandDto> {
+  // 目标理解是同步有界模型调用（backend Provider 有界 ≤45s）；
+  // 使用 AI 专用超时（60s 安全网，触发 reconcile 而非业务失败），不继承 CRUD 10s。
+  return apiClient.post<UnderstandDto>(
+    `/tasks/${taskId}/understand`,
+    { trigger_source: triggerSource },
+    { timeoutMs: AI_REQUEST_TIMEOUT_MS },
+  )
 }
 
 export function getSpecDraft(taskId: string | number): Promise<SpecDraftResponse> {

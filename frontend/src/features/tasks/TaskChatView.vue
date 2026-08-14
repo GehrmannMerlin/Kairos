@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { mapApiError } from '@/app/error/apiErrorMapper'
@@ -19,6 +19,7 @@ import {
   runUnderstanding,
   sendMessage,
   type ChatMessageDto,
+  type UnderstandTriggerSource,
 } from '@/features/tasks/chat.api'
 import { generatePlan, getPlanSummary, type PlanSummaryDto } from '@/features/tasks/plans.api'
 import PlanSummaryCard from '@/features/tasks/PlanSummaryCard.vue'
@@ -38,7 +39,6 @@ const taskId = computed(() => (typeof route.params.taskId === 'string' ? route.p
 const messages = ref<ChatMessageDto[]>([])
 const loading = ref(false)
 const sending = ref(false)
-const understanding = ref(false)
 const confirming = ref(false)
 const planning = ref(false)
 const urlInput = ref('')
@@ -51,6 +51,26 @@ const noticeMsg = ref<string | null>(null)
 const taskState = ref<string | null>(null)
 const completionCard = ref<CompletionCardView | null>(null)
 
+// AI 请求状态机（request-lifecycle 修复）：模型推理不受普通 CRUD 10s 硬超时限制，
+// 慢响应保持「理解中 / 仍在处理」，服务器已持久化成功时不把客户端 transient 错误当失败。
+// 'reconciling' = 客户端已断开，正在以服务器事实为准轮询 reconcile。
+type AiStatus = 'idle' | 'understanding' | 'reconciling' | 'success' | 'error'
+const aiStatus = ref<AiStatus>('idle')
+const elapsedSeconds = ref(0)
+
+const understanding = computed(
+  () => aiStatus.value === 'understanding' || aiStatus.value === 'reconciling',
+)
+
+const POLL_INTERVAL_MS = 3_000
+/** reconcile 轮询上限（3s × 40 ≈ 120s，覆盖 Provider 有界 45s + 反代余量）。 */
+const MAX_RECONCILE_POLLS = 40
+/** 慢响应 UX 文案切换阈值。 */
+const SLOW_ELAPSED_SECONDS = 10
+
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
+let disposed = false
+
 const TERMINAL_STATES = new Set(['COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED'])
 
 function hasUserMessage(): boolean {
@@ -61,10 +81,6 @@ function alreadyUnderstood(): boolean {
   return messages.value.some(
     (m) => m.role === 'assistant' && (m.ref_type === 'goal_result' || m.ref_type === 'error'),
   )
-}
-
-function hasGoalResult(): boolean {
-  return messages.value.some((m) => m.role === 'assistant' && m.ref_type === 'goal_result')
 }
 
 function openModelRequired(): void {
@@ -157,45 +173,166 @@ async function loadChat(): Promise<void> {
   }
 }
 
-async function maybeAutoUnderstand(): Promise<void> {
-  if (understanding.value || !hasUserMessage() || alreadyUnderstood()) return
-  await runUnderstand()
+function startUnderstanding(): void {
+  aiStatus.value = 'understanding'
+  errorMsg.value = null
+  elapsedSeconds.value = 0
+  if (elapsedTimer) clearInterval(elapsedTimer)
+  elapsedTimer = setInterval(() => {
+    if (disposed) return
+    elapsedSeconds.value += 1
+  }, 1000)
 }
 
-async function runUnderstand(): Promise<void> {
-  // 防并发重复理解：一次只允许一个 Goal Understanding 请求在途，避免重复模型扣费。
-  if (understanding.value) return
-  understanding.value = true
-  errorMsg.value = null
+function stopElapsedTimer(): void {
+  if (elapsedTimer) {
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+}
+
+function setReconciling(): void {
+  aiStatus.value = 'reconciling'
+  stopElapsedTimer()
+}
+
+function finishSuccess(): void {
+  stopElapsedTimer()
+  aiStatus.value = 'success'
+}
+
+function finishError(message: string): void {
+  stopElapsedTimer()
+  aiStatus.value = 'error'
+  errorMsg.value = message
+}
+
+function finishIdle(): void {
+  stopElapsedTimer()
+  aiStatus.value = 'idle'
+}
+
+function goalResultCount(): number {
+  return messages.value.filter((m) => m.ref_type === 'goal_result').length
+}
+
+function errorMessageCount(): number {
+  return messages.value.filter((m) => m.ref_type === 'error').length
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 以服务器事实为准 reconcile：轮询 Chat 直到出现「本次理解之后」新增的 goal_result /
+ * error 消息，或达到有界窗口。返回服务器是否已产生新业务事实。 */
+async function reconcileUntilNewFact(
+  baselineGoal: number,
+  baselineError: number,
+): Promise<boolean> {
+  for (let i = 0; i < MAX_RECONCILE_POLLS; i++) {
+    if (disposed) return false
+    if (await reconcileOnce(baselineGoal, baselineError)) return true
+    await delay(POLL_INTERVAL_MS)
+  }
+  return false
+}
+
+/** 单次以服务器为准 reconcile（真实网络/Provider 错误路径：快速确认，不长时间轮询）。 */
+async function reconcileOnce(baselineGoal: number, baselineError: number): Promise<boolean> {
+  if (disposed) return false
   try {
-    const data = await runUnderstanding(taskId.value)
-    draft.value = asSpecDraftPayload(data.spec_draft)
     messages.value = (await getChat(taskId.value)).messages
-    void refreshTaskMeta()
-  } catch (err) {
-    const mapped = mapApiError(err)
-    if (mapped.kind === 'model_not_configured') {
-      openModelRequired()
+  } catch {
+    return false
+  }
+  return goalResultCount() > baselineGoal || errorMessageCount() > baselineError
+}
+
+const understandingText = computed(() =>
+  understanding.value
+    ? aiStatus.value === 'reconciling' || elapsedSeconds.value >= SLOW_ELAPSED_SECONDS
+      ? '模型仍在处理中，复杂任务可能需要更长时间…'
+      : '模型正在理解任务…'
+    : '',
+)
+
+async function maybeAutoUnderstand(): Promise<void> {
+  if (understanding.value || !hasUserMessage() || alreadyUnderstood()) return
+  await runUnderstand('AUTO_INITIAL')
+}
+
+async function runUnderstand(trigger: UnderstandTriggerSource = 'AUTO_INITIAL'): Promise<void> {
+  // 防并发重复理解：一次只允许一个 AI 请求在途（同组件实例）。
+  // 跨页面/跨 Tab 的重复由服务器端幂等（understanding_attempts）兜底。
+  if (understanding.value) return
+  startUnderstanding()
+  const baselineGoal = goalResultCount()
+  const baselineError = errorMessageCount()
+  try {
+    const data = await runUnderstanding(taskId.value, trigger)
+    if (disposed) return
+    if (data.status === 'IN_PROGRESS') {
+      // 另一个 attempt 已在途（另一 Tab / reload 竞态）：服务器保证不双跑；
+      // 轮询 Chat 直到它落库（或超时窗口）。
+      setReconciling()
+      const ok = await reconcileUntilNewFact(baselineGoal, baselineError)
+      if (ok) {
+        finishSuccess()
+      } else {
+        noticeMsg.value = '模型仍在处理中，请稍后刷新查看。'
+        finishIdle()
+      }
       return
     }
-    // 组件卸载/导航离开：静默，不把客户端取消误报为失败。
-    if (mapped.kind === 'request_aborted') return
-    // 浏览器 timeout 不能覆盖已持久化的业务事实（PostgreSQL 是事实来源）：
-    // 重新拉取 Chat，若后端已完成则以其结果为准，不再显示“网络请求失败或超时”。
+    if (data.spec_draft) {
+      draft.value = asSpecDraftPayload(data.spec_draft)
+    }
     try {
       messages.value = (await getChat(taskId.value)).messages
     } catch {
       /* keep current messages */
     }
-    if (alreadyUnderstood()) {
-      if (mapped.kind === 'client_timeout' && hasGoalResult()) {
-        noticeMsg.value = '目标理解已完成（处理时间较长，结果已同步）。'
+    void refreshTaskMeta()
+    finishSuccess()
+  } catch (err) {
+    const mapped = mapApiError(err)
+    if (disposed) return
+    if (mapped.kind === 'model_not_configured') {
+      finishIdle()
+      openModelRequired()
+      return
+    }
+    // 组件卸载/导航离开：静默，不把客户端取消误报为失败。
+    if (mapped.kind === 'request_aborted') {
+      finishIdle()
+      return
+    }
+    if (mapped.kind === 'client_timeout') {
+      // 浏览器主动放弃等待，但服务器很可能仍在处理：有界 reconcile 轮询，
+      // 后端已持久化 goal_result / error 时以服务器为准，不显示“网络请求失败或超时”。
+      setReconciling()
+      const ok = await reconcileUntilNewFact(baselineGoal, baselineError)
+      if (ok) {
+        if (goalResultCount() > baselineGoal) {
+          noticeMsg.value = '目标理解已完成（处理时间较长，结果已同步）。'
+        }
+        finishSuccess()
+      } else {
+        noticeMsg.value = '模型仍在处理中，请稍后刷新查看。'
+        finishIdle()
       }
       return
     }
-    errorMsg.value = mapped.message
-  } finally {
-    understanding.value = false
+    // 真实网络 / Provider 错误：先做一次以服务器为准的 reconcile，避免隐藏已持久化
+    // 的成功；服务器没有新业务事实时才展示错误（不能把所有错误都隐藏）。
+    setReconciling()
+    const serverFact = await reconcileOnce(baselineGoal, baselineError)
+    if (serverFact) {
+      finishSuccess()
+    } else {
+      finishError(mapped.message)
+    }
   }
 }
 
@@ -204,7 +341,7 @@ async function onSend(content: string): Promise<void> {
   try {
     await sendMessage(taskId.value, content)
     messages.value = (await getChat(taskId.value)).messages
-    void runUnderstand()
+    void runUnderstand('USER_SEND')
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -276,6 +413,12 @@ watch(
   () => route.query.approval,
   () => openApprovalDeepLink(),
 )
+
+onUnmounted(() => {
+  // 组件卸载：停止计时/轮询，避免旧 controller/定时器泄漏影响后续请求。
+  disposed = true
+  stopElapsedTimer()
+})
 </script>
 
 <template>
@@ -292,12 +435,9 @@ watch(
       />
       <p v-if="planning" class="muted">正在生成执行计划…</p>
       <PlanSummaryCard v-if="planSummary" :summary="planSummary" />
-      <CompletionCard
-        v-if="completionCard"
-        :card="completionCard"
-        :task-id="taskId"
-      />
+      <CompletionCard v-if="completionCard" :card="completionCard" :task-id="taskId" />
       <ChatMessageList :messages="messages" :loading="loading" />
+      <p v-if="understanding" class="muted understanding-status">{{ understandingText }}</p>
       <p v-if="errorMsg" class="chat__error">{{ errorMsg }}</p>
       <p v-if="noticeMsg" class="chat__notice">{{ noticeMsg }}</p>
     </div>
@@ -318,7 +458,7 @@ watch(
           type="button"
           class="ghost"
           :disabled="understanding"
-          @click="runUnderstand"
+          @click="runUnderstand('USER_REUNDERSTAND')"
         >
           {{ understanding ? '理解中…' : '重新理解' }}
         </button>
@@ -347,6 +487,10 @@ watch(
 }
 .chat__notice {
   color: #2e7d32;
+  font-size: 0.85rem;
+}
+.muted {
+  color: var(--color-text-muted, #777);
   font-size: 0.85rem;
 }
 .chat__footer {
