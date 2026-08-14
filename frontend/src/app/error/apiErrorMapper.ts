@@ -11,6 +11,8 @@ export type ApiErrorKind =
   | 'rate_limited'
   | 'service_unavailable'
   | 'network'
+  | 'client_timeout'
+  | 'request_aborted'
   | 'unknown'
 
 export interface MappedApiError {
@@ -38,6 +40,13 @@ const CODE_KIND: Record<string, ApiErrorKind> = {
   NETWORK_ERROR: 'provider',
 }
 
+/** 浏览器客户端错误（ApiClient 产生），优先于后端 code/status 判断。 */
+const CLIENT_CODE_KIND: Record<string, ApiErrorKind> = {
+  CLIENT_TIMEOUT: 'client_timeout',
+  CLIENT_NETWORK_ERROR: 'network',
+  CLIENT_ABORTED: 'request_aborted',
+}
+
 const STATUS_KIND: Record<number, ApiErrorKind> = {
   401: 'unauthenticated',
   404: 'not_found',
@@ -60,12 +69,16 @@ function actionFor(kind: ApiErrorKind): string | undefined {
   return undefined
 }
 
-/** 优先按后端稳定 code 映射，其次按 HTTP status，最后按网络失败（status 0）。 */
+/** 优先按客户端 code、后端稳定 code 映射，其次按 HTTP status，最后按网络失败（status 0）。 */
 export function mapApiError(error: unknown): MappedApiError {
   if (!isApiError(error)) {
     return { kind: 'unknown', message: error instanceof Error ? error.message : String(error) }
   }
 
+  const byClientCode = error.code ? CLIENT_CODE_KIND[error.code] : undefined
+  if (byClientCode) {
+    return { kind: byClientCode, message: error.detail, action: undefined }
+  }
   const byCode = error.code ? CODE_KIND[error.code] : undefined
   if (byCode) {
     return { kind: byCode, message: error.detail, action: actionFor(byCode) }

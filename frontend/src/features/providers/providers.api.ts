@@ -1,4 +1,4 @@
-import { apiClient } from '@/app/api/client'
+import { PROBE_REQUEST_TIMEOUT_MS, apiClient } from '@/app/api/client'
 
 export interface ProviderDefinitionDto {
   provider_type: string
@@ -126,7 +126,10 @@ export function replaceModelKey(configId: string, apiKey: string): Promise<Model
 }
 
 export function testModelConnection(configId: string): Promise<ProviderTestResultDto> {
-  return apiClient.post<ProviderTestResultDto>(`/providers/models/${configId}/test`)
+  // 连接测试会发起真实 provider 请求（backend 单次 ≤30s），使用明确的 Probe 超时。
+  return apiClient.post<ProviderTestResultDto>(`/providers/models/${configId}/test`, undefined, {
+    timeoutMs: PROBE_REQUEST_TIMEOUT_MS,
+  })
 }
 
 export function probeModel(body: {
@@ -135,7 +138,9 @@ export function probeModel(body: {
   base_url?: string
   model_name?: string
 }): Promise<ModelProbeResultDto> {
-  return apiClient.post<ModelProbeResultDto>('/providers/models/probe', body)
+  return apiClient.post<ModelProbeResultDto>('/providers/models/probe', body, {
+    timeoutMs: PROBE_REQUEST_TIMEOUT_MS,
+  })
 }
 
 export function listAvailableModels(body: {
@@ -144,7 +149,9 @@ export function listAvailableModels(body: {
   base_url?: string
   config_id?: string
 }): Promise<ModelCatalogResultDto> {
-  return apiClient.post<ModelCatalogResultDto>('/providers/models/catalog', body)
+  return apiClient.post<ModelCatalogResultDto>('/providers/models/catalog', body, {
+    timeoutMs: PROBE_REQUEST_TIMEOUT_MS,
+  })
 }
 
 export function setModelDefault(configId: string): Promise<ModelConfigDto> {
@@ -175,7 +182,9 @@ export function replaceSearchKey(configId: string, apiKey: string): Promise<Sear
 }
 
 export function testSearchConnection(configId: string): Promise<ProviderTestResultDto> {
-  return apiClient.post<ProviderTestResultDto>(`/providers/searches/${configId}/test`)
+  return apiClient.post<ProviderTestResultDto>(`/providers/searches/${configId}/test`, undefined, {
+    timeoutMs: PROBE_REQUEST_TIMEOUT_MS,
+  })
 }
 
 export function probeSearch(body: {
@@ -183,7 +192,9 @@ export function probeSearch(body: {
   api_key?: string
   base_url?: string
 }): Promise<SearchProbeResultDto> {
-  return apiClient.post<SearchProbeResultDto>('/providers/searches/probe', body)
+  return apiClient.post<SearchProbeResultDto>('/providers/searches/probe', body, {
+    timeoutMs: PROBE_REQUEST_TIMEOUT_MS,
+  })
 }
 
 export function deleteSearchConfig(configId: string): Promise<void> {
