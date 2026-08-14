@@ -58,8 +58,11 @@ echo "==> writing release manifest"
 # RELEASE_TAG=vX.Y.Z-<sha12> -> RELEASE_VERSION=vX.Y.Z, RELEASE_SHA=<sha12>
 RELEASE_VERSION="${RELEASE_TAG%-*}"
 RELEASE_SHA="${RELEASE_TAG##*-}"
+# migration head 从本地仓库推导（服务器非 build 机器），随 manifest 记录准确版本。
+MIGRATION_HEAD="${MIGRATION_HEAD:-$(ls "$ROOT"/backend/alembic/versions/*.py 2>/dev/null | sed -E 's|.*/([0-9]+)_.*\.py|\1|' | sort -n | tail -1)}"
 "${SSH[@]}" "cd /srv/kairos && REGISTRY=${REGISTRY} NAMESPACE=${NAMESPACE} \
     RELEASE_VERSION=${RELEASE_VERSION} RELEASE_SHA=${RELEASE_SHA} \
+    MIGRATION_HEAD=${MIGRATION_HEAD} \
     BACKUP_ID=${BACKUP_ID} PREVIOUS_RELEASE=${PREVIOUS_RELEASE} \
     ROLLBACK_TARGET=${ROLLBACK_TARGET} \
     bash /srv/kairos/scripts/release-manifest.sh" || fail "release manifest failed"
