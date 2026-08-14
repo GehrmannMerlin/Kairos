@@ -58,7 +58,8 @@ echo "==> writing release manifest"
 # RELEASE_TAG=vX.Y.Z-<sha12> -> RELEASE_VERSION=vX.Y.Z, RELEASE_SHA=<sha12>
 RELEASE_VERSION="${RELEASE_TAG%-*}"
 RELEASE_SHA="${RELEASE_TAG##*-}"
-"${SSH[@]}" "cd /srv/kairos && RELEASE_VERSION=${RELEASE_VERSION} RELEASE_SHA=${RELEASE_SHA} \
+"${SSH[@]}" "cd /srv/kairos && REGISTRY=${REGISTRY} NAMESPACE=${NAMESPACE} \
+    RELEASE_VERSION=${RELEASE_VERSION} RELEASE_SHA=${RELEASE_SHA} \
     BACKUP_ID=${BACKUP_ID} PREVIOUS_RELEASE=${PREVIOUS_RELEASE} \
     ROLLBACK_TARGET=${ROLLBACK_TARGET} \
     bash /srv/kairos/scripts/release-manifest.sh" || fail "release manifest failed"

@@ -13,9 +13,21 @@ MIG="${MIGRATION_HEAD:-0014}"
 DIR=/srv/kairos/releases
 mkdir -p "$DIR"
 OUT="$DIR/manifest-$VERSION.json"
-WEB_DIGEST="$(docker image inspect --format '{{.Id}}' "kairos-web:$VERSION-$SHA" 2>/dev/null || echo n/a)"
-API_DIGEST="$(docker image inspect --format '{{.Id}}' "kairos-api:$VERSION-$SHA" 2>/dev/null || echo n/a)"
-WORKER_DIGEST="$(docker image inspect --format '{{.Id}}' "kairos-worker:$VERSION-$SHA" 2>/dev/null || echo n/a)"
+
+# Images are pulled as <REGISTRY>/<NAMESPACE>/kairos-{web,api,worker}:<VERSION>-<SHA>.
+REGISTRY="${REGISTRY:-ghcr.io}"
+NAMESPACE="${NAMESPACE:-gehrmannmerlin}"
+
+_digest() {
+  local ref="$1" d
+  d="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)" || d=""
+  d="$(printf '%s' "$d" | tr -d '[:space:]')"  # strip any control/newline chars
+  printf '%s' "${d:-n/a}"
+}
+
+WEB_DIGEST="$(_digest "${REGISTRY}/${NAMESPACE}/kairos-web:${VERSION}-${SHA}")"
+API_DIGEST="$(_digest "${REGISTRY}/${NAMESPACE}/kairos-api:${VERSION}-${SHA}")"
+WORKER_DIGEST="$(_digest "${REGISTRY}/${NAMESPACE}/kairos-worker:${VERSION}-${SHA}")"
 BACKUP_ID="${BACKUP_ID:-not-yet}"
 PREVIOUS="${PREVIOUS_RELEASE:-none-first-release}"
 ROLLBACK="${ROLLBACK_TARGET:-none-first-release}"
