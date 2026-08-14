@@ -1198,3 +1198,17 @@
   - 编辑已有配置时 API Key 不可回读（显示「已配置」），未输入新 Key 不得清空旧 Key；输入新 Key 走既有 rotate / credential version 流程。
 - 影响：不替代 D-069 的 Model/Search 独立边界；未来新增 Brave / Serper / SerpAPI / Bing-compatible / Custom Search 只需在 Registry 注册，前端字段与校验自动适配。
 
+## D-075：模型 ID 必须来自 Provider 实时目录
+
+- 状态：已确认
+- 日期：2026-08-14
+- 维度：模型 Provider 配置交互、真实推理与错误前移
+- 决定：用户选择具体 Model Provider 后，Kairos 必须通过该 Provider 的官方模型目录接口取得当前可用模型 ID；「模型名称」使用下拉选择，不再允许自由文本输入。
+- 新增配置使用本次表单中的 write-only API Key 获取目录；已有配置通过 owner-scoped `config_id` 使用其当前 CredentialVersion，并且只允许 `CredentialVault.read_for_execution` 解密。
+- 已有 CredentialVersion 只能用于其原 Provider；编辑配置不得切换 Provider 并复用旧凭证。更换厂商必须新建配置，防止凭证被误发给另一厂商或自定义端点。
+- 保存后的「测试连接」必须验证所选模型仍存在于同一 Registry / Adapter / Base URL / Credential 解析链返回的目录中。仅 Provider 端点可达不能再标记为模型配置 `AVAILABLE`。
+- 模型目录加载失败时必须显示真实失败状态和重试入口；Production 禁止静默使用硬编码、样例或上次缓存的假模型列表。
+- Model Provider 与 Search Provider 保持分离；本决定不改变 Tavily 的使用阶段。
+- 原因：用户不应掌握或猜测厂商模型 ID。自由输入会让错误值通过浅层连接测试，并在真实 Goal Understanding 才失败。
+- 关联：D-029、D-051、D-066、D-069、D-073；M-03、M-06。
+
