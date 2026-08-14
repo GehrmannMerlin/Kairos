@@ -345,6 +345,38 @@ container source overwrite
 - 启用 BuildKit layer cache（`type=gha`）：dependency 未变化时只重新构建 application layer。
 - 仓库需开启 package write 权限（Settings → Actions → General → Workflow permissions 允许 GITHUB_TOKEN 写 packages），镜像默认私有。
 
+### 4A.4.1 GHCR 私有包 bootstrap 模式
+
+**背景**：`GITHUB_TOKEN` 从**公开仓库**发布到 GHCR 时，新建的包会按仓库可见性被创建为 **public**，且一旦 public 无法改回 private（GitHub 硬规则，已实测复现两次）。因此私有镜像必须走 bootstrap：
+
+```text
+首次：PAT classic（write:packages）手动 push 创建 PRIVATE 包 + 连接仓库
+      ↓
+长期：GitHub Actions GITHUB_TOKEN 基于仓库 linkage 持续写入同一 PRIVATE 包
+      （不重建包、不重置可见性）
+```
+
+步骤：
+
+1. **镜像 source label**：web/api/worker 的 `Dockerfile` 在末尾（EXPOSE 前）加
+   `LABEL org.opencontainers.image.source=https://github.com/GehrmannMerlin/Kairos`
+   （放在末尾避免使依赖层失效；仅元数据，不改变 runtime）。
+2. **一次性 bootstrap**：本机用 **PAT classic（仅 `write:packages` scope，短过期）**
+   `docker login ghcr.io` → 构建带 label 的 3 镜像 → `docker push ghcr.io/gehrmannmerlin/kairos-{web,api,worker}:<tag>`，
+   创建 **PRIVATE** 包。PAT 只经交互式 `docker login`，不进入 Git / 对话 / 日志 / Actions Secret。
+3. **连接仓库**：包页面 → `Connect repository` → 选择 `GehrmannMerlin/Kairos`；
+   然后 Package settings → **「Inherit access from repository (recommended)」** 开启
+   （或在 Manage Actions access → Add repository → 选仓库 → Role `Write`）。
+   否则 workflow 的 `GITHUB_TOKEN` 只有 `read_package`，push 会 403 `permission_denied: read_package`。
+4. **验证 GITHUB_TOKEN 续推**：触发 `ci-build-push.yml`（GITHUB_TOKEN），新 immutable tag push
+   必须成功，且包 **保持 PRIVATE**（匿名 `docker pull` 必须失败）。
+5. **撤销 bootstrap PAT**：续推验证通过后**立即撤销/删除** bootstrap 用 `write:packages` PAT。
+   bootstrap PAT 不得变成长期 Actions Secret，也不得作为部署凭据长期存在。
+6. **服务器 pull**：服务器使用**独立、最小权限** PAT classic（仅 `read:packages`，
+   不含 `write:packages`/`delete:packages`），交互式 `docker login ghcr.io`，凭据存
+   `/home/deploy/.docker/config.json`（0600），不进入 Git / 对话 / 日志。
+
+
 ### 4A.5 Dockerfile Layer 规则
 
 目标顺序：
