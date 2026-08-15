@@ -178,6 +178,9 @@ class PlanGenerationService:
             outcome.repair_used = True
         aggregate_audit = {
             "duration_ms": int((perf_counter() - started) * 1000),
+            "generation_attempt_ms": tuple(
+                int(attempt.get("generation_duration_ms", 0)) for attempt in attempt_audits
+            ),
             "generation_duration_ms": sum(
                 int(attempt.get("generation_duration_ms", 0)) for attempt in attempt_audits
             ),
