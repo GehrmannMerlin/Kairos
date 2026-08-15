@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.providers import errors
 from app.providers.transport import HttpResponse
 
 
@@ -33,5 +34,5 @@ class FakeHttpClient:
             }
         )
         if self._raise_network:
-            raise ConnectionError("boom")
+            raise errors.ProviderNetworkError("boom")
         return HttpResponse(status_code=self._status, body=self._body)

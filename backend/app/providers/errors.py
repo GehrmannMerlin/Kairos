@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 
 class ProviderError(Exception):
     code: str = "PROVIDER_ERROR"
@@ -44,10 +46,41 @@ class ProviderRateLimitedError(ProviderError):
     code = "RATE_LIMITED"
     status_code = 429
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+        self.request_id = request_id
+
 
 class ProviderNetworkError(ProviderError):
     code = "NETWORK_ERROR"
     status_code = 503
+
+
+class TimeoutPhase(StrEnum):
+    CONNECT = "connect"
+    READ = "read"
+    OVERALL = "overall"
+
+
+class ProviderTimeoutError(ProviderError):
+    code = "PROVIDER_TIMEOUT"
+    status_code = 504
+
+    def __init__(self, *, phase: TimeoutPhase) -> None:
+        self.phase = phase
+        super().__init__(f"provider timeout during {phase.value}")
+
+    def to_dict(self) -> dict[str, str]:
+        payload = super().to_dict()
+        payload["phase"] = self.phase.value
+        return payload
 
 
 class ProviderInferenceError(ProviderError):
