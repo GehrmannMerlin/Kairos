@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from app.agents.plan_generator import PlanGeneratorAgent
 from app.agents.plan_service import PlanGenerationService, PlanValidationFailure
+from app.domain.task_types import TaskType
 from app.providers import errors
 from app.providers.inference import InferenceResult, ModelInferenceClient
 from tests.plan.test_plan_generator import RESOLVED, _input
@@ -28,6 +29,18 @@ class RecordingSequenceInference(ModelInferenceClient):
         text = self._texts[min(self.calls, len(self._texts) - 1)]
         self.calls += 1
         return InferenceResult(text=text, provider_type="deepseek", duration_ms=1)
+
+
+def test_build_input_keeps_trusted_task_and_spec_identity() -> None:
+    service = PlanGenerationService(inference=RecordingSequenceInference([INVALID_PLAN_JSON]))
+    inp = service.build_input(
+        _input().spec_payload,
+        TaskType.SPECIFIED_SOURCE,
+        task_id=25,
+        spec_version=3,
+    )
+    assert inp.task_id == 25
+    assert inp.spec_version == 3
 
 
 @pytest.mark.asyncio

@@ -328,6 +328,26 @@ def validate_plan(
             node_risk_levels=node_risk_levels,
         )
 
+    # 已冻结来源模式也是执行输入契约：模型不能以 hints 或任意 URL 代替确定来源。
+    has_search_node = any(n.node_type == NodeType.SOURCE_SEARCH for n in graph.nodes)
+    seed_urls = spec_scope.get("seed_urls", []) if isinstance(spec_scope, dict) else []
+    if graph.task_type.value in ("EXPLORATORY", "HYBRID") and not has_search_node:
+        issues.append(
+            PlanValidationIssue(
+                code="SOURCE_SEARCH_REQUIRED",
+                message="探索或混合计划必须先解析来源",
+                path="nodes",
+            )
+        )
+    if graph.task_type.value == "SPECIFIED_SOURCE" and not seed_urls:
+        issues.append(
+            PlanValidationIssue(
+                code="EXECUTION_INPUT_UNMATERIALIZABLE",
+                message="指定来源计划缺少可物化的种子 URL",
+                path="source_scope.seed_urls",
+            )
+        )
+
     # 结构性问题 -> INVALID
     structural = [
         i
@@ -342,19 +362,21 @@ def validate_plan(
         )
 
     # 16. Provider prerequisites
-    if graph.task_type.value in ("EXPLORATORY", "HYBRID"):
-        has_search_node = any(n.node_type == NodeType.SOURCE_SEARCH for n in graph.nodes)
-        if has_search_node and not available_search:
-            issues.append(
-                PlanValidationIssue(
-                    code="SEARCH_PROVIDER_REQUIRED", message="探索/混合任务需要已配置的搜索服务"
-                )
+    if (
+        graph.task_type.value in ("EXPLORATORY", "HYBRID")
+        and has_search_node
+        and not available_search
+    ):
+        issues.append(
+            PlanValidationIssue(
+                code="SEARCH_PROVIDER_REQUIRED", message="探索/混合任务需要已配置的搜索服务"
             )
-            return PlanValidationOutcome(
-                result=PlanValidationResult.INVALID,
-                issues=issues,
-                node_risk_levels=node_risk_levels,
-            )
+        )
+        return PlanValidationOutcome(
+            result=PlanValidationResult.INVALID,
+            issues=issues,
+            node_risk_levels=node_risk_levels,
+        )
 
     # 15. HIGH -> REQUIRES_APPROVAL
     high = [nid for nid, risk in node_risk_levels.items() if risk == RiskLevel.HIGH]
