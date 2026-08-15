@@ -39,3 +39,4 @@ def test_run_and_spec_roundtrip(db, user, task) -> None:
     assert spec.version == 1
     assert run.state == "pending"
     assert node.state == "PENDING"
+    assert node.node_id is None  # Legacy rows remain compatible until lifecycle start wiring.
