@@ -217,6 +217,7 @@ async def generate_plan(
                             row=row,
                             prepared=prepared,
                             node_count=len(outcome.graph.nodes),
+                            preflight=preflight,
                         ),
                     ) from exc
                 except Exception:
@@ -297,7 +298,12 @@ async def start_persisted_plan(
         )
         raise PlanStartFailedError(
             "计划已保存，但工作流服务暂时不可用；可安全重试启动",
-            context=_persisted_plan_context(row=row, prepared=prepared, node_count=node_count),
+            context=_persisted_plan_context(
+                row=row,
+                prepared=prepared,
+                node_count=node_count,
+                preflight=preflight,
+            ),
         ) from exc
     except Exception:
         emit_lifecycle_event(

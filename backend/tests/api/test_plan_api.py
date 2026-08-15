@@ -296,6 +296,8 @@ def test_temporal_failure_persists_one_plan_and_pending_run(plan_client: dict) -
     assert detail["code"] == "PLAN_START_FAILED"
     assert detail["plan_version"] == 1
     assert detail["start_recoverable"] is True
+    assert detail["preflight_status"] == "READY"
+    assert detail["preflight_issues"] == []
     with plan_client["factory"]() as session:
         assert session.query(PlanVersion).filter_by(task_id=task_id).count() == 1
         runs = session.query(Run).filter_by(task_id=task_id).all()
