@@ -11,6 +11,7 @@ from app.agents.schemas import GoalUnderstandingResult
 from app.agents.service import GoalUnderstandingService
 from app.auth.deps import get_login_limiter
 from app.auth.rate_limit import InMemoryLoginLimiter
+from app.config import Settings, get_settings
 from app.credentials.repository import CredentialRepository
 from app.credentials.vault import CredentialVault
 from app.domain.task_types import TaskType
@@ -73,6 +74,10 @@ def _make_app(
     app = create_app()
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_login_limiter] = lambda: limiter
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        credential_master_key="00" * 32,
+        otel_enabled=False,
+    )
 
     if fake_result is not None or agent_override is not None:
 

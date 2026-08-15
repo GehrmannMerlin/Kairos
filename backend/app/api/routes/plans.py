@@ -24,6 +24,7 @@ from app.api.schemas import (
 )
 from app.auth.deps import require_user
 from app.auth.models import User
+from app.config import Settings, get_settings
 from app.domain.errors import DomainError, StaleVersionError
 from app.domain.repository import PlanVersionRepository, SpecVersionRepository, TaskRepository
 from app.infra.deps import get_db
@@ -41,9 +42,13 @@ router = APIRouter(prefix="/tasks", tags=["plans"])
 def get_plan_generation_service(
     provider_service: ProviderService = Depends(get_provider_service),
     vault: Any = Depends(get_credential_vault),
+    settings: Settings = Depends(get_settings),
 ) -> PlanGenerationService:
     return PlanGenerationService(
-        provider_service=provider_service, vault=vault, registry=NodeRegistry()
+        provider_service=provider_service,
+        vault=vault,
+        registry=NodeRegistry(),
+        settings=settings,
     )
 
 

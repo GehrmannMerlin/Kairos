@@ -12,13 +12,19 @@ Chat error instead of a bare 500.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
+from typing import TYPE_CHECKING, Any
 
 from app.providers import errors
-from app.providers.protocol import ResolvedModel
+from app.providers.inference_policy import InferenceIntent, resolve_inference_policy
+from app.providers.protocol import ProviderDefinition, ResolvedModel
 from app.providers.transport import HttpClient, HttpxTransport
 from app.reliability.provider_limit import ProviderLimiter
+
+if TYPE_CHECKING:
+    from app.config import Settings
 
 ANTHROPIC_VERSION = "2023-06-01"
 # Provider 有界推理超时默认值；实际值由 KAIROS_PROVIDER_INFERENCE_TIMEOUT_SECONDS
@@ -51,13 +57,23 @@ def _map_http_error(http_status: int) -> errors.ProviderError:
 class ModelInferenceClient:
     def __init__(
         self,
+        *,
+        intent: InferenceIntent,
+        settings: Settings | None = None,
         http: HttpClient | None = None,
         timeout_seconds: float | None = None,
         retry_base_delay_seconds: float = 2.0,
+        definition_resolver: Callable[[str], ProviderDefinition] | None = None,
     ) -> None:
+        from app.config import get_settings
+        from app.providers.registry import get_model_definition
+
+        self._intent = intent
+        self._settings = settings or get_settings()
         self._http = http or HttpxTransport()
-        self._timeout = timeout_seconds or _DEFAULT_TIMEOUT_SECONDS
+        self._timeout = timeout_seconds if timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS
         self._retry_base_delay = retry_base_delay_seconds
+        self._definition_resolver = definition_resolver or get_model_definition
 
     async def generate(
         self,
@@ -85,7 +101,6 @@ class ModelInferenceClient:
     async def _dispatch_with_retry(
         self, resolved: ResolvedModel, api_key: str | None, system: str, user: str
     ) -> str:
-        from app.config import get_settings
         from app.reliability.capacity import capacity_from_settings
         from app.reliability.errors import classify_provider_error
         from app.reliability.provider_limit import (
@@ -94,7 +109,7 @@ class ModelInferenceClient:
             call_with_provider_retry,
         )
 
-        cap = capacity_from_settings(get_settings())
+        cap = capacity_from_settings(self._settings)
         key = ThrottleKey(
             family=resolved.provider_type,
             config_id=resolved.credential_version_id or 0,
@@ -137,14 +152,21 @@ class ModelInferenceClient:
         headers = {"Content-Type": "application/json"}
         if resolved.provider_type != "ollama" and api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        body = {
+        body: dict[str, Any] = {
             "model": resolved.model_name,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "response_format": {"type": "json_object"},
         }
+        definition = self._definition_resolver(resolved.provider_type)
+        policy = resolve_inference_policy(intent=self._intent, capability=definition.capability)
+        if policy.response_format is not None:
+            body["response_format"] = policy.response_format
+        if policy.thinking is not None:
+            body["thinking"] = policy.thinking
+        if policy.max_tokens is not None:
+            body["max_tokens"] = policy.max_tokens
         resp = await self._http.request(
             method="POST",
             url=f"{base}/chat/completions",

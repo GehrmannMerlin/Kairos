@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.agents.plan_generator import PlanGeneratorAgent, PlanInput
 from app.auth.models import User
@@ -22,6 +22,10 @@ from app.providers.inference import ModelInferenceClient
 from app.providers.protocol import ResolvedModel
 from app.providers.registry import build_model_provider
 from app.providers.service import ProviderService
+from app.providers.transport import HttpClient
+
+if TYPE_CHECKING:
+    from app.config import Settings
 
 
 @dataclass
@@ -41,11 +45,20 @@ class PlanGenerationService:
         vault: Any = None,
         registry: NodeRegistry | None = None,
         inference: ModelInferenceClient | None = None,
+        settings: Settings | None = None,
+        http: HttpClient | None = None,
+        agent: PlanGeneratorAgent | None = None,
     ) -> None:
+        from app.config import get_settings
+
         self._provider = provider_service
         self._vault = vault
         self._registry = registry or NodeRegistry()
-        self._agent = PlanGeneratorAgent(inference=inference or ModelInferenceClient())
+        self._agent = agent or PlanGeneratorAgent(
+            inference=inference,
+            settings=settings or get_settings(),
+            http=http,
+        )
 
     def _resolve_model(self, user: User) -> tuple[ResolvedModel, str | None, Any]:
         if self._provider is None or self._vault is None:
