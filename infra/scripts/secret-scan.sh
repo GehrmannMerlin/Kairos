@@ -20,6 +20,10 @@ trap 'rm -f "$TMP"' EXIT
 refine() {  # refine <label>  从 stdin 读候选行
   local label="$1" line val
   while IFS= read -r line; do
+    # 文档可能原样引用本扫描器；正则定义本身包含 KEY=<pattern>，不是凭据赋值。
+    if printf '%s' "$line" | grep -Eq 'grep[[:space:]]+-Eiq.*KAIROS_CREDENTIAL_MASTER_KEY='; then
+      continue
+    fi
     # 值形如裸标识符（api_key: str / password: password.value）→ 变量引用/类型标注，跳过
     # 去掉 grep -Hn 的 "path:line:" 前缀，再取 "name=value" 的 value
     val="$(printf '%s' "$line" | sed -E 's/^[^:]*:[0-9]+:[[:space:]]*//; s/^[^=:]*[=:][[:space:]]*//; s/[[:space:],;)]+$//')"
