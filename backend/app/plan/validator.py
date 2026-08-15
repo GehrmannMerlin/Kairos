@@ -242,9 +242,7 @@ def validate_plan(
                                 f"{edge.from_node_id} 流向 {edge.to_node_id}"
                             ),
                             node_id=edge.to_node_id,
-                            path=(
-                                f"edges.{edge.from_node_id}->{edge.to_node_id}.resource_refs"
-                            ),
+                            path=(f"edges.{edge.from_node_id}->{edge.to_node_id}.resource_refs"),
                             edge_from_node_id=edge.from_node_id,
                             edge_to_node_id=edge.to_node_id,
                             resource_kind=ref.kind.value,
