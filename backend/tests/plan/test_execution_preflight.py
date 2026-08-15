@@ -15,7 +15,12 @@ from app.domain.models import CollectionSpecVersion, ExecutionPreflightResult, P
 from app.domain.repository import PlanVersionRepository, SpecVersionRepository, TaskRepository
 from app.domain.task_types import TaskType
 from app.plan.nodes import NodeType
-from app.plan.preflight import ExecutionPreflightService, ExecutionPreflightStatus
+from app.plan.preflight import (
+    ExecutionPreflightOutcome,
+    ExecutionPreflightService,
+    ExecutionPreflightStatus,
+)
+from app.plan.preflight_repository import ExecutionPreflightRepository
 from app.providers.repository import SearchConfigRepository
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -228,6 +233,125 @@ def test_preflight_is_idempotent_per_frozen_versions_and_manifest(preflight_case
     assert first.created is True
     assert second.created is False
     assert preflight_case.db.scalar(select(func.count(ExecutionPreflightResult.id))) == 1
+
+
+def test_reused_preflight_returns_the_immutable_persisted_winner(preflight_case):
+    kwargs = {
+        "user_id": preflight_case.user.id,
+        "task_id": preflight_case.task.id,
+        "spec_version": preflight_case.spec.version,
+        "plan_version": preflight_case.plan.version,
+    }
+    blocked_settings = preflight_case.settings.model_copy(update={"s3_bucket": ""})
+    first = ExecutionPreflightService(preflight_case.db, settings=blocked_settings).evaluate(
+        **kwargs
+    )
+    second = ExecutionPreflightService(
+        preflight_case.db, settings=preflight_case.settings
+    ).evaluate(**kwargs)
+    assert first.status is ExecutionPreflightStatus.BLOCKED
+    assert second.created is False
+    assert second.result_id == first.result_id
+    assert second.status is first.status
+    assert second.issue_codes == first.issue_codes
+    assert second.search_config_id == first.search_config_id
+    assert second.search_config_version == first.search_config_version
+    assert second.capability_manifest_version == first.capability_manifest_version
+
+
+@pytest.mark.parametrize(
+    ("model_config_id", "model_config_version"),
+    [("frozen-model", None), (None, 1)],
+)
+def test_half_populated_frozen_model_identity_is_blocked(
+    preflight_case, model_config_id, model_config_version
+):
+    case = _case(preflight_case.db)
+    case.plan.model_config_id = model_config_id
+    case.plan.model_config_version = model_config_version
+    case.db.commit()
+    outcome = case.service.evaluate(
+        user_id=case.user.id,
+        task_id=case.task.id,
+        spec_version=case.spec.version,
+        plan_version=case.plan.version,
+    )
+    assert "FROZEN_CONFIG_UNAVAILABLE" in outcome.issue_codes
+
+
+def test_preflight_insert_does_not_commit_unrelated_pending_work(preflight_case):
+    pending = Task(
+        user_id=preflight_case.user.id,
+        title="must remain uncommitted",
+        task_type=TaskType.SPECIFIED_SOURCE.value,
+    )
+    preflight_case.db.add(pending)
+    outcome = preflight_case.service.evaluate(
+        user_id=preflight_case.user.id,
+        task_id=preflight_case.task.id,
+        spec_version=preflight_case.spec.version,
+        plan_version=preflight_case.plan.version,
+    )
+    assert outcome.created is True
+    assert pending.id is not None
+
+    other = Session(bind=preflight_case.db.get_bind(), expire_on_commit=False)
+    try:
+        assert other.get(Task, pending.id) is None
+    finally:
+        other.close()
+        preflight_case.db.rollback()
+
+
+def test_integrity_recovery_reloads_winner_and_keeps_session_usable(preflight_case, monkeypatch):
+    outcome = ExecutionPreflightOutcome(
+        status=ExecutionPreflightStatus.READY,
+        task_id=preflight_case.task.id,
+        spec_version=preflight_case.spec.version,
+        plan_version=preflight_case.plan.version,
+        capability_manifest_version="controlled-race-v1",
+        issues=[],
+    )
+    other = Session(bind=preflight_case.db.get_bind(), expire_on_commit=False)
+    try:
+        winner = ExecutionPreflightResult(
+            task_id=outcome.task_id,
+            user_id=preflight_case.user.id,
+            spec_version=outcome.spec_version,
+            plan_version=outcome.plan_version,
+            capability_manifest_version=outcome.capability_manifest_version,
+            status=outcome.status.value,
+            issues=[],
+        )
+        other.add(winner)
+        other.commit()
+
+        repository = ExecutionPreflightRepository(preflight_case.db)
+        original_find = repository._find_existing
+        calls = 0
+
+        def first_lookup_misses(candidate):
+            nonlocal calls
+            calls += 1
+            return None if calls == 1 else original_find(candidate)
+
+        monkeypatch.setattr(repository, "_find_existing", first_lookup_misses)
+        recovered, created = repository.get_or_create(outcome)
+
+        assert created is False
+        assert recovered.id == winner.id
+        assert preflight_case.db.scalar(select(Task.id).where(Task.id == preflight_case.task.id))
+        preflight_case.db.add(
+            Task(
+                user_id=preflight_case.user.id,
+                title="session remains usable",
+                task_type=TaskType.SPECIFIED_SOURCE.value,
+            )
+        )
+        preflight_case.db.flush()
+    finally:
+        preflight_case.db.rollback()
+        other.close()
 
 
 def test_unavailable_queue_route_is_blocked(preflight_case):
