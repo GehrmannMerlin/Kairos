@@ -8,7 +8,7 @@ from app.agents.plan_service import PlanGenerationService, PlanValidationFailure
 from app.domain.task_types import TaskType
 from app.providers import errors
 from app.providers.inference import InferenceResult, ModelInferenceClient
-from tests.plan.test_plan_generator import RESOLVED, _input
+from tests.plan.test_plan_generator import RESOLVED, VALID_PLAN_JSON, _input
 
 INVALID_PLAN_JSON = (
     '{"schema_version":"m08.1","task_id":1,"spec_version":1,'
@@ -41,6 +41,13 @@ def test_build_input_keeps_trusted_task_and_spec_identity() -> None:
     )
     assert inp.task_id == 25
     assert inp.spec_version == 3
+
+
+@pytest.mark.asyncio
+async def test_service_validates_the_trusted_task_type_not_the_model_task_type() -> None:
+    service = PlanGenerationService(inference=RecordingSequenceInference([VALID_PLAN_JSON]))
+    outcome = await service._run_with_graph(_input().spec_payload, _input(), RESOLVED)
+    assert outcome.graph.task_type is TaskType.SPECIFIED_SOURCE
 
 
 @pytest.mark.asyncio

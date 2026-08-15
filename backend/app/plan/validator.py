@@ -30,6 +30,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.discovery.url import canonical_url
 from app.plan.nodes import NodeRegistry, NodeType, RiskLevel
 from app.plan.schemas import (
     PlanGraphDraft,
@@ -51,6 +52,94 @@ def _host_of(url: str) -> str:
 
     parsed = urlparse(url)
     return (parsed.hostname or "").lower()
+
+
+def _materializable_seed_urls(raw_seed_urls: Any) -> list[str]:
+    """Return canonical literal HTTP(S) seeds without mutating frozen Spec payloads."""
+    if not isinstance(raw_seed_urls, list):
+        return []
+    materializable: list[str] = []
+    for raw_url in raw_seed_urls:
+        if not isinstance(raw_url, str) or "{" in raw_url or "}" in raw_url:
+            continue
+        try:
+            materializable.append(canonical_url(raw_url))
+        except ValueError:
+            continue
+    return materializable
+
+
+def _depends_on_source_search(
+    node_id: str, *, source_node_ids: set[str], nodes_by_id: dict[str, Any]
+) -> bool:
+    """Check transitive ``depends_on`` ancestry, the graph's execution ordering relation."""
+    pending = list(nodes_by_id[node_id].depends_on)
+    visited: set[str] = set()
+    while pending:
+        dependency = pending.pop()
+        if dependency in source_node_ids:
+            return True
+        if dependency in visited:
+            continue
+        visited.add(dependency)
+        parent = nodes_by_id.get(dependency)
+        if parent is not None:
+            pending.extend(parent.depends_on)
+    return False
+
+
+def _source_invariant_issues(
+    graph: PlanGraphDraft, spec_scope: dict[str, Any], registry: NodeRegistry
+) -> list[PlanValidationIssue]:
+    """Validate frozen-source materialization and search-first execution ancestry."""
+    issues: list[PlanValidationIssue] = []
+    if graph.task_type.value == "SPECIFIED_SOURCE":
+        if not _materializable_seed_urls(spec_scope.get("seed_urls")):
+            issues.append(
+                PlanValidationIssue(
+                    code="EXECUTION_INPUT_UNMATERIALIZABLE",
+                    message="指定来源计划缺少可物化的种子 URL",
+                    path="source_scope.seed_urls",
+                )
+            )
+        return issues
+
+    if graph.task_type.value not in ("EXPLORATORY", "HYBRID"):
+        return issues
+
+    source_node_ids = {
+        node.node_id for node in graph.nodes if node.node_type == NodeType.SOURCE_SEARCH
+    }
+    if not source_node_ids:
+        return [
+            PlanValidationIssue(
+                code="SOURCE_SEARCH_REQUIRED",
+                message="探索或混合计划必须先解析来源",
+                path="nodes",
+            )
+        ]
+
+    nodes_by_id = {node.node_id: node for node in graph.nodes}
+    unsearched_consumers = [
+        node
+        for node in graph.nodes
+        if node.node_id not in source_node_ids
+        and (definition := registry.get(node.node_type)) is not None
+        and any(resource.value != "spec" for resource in definition.input_contract)
+        and not _depends_on_source_search(
+            node.node_id, source_node_ids=source_node_ids, nodes_by_id=nodes_by_id
+        )
+    ]
+    if unsearched_consumers:
+        issues.append(
+            PlanValidationIssue(
+                code="SOURCE_SEARCH_REQUIRED",
+                message="探索或混合计划的资源消费路径必须依赖来源搜索",
+                node_id=unsearched_consumers[0].node_id,
+                path="nodes",
+            )
+        )
+    return issues
 
 
 def _node_effective_risk(
@@ -319,6 +408,16 @@ def validate_plan(
             node_risk_levels=node_risk_levels,
         )
 
+    has_search_node = any(n.node_type == NodeType.SOURCE_SEARCH for n in graph.nodes)
+    source_issues = _source_invariant_issues(graph, spec_scope, registry)
+    if source_issues:
+        issues.extend(source_issues)
+        return PlanValidationOutcome(
+            result=PlanValidationResult.INVALID,
+            issues=issues,
+            node_risk_levels=node_risk_levels,
+        )
+
     # 11-13. Spec boundary 优先于 Approval
     if spec_boundary_issues:
         issues.extend(spec_boundary_issues)
@@ -326,26 +425,6 @@ def validate_plan(
             result=PlanValidationResult.REQUIRES_NEW_SPEC,
             issues=issues,
             node_risk_levels=node_risk_levels,
-        )
-
-    # 已冻结来源模式也是执行输入契约：模型不能以 hints 或任意 URL 代替确定来源。
-    has_search_node = any(n.node_type == NodeType.SOURCE_SEARCH for n in graph.nodes)
-    seed_urls = spec_scope.get("seed_urls", []) if isinstance(spec_scope, dict) else []
-    if graph.task_type.value in ("EXPLORATORY", "HYBRID") and not has_search_node:
-        issues.append(
-            PlanValidationIssue(
-                code="SOURCE_SEARCH_REQUIRED",
-                message="探索或混合计划必须先解析来源",
-                path="nodes",
-            )
-        )
-    if graph.task_type.value == "SPECIFIED_SOURCE" and not seed_urls:
-        issues.append(
-            PlanValidationIssue(
-                code="EXECUTION_INPUT_UNMATERIALIZABLE",
-                message="指定来源计划缺少可物化的种子 URL",
-                path="source_scope.seed_urls",
-            )
         )
 
     # 结构性问题 -> INVALID

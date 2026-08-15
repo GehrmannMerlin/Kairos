@@ -20,7 +20,7 @@ RESOLVED = ResolvedModel("deepseek", "deepseek-chat", None, None)
 
 VALID_PLAN_JSON = (
     '{"schema_version":"m08.1","task_id":1,"spec_version":1,'
-    '"task_type":"SPECIFIED_SOURCE",'
+    '"task_type":"EXPLORATORY",'
     '"nodes":['
     '{"node_id":"n1","node_type":"fetch","definition_version":"1.0.0",'
     '"parameters":{"url_template":"https://example.com/item/{id}"},"depends_on":[],"optional":false,"fail_policy":"block"},'
@@ -84,12 +84,12 @@ async def test_generator_returns_typed_plan() -> None:
 async def test_plan_identity_is_canonicalized_from_command_context() -> None:
     agent = PlanGeneratorAgent(inference=FakeInference(VALID_PLAN_JSON))
     inp = _input().model_copy(
-        update={"task_id": 25, "spec_version": 3, "task_type": TaskType.SPECIFIED_SOURCE}
+        update={"task_id": 25, "spec_version": 3, "task_type": TaskType.HYBRID}
     )
     graph = await agent.generate(inp, RESOLVED, api_key=None)
     assert graph.task_id == 25
     assert graph.spec_version == 3
-    assert graph.task_type is TaskType.SPECIFIED_SOURCE
+    assert graph.task_type is TaskType.HYBRID
 
 
 @pytest.mark.asyncio
@@ -116,6 +116,9 @@ async def test_generator_prompt_teaches_pipeline_order() -> None:
     assert "link_discovery" in fake.system_seen
     assert "fetch" in fake.system_seen
     assert "output_contract" in fake.system_seen
+    assert "EXPLORATORY 和 HYBRID 必须以 source_search 开始" in fake.system_seen
+    assert "SPECIFIED_SOURCE 必须消费冻结的 seed_urls" in fake.system_seen
+    assert "绝不从 source_hints 虚构 URL" in fake.system_seen
 
 
 @pytest.mark.asyncio
