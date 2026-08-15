@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Sequence
 from typing import Final
@@ -33,6 +34,33 @@ _ALLOWED_FIELDS: Final = frozenset(
 )
 _SCALAR_TYPES = (str, int, float, bool)
 _LOGGER = logging.getLogger("kairos.inference_lifecycle")
+
+
+class _LifecycleJsonFormatter(logging.Formatter):
+    """Render only the registered event name and allowlisted lifecycle fields."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {"event_name": record.event_name}  # type: ignore[attr-defined]
+        for name in sorted(_ALLOWED_FIELDS):
+            if hasattr(record, name):
+                value = getattr(record, name)
+                payload[name] = list(value) if isinstance(value, tuple) else value
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _configure_lifecycle_logger() -> None:
+    if not any(getattr(handler, "_kairos_lifecycle", False) for handler in _LOGGER.handlers):
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(_LifecycleJsonFormatter())
+        handler._kairos_lifecycle = True  # type: ignore[attr-defined]
+        _LOGGER.addHandler(handler)
+    _LOGGER.setLevel(logging.INFO)
+    # The dedicated formatter is the security boundary; do not duplicate the raw record upstream.
+    _LOGGER.propagate = False
+
+
+_configure_lifecycle_logger()
 
 
 def _normalize_field(name: str, value: object) -> object:

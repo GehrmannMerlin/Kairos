@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 
 import pytest
 from app.agents.plan_generator import PlanInput
@@ -81,6 +83,17 @@ def _event_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [record for record in caplog.records if hasattr(record, "event_name")]
 
 
+@pytest.fixture
+def lifecycle_caplog(caplog: pytest.LogCaptureFixture):
+    logger = logging.getLogger("kairos.inference_lifecycle")
+    caplog.handler.setLevel(logging.INFO)
+    logger.addHandler(caplog.handler)
+    try:
+        yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
+
+
 def _assert_safe(records: list[logging.LogRecord]) -> None:
     for record in records:
         payload = {
@@ -111,23 +124,53 @@ def _assert_safe(records: list[logging.LogRecord]) -> None:
 
 
 def test_helper_emits_exact_event_names_and_rejects_unknown_fields(
-    caplog: pytest.LogCaptureFixture,
+    lifecycle_caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="kairos.inference_lifecycle")
-
     for event_name in LIFECYCLE_EVENTS:
         emit_lifecycle_event(event_name, elapsed_ms=1)
 
-    assert [record.event_name for record in _event_records(caplog)] == list(LIFECYCLE_EVENTS)
+    assert [record.event_name for record in _event_records(lifecycle_caplog)] == list(
+        LIFECYCLE_EVENTS
+    )
     with pytest.raises(ValueError, match="not allowlisted"):
         emit_lifecycle_event("inference.started", prompt=PROMPT)
 
 
+def test_lifecycle_event_is_rendered_to_stderr_as_safe_json() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from app.providers.inference_telemetry import emit_lifecycle_event; "
+                "emit_lifecycle_event('plan.validation_finished', elapsed_ms=7, "
+                "response_status='VALID', "
+                "issue_codes=('RESOURCE_EDGE_INCOMPATIBLE',))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    rendered = result.stderr.strip()
+    assert rendered
+    payload = json.loads(rendered.splitlines()[-1])
+    assert payload == {
+        "elapsed_ms": 7,
+        "event_name": "plan.validation_finished",
+        "issue_codes": ["RESOURCE_EDGE_INCOMPATIBLE"],
+        "response_status": "VALID",
+    }
+    serialized = json.dumps(payload, ensure_ascii=False).lower()
+    assert SECRET.lower() not in serialized
+    assert PROMPT.lower() not in serialized
+
+
 @pytest.mark.asyncio
 async def test_inference_success_and_failure_emit_safe_attempt_events(
-    caplog: pytest.LogCaptureFixture,
+    lifecycle_caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="kairos.inference_lifecycle")
     success = _client(
         _SequencedHttpClient(
             [HttpResponse(200, {"choices": [{"message": {"content": '{"ok":true}'}}]})]
@@ -142,7 +185,7 @@ async def test_inference_success_and_failure_emit_safe_attempt_events(
     with pytest.raises(errors.ProviderTimeoutError):
         await failure.generate(resolved=_resolved(), api_key=SECRET, system=PROMPT, user=PROMPT)
 
-    records = _event_records(caplog)
+    records = _event_records(lifecycle_caplog)
     assert [record.event_name for record in records] == [
         "inference.started",
         "inference.attempt_finished",
@@ -156,9 +199,8 @@ async def test_inference_success_and_failure_emit_safe_attempt_events(
 
 @pytest.mark.asyncio
 async def test_plan_validation_emits_issue_codes_without_graph(
-    caplog: pytest.LogCaptureFixture,
+    lifecycle_caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="kairos.inference_lifecycle")
     service = PlanGenerationService(registry=NodeRegistry(), agent=_StaticPlanAgent())
     inp = PlanInput(
         spec_payload={},
@@ -169,7 +211,7 @@ async def test_plan_validation_emits_issue_codes_without_graph(
 
     await service._run_with_graph({}, inp, _resolved(), api_key=SECRET)
 
-    records = _event_records(caplog)
+    records = _event_records(lifecycle_caplog)
     assert [record.event_name for record in records] == ["plan.validation_finished"]
     assert isinstance(records[0].issue_codes, tuple)
     _assert_safe(records)
