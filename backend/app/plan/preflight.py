@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session as DbSession
 from app.auth.errors import NotFoundError
 from app.config import Settings
 from app.credentials.models import ModelConfig, SearchConfig
-from app.domain.models import CollectionSpecVersion, PlanVersion, Task
+from app.domain.models import CollectionSpecVersion, ExecutionPreflightResult, PlanVersion, Task
 from app.domain.spec import validate_confirmable_spec_payload
 from app.domain.task_types import TaskType
 from app.plan.capabilities import (
@@ -152,7 +152,25 @@ class ExecutionPreflightService:
             search_config_version=search.version if search is not None else None,
         )
         row, created = self._repository.get_or_create(outcome)
-        return outcome.model_copy(update={"result_id": row.id, "created": created})
+        return self._outcome_from_persisted_result(row, created=created)
+
+    @staticmethod
+    def _outcome_from_persisted_result(
+        row: ExecutionPreflightResult, *, created: bool
+    ) -> ExecutionPreflightOutcome:
+        """Return the immutable persisted fact, never a newly computed candidate."""
+        return ExecutionPreflightOutcome(
+            result_id=row.id,
+            created=created,
+            status=ExecutionPreflightStatus(row.status),
+            task_id=row.task_id,
+            spec_version=row.spec_version,
+            plan_version=row.plan_version,
+            capability_manifest_version=row.capability_manifest_version,
+            issues=[PreflightIssue.model_validate(issue) for issue in row.issues],
+            search_config_id=row.search_config_id,
+            search_config_version=row.search_config_version,
+        )
 
     def _load_owned_frozen_inputs(
         self, *, user_id: int, task_id: int, spec_version: int, plan_version: int
@@ -213,8 +231,10 @@ class ExecutionPreflightService:
         return self._search_configs.get_first_available(user_id)
 
     def _frozen_model_config_available(self, user_id: int, plan: PlanVersion) -> bool:
-        if plan.model_config_id is None or plan.model_config_version is None:
+        if plan.model_config_id is None and plan.model_config_version is None:
             return True
+        if plan.model_config_id is None or plan.model_config_version is None:
+            return False
         row = self._db.scalar(
             select(ModelConfig).where(
                 ModelConfig.user_id == user_id,

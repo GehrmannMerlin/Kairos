@@ -52,8 +52,6 @@ class ExecutionPreflightRepository:
                 raise
             return existing, False
 
-        self._db.commit()
-        self._db.refresh(row)
         return row, True
 
     def _find_existing(self, outcome: ExecutionPreflightOutcome) -> ExecutionPreflightResult | None:
