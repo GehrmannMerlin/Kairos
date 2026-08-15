@@ -9,7 +9,7 @@ from app.agents.plan_service import PlanGenerationService
 from app.auth.deps import get_login_limiter
 from app.auth.rate_limit import InMemoryLoginLimiter
 from app.config import Settings, get_settings
-from app.domain.models import PlanVersion, Run
+from app.domain.models import DomainEvent, PlanVersion, Run
 from app.domain.spec import SpecDraftPayload
 from app.domain.task_types import TaskType
 from app.infra.db import Base
@@ -89,13 +89,15 @@ def plan_client(tmp_path) -> dict:
     state = {
         "temporal_mode": "success",
         "plan_lifecycle_timeout_seconds": 105.0,
+        "s3_endpoint": "localhost:9000",
     }
     temporal = _FakeTemporalClient(state)
     app = create_app()
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_login_limiter] = lambda: limiter
     app.dependency_overrides[get_settings] = lambda: Settings(
-        plan_lifecycle_timeout_seconds=state["plan_lifecycle_timeout_seconds"]
+        plan_lifecycle_timeout_seconds=state["plan_lifecycle_timeout_seconds"],
+        s3_endpoint=state["s3_endpoint"],
     )
 
     def _override_generation():
@@ -168,6 +170,8 @@ def test_plan_generate_persists_and_returns_summary(plan_client: dict, caplog) -
     assert body["validation_status"] in ("VALID", "REQUIRES_APPROVAL")
     assert body["run_state"] == "pending"
     assert body["start_recoverable"] is False
+    assert body["preflight_status"] == "READY"
+    assert body["preflight_issues"] == []
     lifecycle_events = [
         record.event_name for record in caplog.records if hasattr(record, "event_name")
     ]
@@ -179,6 +183,51 @@ def test_plan_generate_persists_and_returns_summary(plan_client: dict, caplog) -
     assert summary.status_code == 200
     assert summary.json()["node_count"] == 2
     assert summary.json()["validation_status"] == body["validation_status"]
+    assert summary.json()["preflight_status"] == "READY"
+    with plan_client["factory"]() as session:
+        assert (
+            session.query(DomainEvent)
+            .filter(DomainEvent.aggregate_id == task_id)
+            .filter(DomainEvent.event_type == "task.execution_preflight_ready")
+            .count()
+            == 1
+        )
+
+
+def test_plan_persists_but_does_not_start_when_preflight_blocks(plan_client: dict) -> None:
+    """A missing execution dependency blocks before a Run or Temporal RPC exists."""
+    c = plan_client["client"]
+    _register(c, "preflight-blocked@example.com")
+    task_id = c.post("/api/tasks", json={"content": "抓取网站"}).json()["task_id"]
+    spec_version = _confirmed_spec(c, task_id)
+
+    plan_client["state"]["s3_endpoint"] = ""
+
+    response = c.post(
+        f"/api/tasks/{task_id}/plan",
+        json={"spec_version": spec_version, "expected_version": 2},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "EXECUTION_PREFLIGHT_BLOCKED"
+    assert detail["preflight_status"] == "BLOCKED"
+    assert detail["preflight_issues"][0]["code"] == "ARTIFACT_STORAGE_UNAVAILABLE"
+    assert plan_client["temporal"].calls == []
+
+    retry = c.post(f"/api/tasks/{task_id}/plans/1/start")
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["code"] == "EXECUTION_PREFLIGHT_BLOCKED"
+    with plan_client["factory"]() as session:
+        assert session.query(PlanVersion).filter_by(task_id=task_id).count() == 1
+        assert session.query(Run).filter_by(task_id=task_id).count() == 0
+        events = (
+            session.query(DomainEvent)
+            .filter(DomainEvent.aggregate_id == task_id)
+            .filter(DomainEvent.event_type == "task.execution_preflight_blocked")
+            .all()
+        )
+        assert len(events) == 1
 
 
 def test_plan_persists_command_owned_identity_over_model_identity(plan_client: dict) -> None:
@@ -226,6 +275,7 @@ def test_plan_owner_isolation(plan_client: dict) -> None:
 
     _register(c, "bob@example.com")
     assert c.get(f"/api/tasks/{task_id}/plans/1").status_code == 404
+    assert c.post(f"/api/tasks/{task_id}/plans/1/start").status_code == 404
 
 
 def test_temporal_failure_persists_one_plan_and_pending_run(plan_client: dict) -> None:
@@ -276,6 +326,7 @@ def test_start_only_retry_reuses_pending_run(plan_client: dict) -> None:
     assert first.json()["run_id"] == run_id
     assert second.json()["run_id"] == run_id
     assert first.json()["workflow_id"] == f"task-workflow-{task_id}"
+    assert first.json()["preflight_status"] == "READY"
     with plan_client["factory"]() as session:
         assert session.query(Run).filter_by(task_id=task_id).count() == 1
 
