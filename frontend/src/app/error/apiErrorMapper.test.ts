@@ -32,9 +32,9 @@ describe('mapApiError', () => {
   })
 
   it('maps network failure', () => {
-    expect(mapApiError(new ApiError(0, '网络连接失败，请稍后重试。', 'CLIENT_NETWORK_ERROR')).kind).toBe(
-      'network',
-    )
+    expect(
+      mapApiError(new ApiError(0, '网络连接失败，请稍后重试。', 'CLIENT_NETWORK_ERROR')).kind,
+    ).toBe('network')
   })
 
   it('maps generic errors to unknown', () => {
@@ -60,5 +60,40 @@ describe('mapApiError', () => {
 
   it('keeps legacy status-0 errors mapped to network', () => {
     expect(mapApiError(new ApiError(0, 'legacy')).kind).toBe('network')
+  })
+
+  it('maps plan lifecycle timeout to an explicit retryable message', () => {
+    const mapped = mapApiError(
+      new ApiError(504, '计划生成生命周期超过服务端时限', 'PLAN_GENERATION_TIMEOUT'),
+    )
+
+    expect(mapped.kind).toBe('plan_generation_timeout')
+    expect(mapped.message).toContain('刷新任务状态')
+    expect(mapped.message).toContain('重试生成')
+  })
+
+  it.each([
+    ['connect', '连接模型服务超时'],
+    ['read', '模型服务响应超时'],
+    ['overall', '模型处理超过整体时限'],
+  ])('maps provider %s timeout to a safe phase-specific message', (phase, message) => {
+    const mapped = mapApiError(
+      new ApiError(504, `provider timeout during ${phase}`, 'PROVIDER_TIMEOUT'),
+    )
+
+    expect(mapped.kind).toBe('provider_timeout')
+    expect(mapped.message).toBe(`${message}，请刷新状态后重试生成。`)
+    expect(mapped.message).not.toContain('provider')
+  })
+
+  it('maps recoverable workflow start failure without suggesting regeneration', () => {
+    const mapped = mapApiError(
+      new ApiError(503, '计划已保存，但工作流服务暂时不可用', 'PLAN_START_FAILED'),
+    )
+
+    expect(mapped.kind).toBe('plan_start_failed')
+    expect(mapped.message).toContain('计划已保存')
+    expect(mapped.message).toContain('重试启动')
+    expect(mapped.message).not.toContain('重新生成')
   })
 })
