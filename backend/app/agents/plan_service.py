@@ -93,7 +93,13 @@ class PlanGenerationService:
         return resolved, api_key, config
 
     def build_input(
-        self, spec_payload: dict, task_type: TaskType, user: Any | None = None
+        self,
+        spec_payload: dict,
+        task_type: TaskType,
+        user: Any | None = None,
+        *,
+        task_id: int,
+        spec_version: int,
     ) -> PlanInput:
         # list_search_configs 需要真实 user.id；传 None 会 AttributeError（Gate-2 真实
         # provider 发现）。测试路径 provider 为 None 时短路为 has_search=False。
@@ -103,6 +109,8 @@ class PlanGenerationService:
             and self._provider.list_search_configs(user)
         )
         return PlanInput(
+            task_id=task_id,
+            spec_version=spec_version,
             spec_payload=spec_payload,
             task_type=task_type,
             registry_metadata=self._registry.planning_metadata(),
@@ -133,6 +141,7 @@ class PlanGenerationService:
             spec_payload,
             self._registry,
             available_search=bool(inp.execution_constraints.get("has_search_provider")),
+            spec_version=inp.spec_version,
         )
         validation_duration_ms = int((perf_counter() - validation_started) * 1000)
         emit_lifecycle_event(
@@ -196,10 +205,22 @@ class PlanGenerationService:
         return outcome
 
     async def generate_for_task(
-        self, *, user: User, spec_payload: dict, task_type: TaskType
+        self,
+        *,
+        user: User,
+        task_id: int,
+        spec_version: int,
+        spec_payload: dict,
+        task_type: TaskType,
     ) -> PlanGenerationOutcome:
         resolved, api_key, config = self._resolve_model(user)
-        inp = self.build_input(spec_payload, task_type, user=user)
+        inp = self.build_input(
+            spec_payload,
+            task_type,
+            user=user,
+            task_id=task_id,
+            spec_version=spec_version,
+        )
         outcome = await self._repair_loop(inp, resolved, api_key, max_repairs=1)
         if config is not None:
             outcome.audit.update(

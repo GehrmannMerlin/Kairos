@@ -61,6 +61,8 @@ def _input() -> PlanInput:
         },
     )
     return PlanInput(
+        task_id=1,
+        spec_version=1,
         spec_payload=spec.model_dump(mode="json"),
         task_type=TaskType.SPECIFIED_SOURCE,
         registry_metadata=NodeRegistry().planning_metadata(),
@@ -76,6 +78,18 @@ async def test_generator_returns_typed_plan() -> None:
     assert graph.task_type == TaskType.SPECIFIED_SOURCE
     assert [n.node_type for n in graph.nodes] == ["fetch", "extract", "generate_artifact"]
     assert graph.nodes[1].depends_on == ["n1"]
+
+
+@pytest.mark.asyncio
+async def test_plan_identity_is_canonicalized_from_command_context() -> None:
+    agent = PlanGeneratorAgent(inference=FakeInference(VALID_PLAN_JSON))
+    inp = _input().model_copy(
+        update={"task_id": 25, "spec_version": 3, "task_type": TaskType.SPECIFIED_SOURCE}
+    )
+    graph = await agent.generate(inp, RESOLVED, api_key=None)
+    assert graph.task_id == 25
+    assert graph.spec_version == 3
+    assert graph.task_type is TaskType.SPECIFIED_SOURCE
 
 
 @pytest.mark.asyncio
@@ -194,10 +208,18 @@ async def test_build_input_passes_user_to_search_config_check() -> None:
 
     provider = _FakeProvider()
     service = PlanGenerationService(provider_service=provider)
-    inp = service.build_input(_input().spec_payload, TaskType.SPECIFIED_SOURCE, user=_FakeUser())
+    inp = service.build_input(
+        _input().spec_payload,
+        TaskType.SPECIFIED_SOURCE,
+        user=_FakeUser(),
+        task_id=25,
+        spec_version=3,
+    )
     assert provider.seen_user is not None
     assert provider.seen_user.id == 7
     assert inp.execution_constraints["has_search_provider"] is False
+    assert inp.task_id == 25
+    assert inp.spec_version == 3
 
 
 @pytest.mark.asyncio

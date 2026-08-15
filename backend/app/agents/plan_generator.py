@@ -47,9 +47,10 @@ PLAN_SYSTEM_PROMPT = (
     "不得发明契约之外的键名，不得把数组字段写成对象。\n"
     "5. 只输出一个 JSON 对象，不要输出任何 JSON 之外的文字、markdown 或注释。\n"
     "6. reasoning_summary 只写可审计的执行思路摘要，不要暴露推理内部过程。\n"
-    "7. 标准流水线（两阶段来源发现，D-068）：指定来源任务顺序为 "
-    "access_rules_check → link_discovery → fetch → extract → normalize → validate → "
-    "generate_artifact；探索/混合任务在流水线最前加 source_search。"
+    "7. 标准流水线（两阶段来源发现，D-068）：EXPLORATORY 和 HYBRID 必须以 "
+    "source_search 开始；SPECIFIED_SOURCE 必须消费冻结的 seed_urls，绝不从 source_hints "
+    "虚构 URL。指定来源任务顺序为 access_rules_check → link_discovery → fetch → extract → "
+    "normalize → validate → generate_artifact；探索/混合任务以 source_search 开头后再进入该流水线。"
     "fetch 之前必须是 URL 资源（种子/站点扩展），fetch 产出 snapshot，"
     "extract 消费 snapshot 产出 record。\n"
     "8. 资源边语义：每条边 resource_refs 的 kind 必须被 from 节点的 output_contract 产出、"
@@ -97,6 +98,8 @@ def _user_prompt(inp: PlanInput) -> str:
 
 
 class PlanInput(BaseModel):
+    task_id: int
+    spec_version: int
     spec_payload: dict
     task_type: TaskType
     registry_metadata: list[dict]
@@ -171,4 +174,11 @@ class PlanGeneratorAgent:
             from app.providers.errors import ProviderInferenceError
 
             raise ProviderInferenceError("模型返回的计划不符合结构化输出契约") from exc
-        return result.output
+        graph = result.output
+        return graph.model_copy(
+            update={
+                "task_id": inp.task_id,
+                "spec_version": inp.spec_version,
+                "task_type": inp.task_type,
+            }
+        )

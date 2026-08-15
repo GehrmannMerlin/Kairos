@@ -135,7 +135,11 @@ async def generate_plan(
         async with timeout_scope:
             task_type = TaskType(spec.payload.get("task_type") or "SPECIFIED_SOURCE")
             outcome = await generation.generate_for_task(
-                user=user, spec_payload=spec.payload, task_type=task_type
+                user=user,
+                task_id=task_id,
+                spec_version=cmd.spec_version,
+                spec_payload=spec.payload,
+                task_type=task_type,
             )
             registry_versions = {
                 definition.node_type.value: definition.definition_version
