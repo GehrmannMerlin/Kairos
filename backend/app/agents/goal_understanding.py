@@ -74,13 +74,16 @@ GOAL_UNDERSTANDING_SYSTEM_PROMPT = (
     "核心字段 required=true。\n"
     "3. source_scope.seed_urls 只放用户明确提供的网址；"
     "source_hints 放用户描述或你推断的来源提示。\n"
-    "4. confidence 是 0～1 的浮点数，表示你对任务类型和字段判定的把握。\n"
-    "5. 若信息不足以确定采集范围（既无网址也无明确实体列表），"
+    "4. 命名网站但未提供完整网址时，task_type 必须是 HYBRID；"
+    "用户提供完整网址时，task_type 必须是 SPECIFIED_SOURCE。"
+    "命名来源请求的 source_hints 第一项必须是该机构或网站名称，不得是主题关键词。\n"
+    "5. confidence 是 0～1 的浮点数，表示你对任务类型和字段判定的把握。\n"
+    "6. 若信息不足以确定采集范围（既无网址也无明确实体列表），"
     "clarification_required=true 并只问一个最影响任务范围的高杠杆问题，"
     "写在 clarification_question，不要一次问五六个。\n"
-    "6. 若检测到'深圳'这类单次条件值适合做成模板变量，"
+    "7. 若检测到'深圳'这类单次条件值适合做成模板变量，"
     "在 template_variables 给出 name/label/value。\n"
-    "7. 不要输出任何 JSON 之外的文字、markdown 代码块或注释。"
+    "8. 不要输出任何 JSON 之外的文字、markdown 代码块或注释。"
 )
 
 

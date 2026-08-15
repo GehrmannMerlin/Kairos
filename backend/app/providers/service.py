@@ -76,6 +76,12 @@ class ProviderService:
     def list_model_configs(self, user: Any) -> list[ModelConfig]:
         return self._model_configs.list_current(user.id)
 
+    def has_available_search_config(self, user: Any) -> bool:
+        return any(
+            config.connection_status == "available"
+            for config in self._search_configs.list_current(user.id)
+        )
+
     def create_model_config(
         self,
         user: Any,
