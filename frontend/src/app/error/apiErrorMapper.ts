@@ -9,6 +9,7 @@ export type ApiErrorKind =
   | 'provider_timeout'
   | 'plan_generation_timeout'
   | 'plan_start_failed'
+  | 'execution_preflight_blocked'
   | 'not_found'
   | 'conflict'
   | 'rate_limited'
@@ -78,6 +79,9 @@ function mapLifecycleCode(error: ApiError): MappedApiError | undefined {
       kind: 'plan_start_failed',
       message: '计划已保存，但执行服务暂时不可用；请点击“重试启动”。',
     }
+  }
+  if (error.code === 'EXECUTION_PREFLIGHT_BLOCKED') {
+    return { kind: 'execution_preflight_blocked', message: error.detail }
   }
   return undefined
 }

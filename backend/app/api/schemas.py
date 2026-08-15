@@ -184,6 +184,8 @@ class PlanGenerateResponse(BaseModel):
     run_state: str | None = None
     start_recoverable: bool = False
     validator_issues: list[dict] = Field(default_factory=list)
+    preflight_status: str | None = None
+    preflight_issues: list[dict] = Field(default_factory=list)
 
 
 class PlanSummaryDto(BaseModel):
@@ -200,6 +202,8 @@ class PlanSummaryDto(BaseModel):
     run_state: str | None = None
     start_recoverable: bool = False
     validator_issues: list[dict] = Field(default_factory=list)
+    preflight_status: str | None = None
+    preflight_issues: list[dict] = Field(default_factory=list)
     created_at: datetime
 
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
+
 from app.domain.idempotency import stable_fingerprint
-from app.domain.models import PlanVersion
+from app.domain.models import ExecutionPreflightResult, PlanVersion
 from app.domain.repository import PlanVersionRepository, RunRepository, TaskRepository
 from app.state.events import append_domain_event, enqueue_outbox
 from app.workflows.starter import TaskWorkflowStarter
@@ -45,6 +47,93 @@ class PlanService:
     def __init__(self, db: Any, *, starter: TaskWorkflowStarter | Any | None) -> None:
         self._db = db
         self._starter = starter
+
+    @staticmethod
+    def _preflight_issue_payloads(issues: list[Any]) -> list[dict]:
+        """Expose only the safe, user-facing fields of immutable readiness facts."""
+        return [
+            {
+                key: value
+                for key, value in issue.model_dump(mode="json", exclude_none=True).items()
+                if key in {"code", "safe_message", "node_id", "field"}
+            }
+            for issue in issues
+        ]
+
+    def require_ready_preflight(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        spec_version: int,
+        plan_version: int,
+        settings: Any,
+    ) -> Any:
+        """Persist/reuse readiness and reject before a Run can be prepared."""
+        from app.domain.errors import DomainError, ExecutionPreflightBlockedError
+        from app.plan.preflight import ExecutionPreflightService, ExecutionPreflightStatus
+
+        plan = PlanVersionRepository(self._db).get_version(user_id, task_id, plan_version)
+        if plan.spec_version != spec_version:
+            raise DomainError("Plan 与 Spec 版本不匹配")
+        if plan.validation_status not in {"VALID", "REQUIRES_APPROVAL"}:
+            raise DomainError("该计划未通过启动校验")
+
+        outcome = ExecutionPreflightService(self._db, settings=settings).evaluate(
+            user_id=user_id,
+            task_id=task_id,
+            spec_version=spec_version,
+            plan_version=plan_version,
+        )
+        issues = self._preflight_issue_payloads(outcome.issues)
+        if outcome.created:
+            task = TaskRepository(self._db).get_owned_for_update(user_id, task_id)
+            event_type = (
+                "task.execution_preflight_ready"
+                if outcome.status is ExecutionPreflightStatus.READY
+                else "task.execution_preflight_blocked"
+            )
+            payload = {
+                "spec_version": spec_version,
+                "plan_version": plan_version,
+                "capability_manifest_version": outcome.capability_manifest_version,
+                "preflight_status": outcome.status.value,
+                "preflight_issues": issues,
+            }
+            append_domain_event(
+                self._db,
+                user_id=user_id,
+                aggregate_type="task",
+                aggregate_id=task_id,
+                event_type=event_type,
+                aggregate_version=task.version,
+                payload=payload,
+                actor_type="system",
+            )
+            enqueue_outbox(
+                self._db,
+                user_id=user_id,
+                aggregate_type="task",
+                aggregate_id=task_id,
+                event_type=event_type,
+                payload=payload,
+                dispatch_key=(
+                    f"task:{task_id}:execution_preflight:{plan_version}:"
+                    f"{outcome.capability_manifest_version}"
+                ),
+            )
+            self._db.commit()
+
+        if outcome.status is ExecutionPreflightStatus.BLOCKED:
+            message = issues[0]["safe_message"] if issues else "执行就绪检查未通过。"
+            raise ExecutionPreflightBlockedError(
+                message,
+                context={
+                    "preflight_status": outcome.status.value,
+                    "preflight_issues": issues,
+                },
+            )
+        return outcome
 
     def persist_plan(
         self,
@@ -256,6 +345,17 @@ class PlanService:
 
     def get_plan_summary(self, *, user_id: int, task_id: int, plan_version: int) -> dict:
         row = PlanVersionRepository(self._db).get_version(user_id, task_id, plan_version)
+        from app.plan.capabilities import CAPABILITY_MANIFEST_VERSION
+
+        preflight = self._db.scalar(
+            select(ExecutionPreflightResult).where(
+                ExecutionPreflightResult.user_id == user_id,
+                ExecutionPreflightResult.task_id == task_id,
+                ExecutionPreflightResult.plan_version == plan_version,
+                ExecutionPreflightResult.spec_version == row.spec_version,
+                ExecutionPreflightResult.capability_manifest_version == CAPABILITY_MANIFEST_VERSION,
+            )
+        )
         graph = (row.payload or {}).get("graph", {}) if row.payload else {}
         nodes = graph.get("nodes", []) if graph else []
         active_run = RunRepository(self._db).find_active_for_task(user_id, task_id)
@@ -275,6 +375,19 @@ class PlanService:
             "run_state": active_run.state if active_run is not None else None,
             "start_recoverable": bool(active_run is not None and active_run.state == "pending"),
             "validator_issues": (row.payload or {}).get("validator_issues", []),
+            "preflight_status": preflight.status if preflight is not None else None,
+            "preflight_issues": (
+                [
+                    {
+                        key: value
+                        for key, value in issue.items()
+                        if key in {"code", "safe_message", "node_id", "field"}
+                    }
+                    for issue in preflight.issues
+                ]
+                if preflight is not None
+                else []
+            ),
             "created_at": row.created_at,
         }
 

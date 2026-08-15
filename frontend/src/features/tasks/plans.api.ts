@@ -16,6 +16,8 @@ export interface PlanGenerateDto {
   run_state: string | null
   start_recoverable: boolean
   validator_issues: ValidatorIssueSummary[]
+  preflight_status?: string | null
+  preflight_issues?: PreflightIssueSummary[]
 }
 
 export interface ValidatorIssueSummary {
@@ -24,6 +26,13 @@ export interface ValidatorIssueSummary {
   edge_index?: number | null
   field?: string | null
   message?: string | null
+}
+
+export interface PreflightIssueSummary {
+  code: string
+  safe_message: string
+  node_id?: string | null
+  field?: string | null
 }
 
 /** Plan 摘要（D-025 / D-055：Chat 内简洁摘要，不新增 /plan 页面）。 */
@@ -41,6 +50,8 @@ export interface PlanSummaryDto {
   run_state: string | null
   start_recoverable: boolean
   validator_issues: ValidatorIssueSummary[]
+  preflight_status?: string | null
+  preflight_issues?: PreflightIssueSummary[]
   created_at: string
 }
 

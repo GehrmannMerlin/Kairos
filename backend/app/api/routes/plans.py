@@ -76,7 +76,7 @@ def _validator_issue_summaries(issues: list[Any]) -> list[dict]:
 
 
 def _persisted_plan_context(
-    *, row: Any, prepared: PreparedPlanStart | None, node_count: int
+    *, row: Any, prepared: PreparedPlanStart | None, node_count: int, preflight: Any | None = None
 ) -> dict[str, Any]:
     return {
         "task_id": row.task_id,
@@ -88,13 +88,19 @@ def _persisted_plan_context(
         "run_state": prepared.run_state if prepared is not None else None,
         "start_recoverable": prepared is not None,
         "validator_issues": (row.payload or {}).get("validator_issues", []),
+        "preflight_status": preflight.status.value if preflight is not None else None,
+        "preflight_issues": (
+            PlanService._preflight_issue_payloads(preflight.issues) if preflight is not None else []
+        ),
     }
 
 
 def _plan_response(
-    *, row: Any, prepared: PreparedPlanStart | None, node_count: int
+    *, row: Any, prepared: PreparedPlanStart | None, node_count: int, preflight: Any | None = None
 ) -> PlanGenerateResponse:
-    context = _persisted_plan_context(row=row, prepared=prepared, node_count=node_count)
+    context = _persisted_plan_context(
+        row=row, prepared=prepared, node_count=node_count, preflight=preflight
+    )
     context["start_recoverable"] = False
     return PlanGenerateResponse(**context)
 
@@ -175,7 +181,15 @@ async def generate_plan(
                 PlanValidationResult.REQUIRES_APPROVAL,
             )
             prepared: PreparedPlanStart | None = None
+            preflight: Any | None = None
             if can_start:
+                preflight = service.require_ready_preflight(
+                    user_id=user.id,
+                    task_id=task_id,
+                    spec_version=cmd.spec_version,
+                    plan_version=row.version,
+                    settings=settings,
+                )
                 prepared = service.prepare_start(
                     user_id=user.id,
                     task_id=task_id,
@@ -226,6 +240,7 @@ async def generate_plan(
                 row=row,
                 prepared=prepared,
                 node_count=len(outcome.graph.nodes),
+                preflight=preflight,
             )
     except TimeoutError as exc:
         if timeout_scope.expired():
@@ -249,13 +264,14 @@ async def start_persisted_plan(
 ) -> PlanGenerateResponse:
     TaskRepository(db).get_owned(user.id, task_id)
     row = PlanVersionRepository(db).get_version(user.id, task_id, plan_version)
-    if row.validation_status not in {
-        PlanValidationResult.VALID.value,
-        PlanValidationResult.REQUIRES_APPROVAL.value,
-    }:
-        raise DomainError("该计划未通过启动校验")
-
     service = PlanService(db, starter=None)
+    preflight = service.require_ready_preflight(
+        user_id=user.id,
+        task_id=task_id,
+        spec_version=row.spec_version,
+        plan_version=row.version,
+        settings=settings,
+    )
     prepared = service.prepare_start(
         user_id=user.id,
         task_id=task_id,
@@ -299,7 +315,7 @@ async def start_persisted_plan(
         plan_version=row.version,
         run_state=prepared.run_state,
     )
-    return _plan_response(row=row, prepared=prepared, node_count=node_count)
+    return _plan_response(row=row, prepared=prepared, node_count=node_count, preflight=preflight)
 
 
 @router.post("/{task_id}/plans/replan", response_model=PlanSummaryDto)

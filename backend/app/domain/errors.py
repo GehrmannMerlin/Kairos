@@ -49,6 +49,18 @@ class PlanStartFailedError(DomainError):
         return {**super().to_dict(), **self.context}
 
 
+class ExecutionPreflightBlockedError(DomainError):
+    code = "EXECUTION_PREFLIGHT_BLOCKED"
+    status_code = 409
+
+    def __init__(self, message: str, *, context: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.context = context
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**super().to_dict(), **self.context}
+
+
 class PlanGenerationTimeoutError(DomainError):
     code = "PLAN_GENERATION_TIMEOUT"
     status_code = 504

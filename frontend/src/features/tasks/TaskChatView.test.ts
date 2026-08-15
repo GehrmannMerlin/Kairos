@@ -363,6 +363,39 @@ describe('TaskChatView Plan 生命周期恢复', () => {
     expect(wrapper.findAll('button').some((button) => button.text() === '重试生成')).toBe(true)
   })
 
+  it('执行就绪检查阻塞时显示服务器首条安全说明，不提供启动重试', async () => {
+    vi.mocked(tasksApi.getTask)
+      .mockResolvedValueOnce(taskShell())
+      .mockResolvedValueOnce(taskShell({ version: 2, current_spec_version: 1 }))
+      .mockResolvedValue(
+        taskShell({
+          version: 3,
+          current_spec_version: 1,
+          current_plan_version: 1,
+        }),
+      )
+    vi.mocked(plansApi.getPlanSummary).mockResolvedValue(
+      planSummary({
+        preflight_status: 'BLOCKED',
+        preflight_issues: [
+          {
+            code: 'EXECUTION_INPUT_UNMATERIALIZABLE',
+            safe_message: '冻结的来源输入无法直接执行。',
+          },
+        ],
+      }),
+    )
+    vi.mocked(plansApi.generatePlan).mockRejectedValue(
+      new ApiError(409, '冻结的来源输入无法直接执行。', 'EXECUTION_PREFLIGHT_BLOCKED'),
+    )
+
+    const wrapper = await mountConfirmedDraft()
+    await flushPromises()
+
+    expect(wrapper.find('.chat__error').text()).toContain('冻结的来源输入无法直接执行。')
+    expect(wrapper.findAll('button').some((button) => button.text() === '重试启动')).toBe(false)
+  })
+
   it('启动失败保留已持久化计划，重试动作只调用 start-only endpoint', async () => {
     vi.mocked(tasksApi.getTask)
       .mockResolvedValueOnce(taskShell())
