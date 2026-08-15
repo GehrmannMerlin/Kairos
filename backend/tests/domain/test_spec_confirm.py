@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from app.domain.errors import StaleVersionError
+from app.domain.errors import SpecValidationError, StaleVersionError
 from app.domain.models import DomainEvent, OutboxEvent
 from app.domain.repository import SpecDraftRepository, SpecVersionRepository, TaskRepository
 from app.state.states import TaskState
@@ -151,4 +151,21 @@ def test_confirm_rejects_running_state(db, service, user, task) -> None:
             expected_version=3,
             spec_payload=_payload(),
             actor_id=user.id,
+        )
+
+
+def test_confirm_rejects_specified_source_without_seed(db, service, user, task) -> None:
+    payload = _payload()
+    payload["task_type"] = "SPECIFIED_SOURCE"
+    payload["source_scope"] = {
+        "mode": "SPECIFIED_SOURCE",
+        "seed_urls": [],
+        "source_hints": ["官网"],
+    }
+    with pytest.raises(SpecValidationError, match="完整网址"):
+        service.confirm_spec(
+            user_id=user.id,
+            task_id=task.id,
+            expected_version=task.version,
+            spec_payload=payload,
         )

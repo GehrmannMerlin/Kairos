@@ -16,7 +16,7 @@ from app.domain.repository import (
     SpecVersionRepository,
     TaskRepository,
 )
-from app.domain.spec import validate_spec_payload
+from app.domain.spec import validate_confirmable_spec_payload
 from app.state.events import append_domain_event, enqueue_outbox
 from app.state.states import assert_node_transition, assert_task_transition
 
@@ -133,7 +133,7 @@ class DomainService:
         else:
             raise IllegalTransitionError("当前状态不允许确认采集方案")
 
-        spec = validate_spec_payload(spec_payload)
+        spec = validate_confirmable_spec_payload(spec_payload)
         specs = SpecVersionRepository(db)
         version = specs.next_version(user_id, task_id)
 

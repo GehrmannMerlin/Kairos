@@ -15,8 +15,9 @@ Guarantees:
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlparse
 
+from app.discovery.errors import DiscoveryValidationError
+from app.discovery.url import canonical_url
 from app.domain.idempotency import IdempotencyService
 from app.domain.models import ChatMessage, Task
 from app.domain.repository import (
@@ -39,11 +40,6 @@ def _validate_or_raise(payload: dict) -> SpecDraftPayload:
         from app.domain.errors import SpecValidationError
 
         raise SpecValidationError("采集方案参数不合法") from exc
-
-
-def _is_http_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 class TaskDraftService:
@@ -204,11 +200,12 @@ class TaskDraftService:
 
     def add_seed_url(self, *, user_id: int, task_id: int, url: str) -> dict:
         """'添加网址' only writes into Draft Context (D-034); no fetch happens here."""
-        url = url.strip()
-        if not _is_http_url(url):
+        try:
+            url = canonical_url(url)
+        except DiscoveryValidationError as exc:
             from app.domain.errors import DomainError
 
-            raise DomainError("URL 必须以 http:// 或 https:// 开头")
+            raise DomainError(str(exc)) from exc
         self._tasks.get_owned(user_id, task_id)
         current = self.get_spec_draft(user_id=user_id, task_id=task_id)
         payload = current or SpecDraftPayload(goal="").model_dump(mode="json")

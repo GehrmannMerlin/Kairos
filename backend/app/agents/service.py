@@ -29,6 +29,7 @@ from app.auth.models import User
 from app.credentials.vault import CredentialVault
 from app.domain.idempotency import stable_fingerprint
 from app.domain.models import ChatMessage, Task
+from app.domain.source_contract import normalize_source_contract
 from app.domain.spec import SpecDraftPayload, validate_spec_payload
 from app.domain.task_draft import TaskDraftService
 from app.domain.understanding_attempts import UnderstandingAttemptRepository
@@ -241,6 +242,21 @@ class GoalUnderstandingService:
             attempts.mark_failed(attempt, error_code="INTERNAL")
             raise
         duration_ms = int((perf_counter() - started) * 1000)
+
+        contract = normalize_source_contract(
+            task_type=result.task_type,
+            source_scope=result.source_scope,
+            search_available=self._provider.has_available_search_config(user),
+            explicit_texts=tuple(user_texts),
+        )
+        result = result.model_copy(
+            update={
+                "task_type": contract.task_type,
+                "source_scope": contract.source_scope,
+                "clarification_required": not contract.ready,
+                "clarification_question": contract.clarification_question,
+            }
+        )
 
         payload = result_to_spec_payload(result)
         drafts.save_spec_draft(user_id=user.id, task_id=task_id, payload=payload)

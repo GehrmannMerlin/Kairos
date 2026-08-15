@@ -7,7 +7,11 @@ pydantic-ai Agent still validates it into a typed GoalUnderstandingResult.
 from __future__ import annotations
 
 import pytest
-from app.agents.goal_understanding import GoalInput, GoalUnderstandingAgent
+from app.agents.goal_understanding import (
+    GOAL_UNDERSTANDING_SYSTEM_PROMPT,
+    GoalInput,
+    GoalUnderstandingAgent,
+)
 from app.providers.inference import InferenceResult, ModelInferenceClient
 from app.providers.protocol import ResolvedModel
 
@@ -138,3 +142,10 @@ async def test_draft_context_is_sent_to_model() -> None:
     )
     assert "https://a.com" in fake.user_seen
     assert "官方" in fake.user_seen
+
+
+def test_source_contract_instructions_are_in_system_prompt() -> None:
+    assert "命名网站但未提供完整网址时，task_type 必须是 HYBRID" in GOAL_UNDERSTANDING_SYSTEM_PROMPT
+    assert (
+        "用户提供完整网址时，task_type 必须是 SPECIFIED_SOURCE" in GOAL_UNDERSTANDING_SYSTEM_PROMPT
+    )

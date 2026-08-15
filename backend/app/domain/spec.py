@@ -47,6 +47,7 @@ class SourceScope(BaseModel):
     mode: TaskType = TaskType.EXPLORATORY
     seed_urls: list[str] = Field(default_factory=list)
     source_hints: list[str] = Field(default_factory=list)
+    resolution_scope: Literal["NAMED_SOURCE_ONLY"] | None = None
 
 
 class CompletionCondition(BaseModel):
@@ -102,3 +103,13 @@ class SpecDraftPayload(BaseModel):
 def validate_spec_payload(payload: dict) -> SpecDraftPayload:
     """Server-side typed validation of a spec payload (used at save and confirm)."""
     return SpecDraftPayload.model_validate(payload)
+
+
+def validate_confirmable_spec_payload(payload: dict) -> SpecDraftPayload:
+    """Validate a frozen spec while keeping editable drafts permissive."""
+    spec = validate_spec_payload(payload)
+    if spec.source_scope.mode is TaskType.SPECIFIED_SOURCE and not spec.source_scope.seed_urls:
+        from app.domain.errors import SpecValidationError
+
+        raise SpecValidationError("指定来源任务必须提供至少一个完整网址")
+    return spec
