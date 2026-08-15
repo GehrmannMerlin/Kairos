@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class DomainError(Exception):
     code: str = "DOMAIN_ERROR"
@@ -11,7 +13,7 @@ class DomainError(Exception):
         super().__init__(message)
         self.message = message
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {"code": self.code, "message": self.message}
 
 
@@ -33,3 +35,20 @@ class IdempotencyConflictError(DomainError):
 class SpecValidationError(DomainError):
     code = "SPEC_VALIDATION_ERROR"
     status_code = 422
+
+
+class PlanStartFailedError(DomainError):
+    code = "PLAN_START_FAILED"
+    status_code = 503
+
+    def __init__(self, message: str, *, context: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.context = context
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**super().to_dict(), **self.context}
+
+
+class PlanGenerationTimeoutError(DomainError):
+    code = "PLAN_GENERATION_TIMEOUT"
+    status_code = 504

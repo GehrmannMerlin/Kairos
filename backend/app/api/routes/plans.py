@@ -8,11 +8,13 @@ D-038：合法低风险 Plan 自动启动，不弹二次 Plan 确认 Modal；Pla
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session as DbSession
+from temporalio.service import RPCError
 
 from app.agents.plan_service import PlanGenerationService
 from app.api.schemas import (
@@ -25,18 +27,24 @@ from app.api.schemas import (
 from app.auth.deps import require_user
 from app.auth.models import User
 from app.config import Settings, get_settings
-from app.domain.errors import DomainError, StaleVersionError
+from app.domain.errors import (
+    DomainError,
+    PlanGenerationTimeoutError,
+    PlanStartFailedError,
+    StaleVersionError,
+)
 from app.domain.repository import PlanVersionRepository, SpecVersionRepository, TaskRepository
 from app.infra.deps import get_db
 from app.infra.temporal import get_temporal_client
 from app.plan.nodes import NodeRegistry
 from app.plan.schemas import PlanValidationResult
-from app.plan.service import PlanService, plan_fingerprint
+from app.plan.service import PlanService, PreparedPlanStart, plan_fingerprint
 from app.providers.deps import get_credential_vault, get_provider_service
 from app.providers.service import ProviderService
 from app.workflows.starter import TaskWorkflowStarter
 
 router = APIRouter(prefix="/tasks", tags=["plans"])
+TemporalClientFactory = Callable[[], Awaitable[Any]]
 
 
 def get_plan_generation_service(
@@ -52,18 +60,45 @@ def get_plan_generation_service(
     )
 
 
-@dataclass
-class _NoopStarter:
-    """Plan 摘要查询不需要启动 Workflow；占位满足 PlanService 构造签名。"""
+def get_temporal_client_factory() -> TemporalClientFactory:
+    """Defer Temporal connection until after the plan and pending run are durable."""
 
-    async def submit_validated_plan(self, **kw):
-        from app.workflows.starter import RunStartedResult
+    return get_temporal_client
 
-        return RunStartedResult(run_id=0, workflow_id="")
+
+def _validator_issue_summaries(issues: list[Any]) -> list[dict]:
+    return [
+        issue.model_dump(mode="json", exclude_none=True, exclude={"expected_schema"})
+        for issue in issues
+    ]
+
+
+def _persisted_plan_context(
+    *, row: Any, prepared: PreparedPlanStart | None, node_count: int
+) -> dict[str, Any]:
+    return {
+        "task_id": row.task_id,
+        "plan_version": row.version,
+        "validation_status": row.validation_status,
+        "node_count": node_count,
+        "run_id": prepared.run_id if prepared is not None else None,
+        "workflow_id": prepared.workflow_id if prepared is not None else None,
+        "run_state": prepared.run_state if prepared is not None else None,
+        "start_recoverable": prepared is not None,
+        "validator_issues": (row.payload or {}).get("validator_issues", []),
+    }
+
+
+def _plan_response(
+    *, row: Any, prepared: PreparedPlanStart | None, node_count: int
+) -> PlanGenerateResponse:
+    context = _persisted_plan_context(row=row, prepared=prepared, node_count=node_count)
+    context["start_recoverable"] = False
+    return PlanGenerateResponse(**context)
 
 
 def _summary_service(db: DbSession) -> PlanService:
-    return PlanService(db, starter=_NoopStarter())
+    return PlanService(db, starter=None)
 
 
 @router.post("/{task_id}/plan", response_model=PlanGenerateResponse)
@@ -73,11 +108,13 @@ async def generate_plan(
     user: User = Depends(require_user),
     db: DbSession = Depends(get_db),
     generation: PlanGenerationService = Depends(get_plan_generation_service),
+    settings: Settings = Depends(get_settings),
+    temporal_client_factory: TemporalClientFactory = Depends(get_temporal_client_factory),
 ) -> PlanGenerateResponse:
     """Spec confirmed → generate plan → validate → persist → auto-start if legal.
 
     仅当 Plan 判定为 VALID / REQUIRES_APPROVAL 时启动 Workflow；REQUIRES_NEW_SPEC /
-    INVALID / PROHIBITED 只持久化并返回状态，不启动执行。
+    PROHIBITED 只持久化并返回状态，不启动执行。最终 INVALID 会在生成服务中类型化失败。
     """
     # owner-safe：Task 与 Spec 都必须属于当前用户
     TaskRepository(db).get_owned(user.id, task_id)
@@ -85,77 +122,121 @@ async def generate_plan(
     if spec.confirmed_at is None:
         raise DomainError("采集方案尚未确认，不能生成计划")
 
-    task = TaskRepository(db).get_owned(user.id, task_id)
-    if task.version != cmd.expected_version:
+    initial_task = TaskRepository(db).get_owned(user.id, task_id)
+    if initial_task.version != cmd.expected_version:
         raise StaleVersionError("任务已被其他操作修改")
 
     from app.domain.task_types import TaskType
 
-    task_type = TaskType(spec.payload.get("task_type") or "SPECIFIED_SOURCE")
-    outcome = await generation.generate_for_task(
-        user=user, spec_payload=spec.payload, task_type=task_type
-    )
-
-    registry_versions = {d.node_type.value: d.definition_version for d in NodeRegistry().all()}
-    fingerprint = plan_fingerprint(outcome.graph.model_dump(mode="json"), registry_versions)
-
-    can_start = outcome.validation_result in (
-        PlanValidationResult.VALID,
-        PlanValidationResult.REQUIRES_APPROVAL,
-    )
-
-    # Temporal client 懒创建：不可用时 Plan 已持久化，不阻塞响应（与 M-07 command route 一致）
-    import logging
-
-    logger = logging.getLogger(__name__)
-    run_id: int | None = None
-    workflow_id: str | None = None
+    timeout_scope = asyncio.timeout(settings.plan_lifecycle_timeout_seconds)
     try:
-        client = await get_temporal_client()
-        service = PlanService(db, starter=TaskWorkflowStarter(client))
-        row = service.persist_plan(
-            user_id=user.id,
-            task_id=task_id,
-            spec_version=cmd.spec_version,
-            graph=outcome.graph.model_dump(mode="json"),
-            validation_status=outcome.validation_result.value,
-            fingerprint_value=fingerprint,
-            registry_versions=registry_versions,
-            model_config_id=outcome.audit.get("model_config_id"),
-            model_config_version=outcome.audit.get("model_config_version"),
-        )
-        if can_start:
-            run_id, workflow_id = await service.auto_start(
+        async with timeout_scope:
+            task_type = TaskType(spec.payload.get("task_type") or "SPECIFIED_SOURCE")
+            outcome = await generation.generate_for_task(
+                user=user, spec_payload=spec.payload, task_type=task_type
+            )
+            registry_versions = {
+                definition.node_type.value: definition.definition_version
+                for definition in NodeRegistry().all()
+            }
+            graph_payload = outcome.graph.model_dump(mode="json")
+            service = PlanService(db, starter=None)
+            row = service.persist_plan(
                 user_id=user.id,
                 task_id=task_id,
                 spec_version=cmd.spec_version,
-                plan_version=row.version,
+                graph=graph_payload,
+                validation_status=outcome.validation_result.value,
+                fingerprint_value=plan_fingerprint(graph_payload, registry_versions),
+                registry_versions=registry_versions,
+                model_config_id=outcome.audit.get("model_config_id"),
+                model_config_version=outcome.audit.get("model_config_version"),
+                validation_issues=_validator_issue_summaries(outcome.issues),
+                expected_task_version=cmd.expected_version,
             )
-    except Exception:
-        logger.warning(
-            "Temporal client unavailable for task %s; plan generated but workflow not started",
-            task_id,
-            exc_info=True,
-        )
-        row = PlanService(db, starter=_NoopStarter()).persist_plan(
-            user_id=user.id,
-            task_id=task_id,
-            spec_version=cmd.spec_version,
-            graph=outcome.graph.model_dump(mode="json"),
-            validation_status=outcome.validation_result.value,
-            fingerprint_value=fingerprint,
-            registry_versions=registry_versions,
-            model_config_id=outcome.audit.get("model_config_id"),
-            model_config_version=outcome.audit.get("model_config_version"),
-        )
-    return PlanGenerateResponse(
+
+            can_start = outcome.validation_result in (
+                PlanValidationResult.VALID,
+                PlanValidationResult.REQUIRES_APPROVAL,
+            )
+            prepared: PreparedPlanStart | None = None
+            if can_start:
+                prepared = service.prepare_start(
+                    user_id=user.id,
+                    task_id=task_id,
+                    spec_version=cmd.spec_version,
+                    plan_version=row.version,
+                )
+                try:
+                    temporal_client = await temporal_client_factory()
+                    await service.dispatch_prepared_start(
+                        prepared,
+                        starter=TaskWorkflowStarter(temporal_client, settings),
+                    )
+                except RPCError as exc:
+                    raise PlanStartFailedError(
+                        "计划已保存，但工作流服务暂时不可用；可安全重试启动",
+                        context=_persisted_plan_context(
+                            row=row,
+                            prepared=prepared,
+                            node_count=len(outcome.graph.nodes),
+                        ),
+                    ) from exc
+
+            return _plan_response(
+                row=row,
+                prepared=prepared,
+                node_count=len(outcome.graph.nodes),
+            )
+    except TimeoutError as exc:
+        if timeout_scope.expired():
+            raise PlanGenerationTimeoutError(
+                "计划生成生命周期超过服务端时限，请先刷新任务状态"
+            ) from exc
+        raise
+
+
+@router.post(
+    "/{task_id}/plans/{plan_version}/start",
+    response_model=PlanGenerateResponse,
+)
+async def start_persisted_plan(
+    task_id: int,
+    plan_version: int,
+    user: User = Depends(require_user),
+    db: DbSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    temporal_client_factory: TemporalClientFactory = Depends(get_temporal_client_factory),
+) -> PlanGenerateResponse:
+    TaskRepository(db).get_owned(user.id, task_id)
+    row = PlanVersionRepository(db).get_version(user.id, task_id, plan_version)
+    if row.validation_status not in {
+        PlanValidationResult.VALID.value,
+        PlanValidationResult.REQUIRES_APPROVAL.value,
+    }:
+        raise DomainError("该计划未通过启动校验")
+
+    service = PlanService(db, starter=None)
+    prepared = service.prepare_start(
+        user_id=user.id,
         task_id=task_id,
+        spec_version=row.spec_version,
         plan_version=row.version,
-        validation_status=outcome.validation_result.value,
-        node_count=len(outcome.graph.nodes),
-        run_id=run_id,
-        workflow_id=workflow_id,
     )
+    graph = (row.payload or {}).get("graph", {})
+    node_count = len(graph.get("nodes", []))
+    try:
+        temporal_client = await temporal_client_factory()
+        await service.dispatch_prepared_start(
+            prepared,
+            starter=TaskWorkflowStarter(temporal_client, settings),
+        )
+    except RPCError as exc:
+        raise PlanStartFailedError(
+            "计划已保存，但工作流服务暂时不可用；可安全重试启动",
+            context=_persisted_plan_context(row=row, prepared=prepared, node_count=node_count),
+        ) from exc
+    return _plan_response(row=row, prepared=prepared, node_count=node_count)
 
 
 @router.post("/{task_id}/plans/replan", response_model=PlanSummaryDto)

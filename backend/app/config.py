@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     # 同步模型调用（Goal Understanding / Plan 生成 / 语义提取）的 Provider 有界超时。
     # 浏览器 AI 超时（60s）与反代 read timeout（90s）都必须显著大于此值，避免外层先断。
     provider_inference_timeout_seconds: float = 45.0
+    # 完整 Plan 生命周期：生成（至多两次）+ 校验 + 单次持久化 + Workflow 启动。
+    plan_lifecycle_timeout_seconds: float = 105.0
 
     # --- API / CORS ---
     api_port: int = 8000
@@ -111,7 +113,6 @@ class Settings(BaseSettings):
     provider_throttle_max_burst: int = 1
     worker_roles: str = "all"  # all | core,http,browser,llm_search（逗号分隔）
 
-
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _parse_cors_origins(cls, value: object) -> object:
@@ -136,27 +137,17 @@ class Settings(BaseSettings):
         if self.cors_origins == ["*"] or any(
             any(h in o for h in self._DEV_CORS_HOSTS) for o in self.cors_origins
         ):
-            errors.append(
-                "production: KAIROS_CORS_ORIGINS must be the real product origin only"
-            )
+            errors.append("production: KAIROS_CORS_ORIGINS must be the real product origin only")
         if not self.credential_master_key:
             errors.append("production: KAIROS_CREDENTIAL_MASTER_KEY is required")
         elif len(self.credential_master_key) != 64:
-            errors.append(
-                "production: KAIROS_CREDENTIAL_MASTER_KEY must be 64 hex chars"
-            )
-        if self.database_url and any(
-            h in self.database_url for h in self._DEV_DB_HOSTS
-        ):
-            errors.append(
-                "production: KAIROS_DATABASE_URL must point to the production DB host"
-            )
+            errors.append("production: KAIROS_CREDENTIAL_MASTER_KEY must be 64 hex chars")
+        if self.database_url and any(h in self.database_url for h in self._DEV_DB_HOSTS):
+            errors.append("production: KAIROS_DATABASE_URL must point to the production DB host")
         if self.s3_bucket.endswith("-dev") or "kairos-staging" in self.s3_bucket:
             errors.append("production: KAIROS_S3_BUCKET must be the production bucket")
         if self.temporal_namespace in ("default", "kairos-staging"):
-            errors.append(
-                "production: KAIROS_TEMPORAL_NAMESPACE must be production-isolated"
-            )
+            errors.append("production: KAIROS_TEMPORAL_NAMESPACE must be production-isolated")
         return errors
 
     def validate_runtime(self) -> None:

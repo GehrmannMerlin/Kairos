@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskShellDto(BaseModel):
@@ -181,6 +181,9 @@ class PlanGenerateResponse(BaseModel):
     node_count: int
     run_id: int | None
     workflow_id: str | None
+    run_state: str | None = None
+    start_recoverable: bool = False
+    validator_issues: list[dict] = Field(default_factory=list)
 
 
 class PlanSummaryDto(BaseModel):
@@ -193,6 +196,10 @@ class PlanSummaryDto(BaseModel):
     node_types: list[str | None]
     diff_summary: dict | None
     trigger_reason: str | None
+    run_id: int | None = None
+    run_state: str | None = None
+    start_recoverable: bool = False
+    validator_issues: list[dict] = Field(default_factory=list)
     created_at: datetime
 
 
