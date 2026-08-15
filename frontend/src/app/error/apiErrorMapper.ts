@@ -6,6 +6,9 @@ export type ApiErrorKind =
   | 'model_not_configured'
   | 'search_provider_not_configured'
   | 'provider'
+  | 'provider_timeout'
+  | 'plan_generation_timeout'
+  | 'plan_start_failed'
   | 'not_found'
   | 'conflict'
   | 'rate_limited'
@@ -47,6 +50,38 @@ const CLIENT_CODE_KIND: Record<string, ApiErrorKind> = {
   CLIENT_ABORTED: 'request_aborted',
 }
 
+function providerTimeoutMessage(detail: string): string {
+  if (detail.includes('during connect')) {
+    return '连接模型服务超时，请刷新状态后重试生成。'
+  }
+  if (detail.includes('during read')) {
+    return '模型服务响应超时，请刷新状态后重试生成。'
+  }
+  if (detail.includes('during overall')) {
+    return '模型处理超过整体时限，请刷新状态后重试生成。'
+  }
+  return '模型服务处理超时，请刷新状态后重试生成。'
+}
+
+function mapLifecycleCode(error: ApiError): MappedApiError | undefined {
+  if (error.code === 'PROVIDER_TIMEOUT') {
+    return { kind: 'provider_timeout', message: providerTimeoutMessage(error.detail) }
+  }
+  if (error.code === 'PLAN_GENERATION_TIMEOUT') {
+    return {
+      kind: 'plan_generation_timeout',
+      message: '计划生成超过服务端时限，请刷新任务状态；确认尚未生成后可重试生成。',
+    }
+  }
+  if (error.code === 'PLAN_START_FAILED') {
+    return {
+      kind: 'plan_start_failed',
+      message: '计划已保存，但执行服务暂时不可用；请点击“重试启动”。',
+    }
+  }
+  return undefined
+}
+
 const STATUS_KIND: Record<number, ApiErrorKind> = {
   401: 'unauthenticated',
   404: 'not_found',
@@ -79,6 +114,8 @@ export function mapApiError(error: unknown): MappedApiError {
   if (byClientCode) {
     return { kind: byClientCode, message: error.detail, action: undefined }
   }
+  const byLifecycleCode = mapLifecycleCode(error)
+  if (byLifecycleCode) return byLifecycleCode
   const byCode = error.code ? CODE_KIND[error.code] : undefined
   if (byCode) {
     return { kind: byCode, message: error.detail, action: actionFor(byCode) }

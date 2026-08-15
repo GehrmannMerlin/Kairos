@@ -21,7 +21,12 @@ import {
   type ChatMessageDto,
   type UnderstandTriggerSource,
 } from '@/features/tasks/chat.api'
-import { generatePlan, getPlanSummary, type PlanSummaryDto } from '@/features/tasks/plans.api'
+import {
+  generatePlan,
+  getPlanSummary,
+  startPlan,
+  type PlanSummaryDto,
+} from '@/features/tasks/plans.api'
 import PlanSummaryCard from '@/features/tasks/PlanSummaryCard.vue'
 import { asSpecDraftPayload, type SpecDraftPayload } from '@/features/tasks/spec.types'
 import { getTask } from '@/features/tasks/tasks.api'
@@ -50,6 +55,9 @@ const errorMsg = ref<string | null>(null)
 const noticeMsg = ref<string | null>(null)
 const taskState = ref<string | null>(null)
 const completionCard = ref<CompletionCardView | null>(null)
+type PlanAction = 'retry_generation' | 'retry_start'
+const planAction = ref<PlanAction | null>(null)
+const planActionBusy = ref(false)
 
 // AI 请求状态机（request-lifecycle 修复）：模型推理不受普通 CRUD 10s 硬超时限制，
 // 慢响应保持「理解中 / 仍在处理」，服务器已持久化成功时不把客户端 transient 错误当失败。
@@ -65,11 +73,19 @@ const understanding = computed(
 const POLL_INTERVAL_MS = 3_000
 /** reconcile 轮询上限（3s × 40 ≈ 120s，覆盖 Provider 有界 45s + 反代余量）。 */
 const MAX_RECONCILE_POLLS = 40
+/** Plan 结果不确定时的独立窗口（3s × 45 = 135s）。 */
+const MAX_PLAN_RECONCILE_POLLS = 45
 /** 慢响应 UX 文案切换阈值。 */
 const SLOW_ELAPSED_SECONDS = 10
 
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
 let disposed = false
+let planController: AbortController | null = null
+
+interface PlanSnapshot {
+  planVersion: number | null
+  runId: number | null
+}
 
 const TERMINAL_STATES = new Set(['COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED'])
 
@@ -87,14 +103,17 @@ function openModelRequired(): void {
   openModal('MODEL_REQUIRED', { returnTo: `/tasks/${taskId.value}/chat` })
 }
 
-async function refreshTaskMeta(): Promise<void> {
+async function refreshTaskMeta(): Promise<boolean> {
   try {
     const shell = await getTask(taskId.value)
+    if (disposed) return false
     taskVersion.value = shell.version
     currentSpecVersion.value = shell.current_spec_version
     taskState.value = shell.state
     if (shell.current_plan_version) {
       planSummary.value = await getPlanSummary(taskId.value, shell.current_plan_version)
+    } else {
+      planSummary.value = null
     }
     // Completion Card 由稳定 completion_id 派生渲染（幂等，不追加 Chat 消息）
     if (TERMINAL_STATES.has(shell.state)) {
@@ -102,13 +121,57 @@ async function refreshTaskMeta(): Promise<void> {
     } else {
       completionCard.value = null
     }
+    return true
   } catch {
     /* keep last known values */
+    return false
   }
 }
 
 async function reloadAll(): Promise<void> {
   await Promise.all([loadChat(), refreshTaskMeta()])
+}
+
+function snapshotPlanState(): PlanSnapshot {
+  return {
+    planVersion: planSummary.value?.plan_version ?? null,
+    runId: planSummary.value?.run_id ?? null,
+  }
+}
+
+function hasPlanFactAdvanced(baseline: PlanSnapshot): boolean {
+  const current = snapshotPlanState()
+  return (
+    current.planVersion !== baseline.planVersion ||
+    (current.runId !== null && current.runId !== baseline.runId)
+  )
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(true)
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve(false)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function reconcilePlanUntilFact(
+  baseline: PlanSnapshot,
+  signal: AbortSignal,
+): Promise<boolean> {
+  for (let i = 0; i < MAX_PLAN_RECONCILE_POLLS; i++) {
+    if (disposed || !(await abortableDelay(POLL_INTERVAL_MS, signal))) return false
+    const refreshed = await refreshTaskMeta()
+    if (refreshed && hasPlanFactAdvanced(baseline)) return true
+  }
+  return false
 }
 
 // Deep Link：/tasks/:taskId/chat?approval=:approvalId → 打开同一个 Approval Drawer（D-057）。
@@ -121,37 +184,97 @@ function openApprovalDeepLink(): void {
 
 async function runPlanGeneration(): Promise<void> {
   if (!currentSpecVersion.value || taskVersion.value === null) return
+  planController?.abort()
+  const controller = new AbortController()
+  planController = controller
   planning.value = true
+  planAction.value = null
   errorMsg.value = null
-  const prevPlanVersion = planSummary.value?.plan_version ?? null
+  noticeMsg.value = null
+  const baseline = snapshotPlanState()
   try {
-    await generatePlan(taskId.value, {
-      spec_version: currentSpecVersion.value,
-      expected_version: taskVersion.value,
-    })
+    await generatePlan(
+      taskId.value,
+      {
+        spec_version: currentSpecVersion.value,
+        expected_version: taskVersion.value,
+      },
+      controller.signal,
+    )
+    if (disposed) return
     await refreshTaskMeta()
     void loadChat()
   } catch (err) {
     const mapped = mapApiError(err)
     // 组件卸载/导航离开：静默，不把客户端取消误报为失败。
-    if (mapped.kind === 'request_aborted') return
-    // Plan 生成是同步模型调用；客户端超时/断连后以服务器持久化的 Plan 版本为准。
-    try {
-      await refreshTaskMeta()
-    } catch {
-      /* keep last known values */
-    }
-    const planAdvanced = !!planSummary.value && planSummary.value.plan_version !== prevPlanVersion
-    if (planAdvanced) {
-      if (mapped.kind === 'client_timeout') {
-        noticeMsg.value = '执行计划已生成（处理时间较长，结果已同步）。'
+    if (disposed || mapped.kind === 'request_aborted') return
+
+    if (mapped.kind === 'network' || mapped.kind === 'client_timeout') {
+      const reconciled = await reconcilePlanUntilFact(baseline, controller.signal)
+      if (reconciled) {
+        noticeMsg.value = '执行计划结果已从服务器同步。'
+        void loadChat()
+      } else if (!disposed && !controller.signal.aborted) {
+        errorMsg.value = '未确认计划结果，请刷新任务状态后再决定是否重试。'
+        planAction.value = 'retry_generation'
       }
+      return
+    }
+
+    if (
+      mapped.kind === 'provider_timeout' ||
+      mapped.kind === 'plan_generation_timeout' ||
+      mapped.kind === 'plan_start_failed'
+    ) {
+      await refreshTaskMeta()
+    }
+
+    if (hasPlanFactAdvanced(baseline) && mapped.kind !== 'plan_start_failed') {
+      noticeMsg.value = '执行计划已生成，结果已从服务器同步。'
       void loadChat()
       return
     }
+
     errorMsg.value = mapped.message
+    if (mapped.kind === 'plan_start_failed' && planSummary.value) {
+      planAction.value = 'retry_start'
+    } else if (mapped.kind === 'provider_timeout' || mapped.kind === 'plan_generation_timeout') {
+      planAction.value = 'retry_generation'
+    }
   } finally {
-    planning.value = false
+    if (planController === controller) {
+      planning.value = false
+      planController = null
+    }
+  }
+}
+
+async function retryPlanStart(): Promise<void> {
+  if (!planSummary.value) return
+  planController?.abort()
+  const controller = new AbortController()
+  planController = controller
+  planActionBusy.value = true
+  errorMsg.value = null
+  try {
+    await startPlan(taskId.value, planSummary.value.plan_version, controller.signal)
+    if (disposed) return
+    await refreshTaskMeta()
+    planAction.value = null
+    noticeMsg.value = '执行计划启动请求已提交。'
+  } catch (err) {
+    const mapped = mapApiError(err)
+    if (disposed || mapped.kind === 'request_aborted') return
+    errorMsg.value =
+      mapped.kind === 'network'
+        ? '启动结果暂未确认；可安全重试启动，请勿重新生成计划。'
+        : mapped.message
+    planAction.value = 'retry_start'
+  } finally {
+    if (planController === controller) {
+      planActionBusy.value = false
+      planController = null
+    }
   }
 }
 
@@ -417,6 +540,8 @@ watch(
 onUnmounted(() => {
   // 组件卸载：停止计时/轮询，避免旧 controller/定时器泄漏影响后续请求。
   disposed = true
+  planController?.abort()
+  planController = null
   stopElapsedTimer()
 })
 </script>
@@ -435,11 +560,37 @@ onUnmounted(() => {
       />
       <p v-if="planning" class="muted">正在生成执行计划…</p>
       <PlanSummaryCard v-if="planSummary" :summary="planSummary" />
+      <p v-if="planSummary?.run_state" class="muted">运行状态：{{ planSummary.run_state }}</p>
+      <ul v-if="planSummary?.validator_issues.length" class="plan-issues">
+        <li v-for="(issue, index) in planSummary.validator_issues" :key="`${issue.code}-${index}`">
+          {{ issue.code }}<span v-if="issue.node_id"> · {{ issue.node_id }}</span>
+        </li>
+      </ul>
       <CompletionCard v-if="completionCard" :card="completionCard" :task-id="taskId" />
       <ChatMessageList :messages="messages" :loading="loading" />
       <p v-if="understanding" class="muted understanding-status">{{ understandingText }}</p>
       <p v-if="errorMsg" class="chat__error">{{ errorMsg }}</p>
       <p v-if="noticeMsg" class="chat__notice">{{ noticeMsg }}</p>
+      <div v-if="planAction || planSummary?.start_recoverable" class="plan-actions">
+        <button
+          v-if="planAction === 'retry_generation'"
+          type="button"
+          class="ghost"
+          :disabled="planning"
+          @click="runPlanGeneration"
+        >
+          重试生成
+        </button>
+        <button
+          v-if="planAction === 'retry_start' || planSummary?.start_recoverable"
+          type="button"
+          class="ghost"
+          :disabled="planActionBusy"
+          @click="retryPlanStart"
+        >
+          {{ planActionBusy ? '启动中…' : '重试启动' }}
+        </button>
+      </div>
     </div>
 
     <div class="chat__footer">
@@ -488,6 +639,16 @@ onUnmounted(() => {
 .chat__notice {
   color: #2e7d32;
   font-size: 0.85rem;
+}
+.plan-issues {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+.plan-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 .muted {
   color: var(--color-text-muted, #777);

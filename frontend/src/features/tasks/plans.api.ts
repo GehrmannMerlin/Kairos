@@ -1,4 +1,4 @@
-import { AI_REQUEST_TIMEOUT_MS, apiClient } from '@/app/api/client'
+import { apiClient } from '@/app/api/client'
 
 /** Plan 生成（D-038：合法低风险 Plan 自动启动，不弹二次确认）。 */
 export interface PlanGenerateCommand {
@@ -13,6 +13,17 @@ export interface PlanGenerateDto {
   node_count: number
   run_id: number | null
   workflow_id: string | null
+  run_state: string | null
+  start_recoverable: boolean
+  validator_issues: ValidatorIssueSummary[]
+}
+
+export interface ValidatorIssueSummary {
+  code: string
+  node_id?: string | null
+  edge_index?: number | null
+  field?: string | null
+  message?: string | null
 }
 
 /** Plan 摘要（D-025 / D-055：Chat 内简洁摘要，不新增 /plan 页面）。 */
@@ -26,18 +37,36 @@ export interface PlanSummaryDto {
   node_types: (string | null)[]
   diff_summary: Record<string, unknown> | null
   trigger_reason: string | null
+  run_id: number | null
+  run_state: string | null
+  start_recoverable: boolean
+  validator_issues: ValidatorIssueSummary[]
   created_at: string
 }
 
 export function generatePlan(
   taskId: string | number,
   cmd: PlanGenerateCommand,
+  signal?: AbortSignal,
 ): Promise<PlanGenerateDto> {
-  // Plan 生成是同步模型调用（生成 + 有界 repair），不是长执行链；HTTP 提交受该
-  // 模型调用时长约束，使用 AI 专用超时。
+  // 浏览器不抢先裁决完整 Plan 生命周期；Provider、Plan 生命周期和反代各自有界。
   return apiClient.post<PlanGenerateDto>(`/tasks/${taskId}/plan`, cmd, {
-    timeoutMs: AI_REQUEST_TIMEOUT_MS,
+    timeoutMs: null,
+    ...(signal ? { signal } : {}),
   })
+}
+
+/** 只恢复已持久化 Plan 的 Workflow 启动；绝不隐式重新生成。 */
+export function startPlan(
+  taskId: string | number,
+  planVersion: number,
+  signal?: AbortSignal,
+): Promise<PlanGenerateDto> {
+  return apiClient.post<PlanGenerateDto>(
+    `/tasks/${taskId}/plans/${planVersion}/start`,
+    undefined,
+    signal ? { signal } : undefined,
+  )
 }
 
 export function getPlanSummary(
