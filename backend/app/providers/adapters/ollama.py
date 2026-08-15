@@ -5,6 +5,7 @@ from __future__ import annotations
 from time import perf_counter
 
 from app.providers.adapters.openai_compatible import map_status
+from app.providers.inference_policy import JSON_OBJECT_CAPABILITY
 from app.providers.protocol import (
     BaseUrlMode,
     ModelCatalogResult,
@@ -26,6 +27,7 @@ class OllamaModelProvider:
         default_base_url="http://localhost:11434",
         protocol_family="ollama",
         base_url_mode=BaseUrlMode.LOCAL_REQUIRED,
+        capability=JSON_OBJECT_CAPABILITY,
     )
 
     def __init__(self, http: HttpClient | None = None) -> None:
