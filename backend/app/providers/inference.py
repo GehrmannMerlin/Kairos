@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.providers import errors
 from app.providers.inference_policy import InferenceIntent, resolve_inference_policy
+from app.providers.inference_telemetry import emit_lifecycle_event
 from app.providers.protocol import ProviderDefinition, ResolvedModel
 from app.providers.transport import HttpClient, HttpResponse, HttpxTransport
 from app.reliability.provider_limit import ProviderLimiter
@@ -70,6 +71,22 @@ def _map_http_error(response: HttpResponse) -> errors.ProviderError:
     return errors.ProviderNetworkError(f"HTTP_{http_status}")
 
 
+def _safe_failure_metadata(exc: BaseException) -> dict[str, object]:
+    if isinstance(exc, errors.ProviderError):
+        response_status = exc.code
+    elif isinstance(exc, asyncio.CancelledError):
+        response_status = "cancelled"
+    else:
+        response_status = "internal_error"
+    phase = exc.phase.value if isinstance(exc, errors.ProviderTimeoutError) else None
+    request_id = exc.request_id if isinstance(exc, errors.ProviderRateLimitedError) else None
+    return {
+        "response_status": response_status,
+        "timeout_phase": phase,
+        "request_id": request_id,
+    }
+
+
 class ModelInferenceClient:
     def __init__(
         self,
@@ -103,6 +120,12 @@ class ModelInferenceClient:
     ) -> InferenceResult:
         started = perf_counter()
         family = resolved.provider_type
+        emit_lifecycle_event(
+            "inference.started",
+            provider_type=family,
+            model=resolved.model_name,
+            intent=self._intent.value,
+        )
         timeout_scope = asyncio.timeout(self._timeout)
         try:
             # M-16：Provider 限流 + 有界重试（429/bounded backoff+jitter；auth/quota 不重试）
@@ -110,10 +133,46 @@ class ModelInferenceClient:
                 text = await self._dispatch_with_retry(resolved, api_key, system, user)
         except TimeoutError as exc:
             if timeout_scope.expired():
-                raise errors.ProviderTimeoutError(phase=errors.TimeoutPhase.OVERALL) from exc
+                timeout_error = errors.ProviderTimeoutError(phase=errors.TimeoutPhase.OVERALL)
+                emit_lifecycle_event(
+                    "inference.failed",
+                    provider_type=family,
+                    model=resolved.model_name,
+                    intent=self._intent.value,
+                    elapsed_ms=int((perf_counter() - started) * 1000),
+                    **_safe_failure_metadata(timeout_error),
+                )
+                raise timeout_error from exc
+            emit_lifecycle_event(
+                "inference.failed",
+                provider_type=family,
+                model=resolved.model_name,
+                intent=self._intent.value,
+                elapsed_ms=int((perf_counter() - started) * 1000),
+                **_safe_failure_metadata(exc),
+            )
+            raise
+        except Exception as exc:
+            emit_lifecycle_event(
+                "inference.failed",
+                provider_type=family,
+                model=resolved.model_name,
+                intent=self._intent.value,
+                elapsed_ms=int((perf_counter() - started) * 1000),
+                **_safe_failure_metadata(exc),
+            )
             raise
         if not text:
-            raise errors.ProviderInferenceError("模型未返回可用内容")
+            empty_error = errors.ProviderInferenceError("模型未返回可用内容")
+            emit_lifecycle_event(
+                "inference.failed",
+                provider_type=family,
+                model=resolved.model_name,
+                intent=self._intent.value,
+                elapsed_ms=int((perf_counter() - started) * 1000),
+                **_safe_failure_metadata(empty_error),
+            )
+            raise empty_error
         return InferenceResult(
             text=text, provider_type=family, duration_ms=int((perf_counter() - started) * 1000)
         )
@@ -144,9 +203,50 @@ class ModelInferenceClient:
             ),
         )
         family = resolved.provider_type
+        attempt_number = 0
+
+        async def dispatch_attempt() -> str:
+            nonlocal attempt_number
+            attempt_number += 1
+            attempt_started = perf_counter()
+            try:
+                result = await self._dispatch(family, resolved, api_key, system, user)
+            except asyncio.CancelledError as exc:
+                emit_lifecycle_event(
+                    "inference.attempt_finished",
+                    provider_type=family,
+                    model=resolved.model_name,
+                    intent=self._intent.value,
+                    attempt_number=attempt_number,
+                    elapsed_ms=int((perf_counter() - attempt_started) * 1000),
+                    **_safe_failure_metadata(exc),
+                )
+                raise
+            except Exception as exc:
+                emit_lifecycle_event(
+                    "inference.attempt_finished",
+                    provider_type=family,
+                    model=resolved.model_name,
+                    intent=self._intent.value,
+                    attempt_number=attempt_number,
+                    elapsed_ms=int((perf_counter() - attempt_started) * 1000),
+                    **_safe_failure_metadata(exc),
+                )
+                raise
+            emit_lifecycle_event(
+                "inference.attempt_finished",
+                provider_type=family,
+                model=resolved.model_name,
+                intent=self._intent.value,
+                attempt_number=attempt_number,
+                elapsed_ms=int((perf_counter() - attempt_started) * 1000),
+                response_status="success",
+            )
+            return result
+
         return await call_with_provider_retry(
             limiter=limiter,
-            fn=lambda: self._dispatch(family, resolved, api_key, system, user),
+            fn=dispatch_attempt,
             max_attempts=cap.default_retry_max_attempts,
             error_class_fn=classify_provider_error,
             retry_after_fn=lambda exc: (
