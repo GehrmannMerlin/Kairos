@@ -17,10 +17,14 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.agents.schemas import GoalUnderstandingResult
 from app.providers.inference import ModelInferenceClient
+from app.providers.inference_factory import build_inference_client
+from app.providers.inference_policy import InferenceIntent
 from app.providers.protocol import ResolvedModel
+from app.providers.transport import HttpClient
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
@@ -33,6 +37,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+if TYPE_CHECKING:
+    from app.config import Settings
 
 GOAL_UNDERSTANDING_SYSTEM_PROMPT = (
     "你是 Kairos 网页信息采集 Agent 的目标理解模块。你的唯一职责：把用户的采集需求"
@@ -127,11 +134,19 @@ def _build_user_prompt(goal_input: GoalInput, chat_context: list[str]) -> str:
 
 
 class GoalUnderstandingAgent:
-    def __init__(self, inference: ModelInferenceClient | None = None) -> None:
+    def __init__(
+        self,
+        inference: ModelInferenceClient | None = None,
+        *,
+        settings: Settings | None = None,
+        http: HttpClient | None = None,
+    ) -> None:
         from app.config import get_settings
 
-        self._inference = inference or ModelInferenceClient(
-            timeout_seconds=get_settings().provider_inference_timeout_seconds
+        self._inference = inference or build_inference_client(
+            intent=InferenceIntent.GOAL_EXTRACTION,
+            settings=settings or get_settings(),
+            http=http,
         )
 
     def _build_function(self, resolved: ResolvedModel, api_key: str | None):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from app.providers import errors
 from app.providers.inference import ModelInferenceClient
+from app.providers.inference_policy import InferenceIntent
 from app.providers.protocol import ResolvedModel
 from tests.providers.fake_transport import FakeHttpClient
 
@@ -13,7 +14,11 @@ USER = "帮我搜集供应商"
 
 
 async def _run(fake, resolved, api_key="sk-test") -> str:
-    client = ModelInferenceClient(http=fake, retry_base_delay_seconds=0.001)
+    client = ModelInferenceClient(
+        intent=InferenceIntent.GOAL_EXTRACTION,
+        http=fake,
+        retry_base_delay_seconds=0.001,
+    )
     result = await client.generate(resolved=resolved, api_key=api_key, system=SYSTEM, user=USER)
     return result.text
 

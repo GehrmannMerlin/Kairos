@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.domain.task_types import TaskType
 from app.plan.schemas import PlanGraphDraft
 from app.providers.inference import ModelInferenceClient
+from app.providers.inference_factory import build_inference_client
+from app.providers.inference_policy import InferenceIntent
 from app.providers.protocol import ResolvedModel
+from app.providers.transport import HttpClient
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
@@ -26,6 +30,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+if TYPE_CHECKING:
+    from app.config import Settings
 
 PLAN_SYSTEM_PROMPT = (
     "你是 Kairos 网页信息采集 Agent 的计划生成模块。你的唯一职责：根据已确认的"
@@ -109,12 +116,16 @@ def _to_user_text(messages: list[ModelMessage]) -> str:
 @dataclass
 class PlanGeneratorAgent:
     inference: ModelInferenceClient | None = None
+    settings: Settings | None = None
+    http: HttpClient | None = None
 
     def __post_init__(self) -> None:
         from app.config import get_settings
 
-        self._inference = self.inference or ModelInferenceClient(
-            timeout_seconds=get_settings().provider_inference_timeout_seconds
+        self._inference = self.inference or build_inference_client(
+            intent=InferenceIntent.PLAN_STRUCTURED,
+            settings=self.settings or get_settings(),
+            http=self.http,
         )
 
     def _build_function(self, resolved: ResolvedModel, api_key: str | None, inp: PlanInput):

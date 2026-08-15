@@ -19,6 +19,10 @@ from sqlalchemy.orm import sessionmaker
 
 
 class _FakePlanInference(ModelInferenceClient):
+    def __init__(self) -> None:
+        # The fake supplies generate() completely and intentionally has no transport state.
+        pass
+
     async def generate(self, *, resolved, api_key, system, user) -> InferenceResult:
         return InferenceResult(
             text=(

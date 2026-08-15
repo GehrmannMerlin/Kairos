@@ -23,7 +23,14 @@ class FakeHttpClient:
         body: dict | None = None,
     ) -> HttpResponse:
         self.calls.append(
-            {"method": method, "url": url, "headers": headers, "params": params, "body": body}
+            {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "timeout_seconds": timeout_seconds,
+                "body": body,
+            }
         )
         if self._raise_network:
             raise ConnectionError("boom")

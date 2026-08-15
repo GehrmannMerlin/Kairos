@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent
@@ -24,7 +25,13 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from app.extraction.contracts import ExtractionSettings
 from app.providers.inference import ModelInferenceClient
+from app.providers.inference_factory import build_inference_client
+from app.providers.inference_policy import InferenceIntent
 from app.providers.protocol import ResolvedModel
+from app.providers.transport import HttpClient
+
+if TYPE_CHECKING:
+    from app.config import Settings
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -115,12 +122,16 @@ def _to_user_text(messages: list[ModelMessage]) -> str:
 class SemanticExtractionAgent:
     inference: ModelInferenceClient | None = None
     settings: ExtractionSettings = field(default_factory=ExtractionSettings)
+    inference_settings: Settings | None = None
+    http: HttpClient | None = None
 
     def __post_init__(self) -> None:
         from app.config import get_settings
 
-        self._inference = self.inference or ModelInferenceClient(
-            timeout_seconds=get_settings().provider_inference_timeout_seconds
+        self._inference = self.inference or build_inference_client(
+            intent=InferenceIntent.CUSTOM_AGENT,
+            settings=self.inference_settings or get_settings(),
+            http=self.http,
         )
         self._resolved: ResolvedModel | None = None
         self._api_key: str | None = None
