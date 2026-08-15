@@ -241,6 +241,10 @@ class PlanService:
         from app.domain.errors import DomainError
 
         task = TaskRepository(self._db).get_owned_for_update(user_id, task_id)
+        # The preflight read can leave Task in this Session's identity map while another
+        # transaction advances its frozen pointers. Refresh under the acquired lock so a
+        # stale cached instance can never authorize Run creation.
+        self._db.refresh(task, with_for_update=True)
         plan = PlanVersionRepository(self._db).get_version(user_id, task_id, plan_version)
         if plan.spec_version != spec_version:
             raise DomainError("Plan 与 Spec 版本不匹配")

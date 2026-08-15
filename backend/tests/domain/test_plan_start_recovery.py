@@ -7,12 +7,13 @@ import asyncio
 import pytest
 from app.config import Settings
 from app.domain.errors import DomainError, ExecutionPreflightBlockedError
-from app.domain.models import Run
+from app.domain.models import Run, Task
 from app.domain.repository import SpecVersionRepository
 from app.domain.task_types import TaskType
 from app.plan.nodes import NodeType
 from app.plan.service import PlanService
 from app.workflows.starter import RunStartedResult
+from sqlalchemy.orm import Session
 
 
 class _YieldingStarter:
@@ -210,3 +211,56 @@ async def test_auto_start_rejects_ready_fact_when_current_identity_changes(
 
     assert starter.calls == []
     assert db.query(Run).filter(Run.task_id == task.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_start_refreshes_locked_task_after_another_session_advances_plan(
+    db, task, user
+) -> None:
+    starter = _YieldingStarter()
+    _persist_frozen_plan(db, task, user, starter)
+    session_a = Session(bind=db.get_bind(), expire_on_commit=False)
+    session_b = Session(bind=db.get_bind(), expire_on_commit=False)
+    try:
+        service_a = PlanService(session_a, starter=starter, settings=Settings())
+        service_a.require_ready_preflight(
+            user_id=user.id,
+            task_id=task.id,
+            spec_version=1,
+            plan_version=1,
+            settings=Settings(),
+        )
+        stale_task = session_a.get(Task, task.id)
+        assert stale_task is not None
+        assert stale_task.current_plan_version == 1
+
+        PlanService(session_b, starter=None).persist_plan(
+            user_id=user.id,
+            task_id=task.id,
+            spec_version=1,
+            graph={
+                "task_id": task.id,
+                "spec_version": 1,
+                "task_type": TaskType.SPECIFIED_SOURCE.value,
+                "nodes": [],
+                "edges": [],
+            },
+            validation_status="VALID",
+            fingerprint_value="fp-plan-start-interleaved-v2",
+            registry_versions={},
+        )
+        assert stale_task.current_plan_version == 1
+
+        with pytest.raises(DomainError, match="当前冻结"):
+            await service_a.auto_start(
+                user_id=user.id,
+                task_id=task.id,
+                spec_version=1,
+                plan_version=1,
+            )
+
+        assert starter.calls == []
+        assert session_a.query(Run).filter(Run.task_id == task.id).count() == 0
+    finally:
+        session_a.close()
+        session_b.close()
