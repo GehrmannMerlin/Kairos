@@ -23,6 +23,7 @@ from app.providers.protocol import ResolvedModel
 from app.providers.transport import HttpClient
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -56,6 +57,7 @@ PLAN_SYSTEM_PROMPT = (
     "不要把 fetch 排在 access_rules_check 之前，也不要把 snapshot 当 url 传递。\n"
     "\n允许节点清单：{registry_json}\n"
     "执行约束：{constraints_json}\n"
+    "修复上下文（仅修复调用存在）：{repair_json}\n"
     "Spec 内容：{spec_json}\n"
     "\n输出契约（示例资源链）：\n"
     '{{"schema_version": "m08.1", "task_id": 1, "spec_version": 1, '
@@ -84,6 +86,7 @@ def _system_prompt(inp: PlanInput) -> str:
     return PLAN_SYSTEM_PROMPT.format(
         registry_json=json.dumps(inp.registry_metadata, ensure_ascii=False),
         constraints_json=json.dumps(inp.execution_constraints, ensure_ascii=False),
+        repair_json=json.dumps(inp.repair_context, ensure_ascii=False),
         spec_json=json.dumps(inp.spec_payload, ensure_ascii=False),
     )
 
@@ -98,6 +101,7 @@ class PlanInput(BaseModel):
     task_type: TaskType
     registry_metadata: list[dict]
     execution_constraints: dict
+    repair_context: dict | None = None
 
 
 def _to_user_text(messages: list[ModelMessage]) -> str:
@@ -135,7 +139,12 @@ class PlanGeneratorAgent:
             result = await self._inference.generate(
                 resolved=resolved, api_key=api_key, system=system, user=user
             )
-            parsed = json.loads(result.text)
+            try:
+                parsed = json.loads(result.text)
+            except json.JSONDecodeError as exc:
+                from app.providers.errors import ProviderInferenceError
+
+                raise ProviderInferenceError("模型返回的计划不是有效 JSON") from exc
             tool_name = (
                 agent_info.output_tools[0].name if agent_info.output_tools else "final_result"
             )
@@ -154,7 +163,12 @@ class PlanGeneratorAgent:
             model=FunctionModel(self._build_function(resolved, api_key, inp)),
             output_type=PlanGraphDraft,
             system_prompt=_system_prompt(inp),
-            retries=1,
+            retries=0,
         )
-        result = await agent.run(_user_prompt(inp))
+        try:
+            result = await agent.run(_user_prompt(inp))
+        except UnexpectedModelBehavior as exc:
+            from app.providers.errors import ProviderInferenceError
+
+            raise ProviderInferenceError("模型返回的计划不符合结构化输出契约") from exc
         return result.output

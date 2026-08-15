@@ -7,7 +7,7 @@ WAITING_CONFIRMATION / NEEDS_USER / BLOCK_APPROVAL 等第二套结果名。
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -61,3 +61,9 @@ class PlanValidationIssue(BaseModel):
     message: str
     node_id: str | None = None
     path: str | None = None
+    edge_from_node_id: str | None = None
+    edge_to_node_id: str | None = None
+    resource_kind: str | None = None
+    parameter_path: str | None = None
+    expected_schema: dict[str, Any] | None = None
+    actual_value_summary: str | None = None
