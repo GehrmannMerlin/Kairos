@@ -14,6 +14,8 @@ from app.providers import errors as provider_errors
 
 
 class ErrorClass(StrEnum):
+    CONNECT_TIMEOUT = "connect_timeout"
+    READ_TIMEOUT = "read_timeout"
     NETWORK_TIMEOUT = "network_timeout"
     TRANSIENT_SERVICE_ERROR = "transient_service_error"
     RATE_LIMITED = "rate_limited"
@@ -75,6 +77,10 @@ def classify_provider_error(exc: Exception) -> ErrorClass:
         return ErrorClass.AUTH_FAILED
     if isinstance(exc, provider_errors.ProviderRateLimitedError):
         return ErrorClass.RATE_LIMITED
+    if isinstance(exc, provider_errors.ProviderTimeoutError):
+        if exc.phase is provider_errors.TimeoutPhase.CONNECT:
+            return ErrorClass.CONNECT_TIMEOUT
+        return ErrorClass.READ_TIMEOUT
     if isinstance(exc, provider_errors.ProviderNetworkError):
         return ErrorClass.NETWORK_TIMEOUT
     if isinstance(exc, provider_errors.ProviderInferenceError):
@@ -96,7 +102,13 @@ def classify_provider_error(exc: Exception) -> ErrorClass:
 
 
 _DOMAIN_BREAKER_CLASSES = frozenset(
-    {ErrorClass.NETWORK_TIMEOUT, ErrorClass.TRANSIENT_SERVICE_ERROR, ErrorClass.DOMAIN_UNAVAILABLE}
+    {
+        ErrorClass.CONNECT_TIMEOUT,
+        ErrorClass.READ_TIMEOUT,
+        ErrorClass.NETWORK_TIMEOUT,
+        ErrorClass.TRANSIENT_SERVICE_ERROR,
+        ErrorClass.DOMAIN_UNAVAILABLE,
+    }
 )
 
 

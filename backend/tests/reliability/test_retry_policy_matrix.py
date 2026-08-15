@@ -46,6 +46,31 @@ def test_provider_429_maps_to_rate_limited() -> None:
     assert classify_provider_error(perrors.ProviderRateLimitedError("x")) is ErrorClass.RATE_LIMITED
 
 
+def test_provider_timeout_phase_maps_to_distinct_retry_class() -> None:
+    assert (
+        classify_provider_error(perrors.ProviderTimeoutError(phase=perrors.TimeoutPhase.CONNECT))
+        is ErrorClass.CONNECT_TIMEOUT
+    )
+    assert (
+        classify_provider_error(perrors.ProviderTimeoutError(phase=perrors.TimeoutPhase.READ))
+        is ErrorClass.READ_TIMEOUT
+    )
+
+
+def test_connect_timeout_allows_only_one_retry() -> None:
+    first = decide_retry(error_class=ErrorClass.CONNECT_TIMEOUT, attempt=0, max_attempts=3)
+    second = decide_retry(error_class=ErrorClass.CONNECT_TIMEOUT, attempt=1, max_attempts=3)
+
+    assert first.should_retry is True
+    assert second.should_retry is False
+
+
+def test_read_timeout_never_retries() -> None:
+    decision = decide_retry(error_class=ErrorClass.READ_TIMEOUT, attempt=0, max_attempts=3)
+
+    assert decision.should_retry is False
+
+
 def test_fetch_dns_is_network_timeout_and_counts_for_breaker() -> None:
     ec = classify_fetch_error_code(FetchErrorCode.DNS_ERROR)
     assert ec is ErrorClass.NETWORK_TIMEOUT

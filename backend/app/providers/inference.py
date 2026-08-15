@@ -12,6 +12,7 @@ Chat error instead of a bare 500.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from app.providers import errors
 from app.providers.inference_policy import InferenceIntent, resolve_inference_policy
 from app.providers.protocol import ProviderDefinition, ResolvedModel
-from app.providers.transport import HttpClient, HttpxTransport
+from app.providers.transport import HttpClient, HttpResponse, HttpxTransport
 from app.reliability.provider_limit import ProviderLimiter
 
 if TYPE_CHECKING:
@@ -42,7 +43,18 @@ class InferenceResult:
     duration_ms: int
 
 
-def _map_http_error(http_status: int) -> errors.ProviderError:
+def _parse_retry_after(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        retry_after = float(value)
+    except ValueError:
+        return None
+    return retry_after if retry_after >= 0 else None
+
+
+def _map_http_error(response: HttpResponse) -> errors.ProviderError:
+    http_status = response.status_code
     if http_status == 400:
         return errors.ProviderInferenceError("HTTP_400")
     if http_status in (401, 403):
@@ -50,7 +62,11 @@ def _map_http_error(http_status: int) -> errors.ProviderError:
     if http_status == 404:
         return errors.ProviderModelNotFoundError("HTTP_404")
     if http_status == 429:
-        return errors.ProviderRateLimitedError("HTTP_429")
+        return errors.ProviderRateLimitedError(
+            "HTTP_429",
+            retry_after_seconds=_parse_retry_after(response.headers.get("retry-after")),
+            request_id=(response.headers.get("x-request-id") or response.headers.get("request-id")),
+        )
     return errors.ProviderNetworkError(f"HTTP_{http_status}")
 
 
@@ -63,6 +79,7 @@ class ModelInferenceClient:
         http: HttpClient | None = None,
         timeout_seconds: float | None = None,
         retry_base_delay_seconds: float = 2.0,
+        retry_rand: Callable[[], float] | None = None,
         definition_resolver: Callable[[str], ProviderDefinition] | None = None,
     ) -> None:
         from app.config import get_settings
@@ -73,6 +90,7 @@ class ModelInferenceClient:
         self._http = http or HttpxTransport()
         self._timeout = timeout_seconds if timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS
         self._retry_base_delay = retry_base_delay_seconds
+        self._retry_rand = retry_rand
         self._definition_resolver = definition_resolver or get_model_definition
 
     async def generate(
@@ -85,13 +103,15 @@ class ModelInferenceClient:
     ) -> InferenceResult:
         started = perf_counter()
         family = resolved.provider_type
+        timeout_scope = asyncio.timeout(self._timeout)
         try:
             # M-16：Provider 限流 + 有界重试（429/bounded backoff+jitter；auth/quota 不重试）
-            text = await self._dispatch_with_retry(resolved, api_key, system, user)
-        except errors.ProviderError:
+            async with timeout_scope:
+                text = await self._dispatch_with_retry(resolved, api_key, system, user)
+        except TimeoutError as exc:
+            if timeout_scope.expired():
+                raise errors.ProviderTimeoutError(phase=errors.TimeoutPhase.OVERALL) from exc
             raise
-        except Exception as exc:
-            raise errors.ProviderNetworkError("推理请求失败") from exc
         if not text:
             raise errors.ProviderInferenceError("模型未返回可用内容")
         return InferenceResult(
@@ -129,7 +149,13 @@ class ModelInferenceClient:
             fn=lambda: self._dispatch(family, resolved, api_key, system, user),
             max_attempts=cap.default_retry_max_attempts,
             error_class_fn=classify_provider_error,
+            retry_after_fn=lambda exc: (
+                exc.retry_after_seconds
+                if isinstance(exc, errors.ProviderRateLimitedError)
+                else None
+            ),
             base_delay_seconds=self._retry_base_delay,
+            rand=self._retry_rand,
         )
 
     async def _dispatch(
@@ -176,7 +202,7 @@ class ModelInferenceClient:
             body=body,
         )
         if resp.status_code != 200:
-            raise _map_http_error(resp.status_code)
+            raise _map_http_error(resp)
         choices = (resp.body or {}).get("choices") or []
         if not choices:
             raise errors.ProviderInferenceError("响应缺少 choices")
@@ -207,7 +233,7 @@ class ModelInferenceClient:
             body=body,
         )
         if resp.status_code != 200:
-            raise _map_http_error(resp.status_code)
+            raise _map_http_error(resp)
         content = (resp.body or {}).get("content") or []
         if not content:
             raise errors.ProviderInferenceError("响应缺少 content")
@@ -236,7 +262,7 @@ class ModelInferenceClient:
             body=body,
         )
         if resp.status_code != 200:
-            raise _map_http_error(resp.status_code)
+            raise _map_http_error(resp)
         candidates = (resp.body or {}).get("candidates") or []
         if not candidates:
             raise errors.ProviderInferenceError("响应缺少 candidates")

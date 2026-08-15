@@ -87,6 +87,29 @@ def decide_retry(
     """
     remaining = attempt < max_attempts - 1
 
+    if error_class is ErrorClass.CONNECT_TIMEOUT:
+        connect_retry_remaining = attempt < min(max_attempts, 2) - 1
+        return RetryDecision(
+            error_class=error_class,
+            should_retry=connect_retry_remaining,
+            strategy=RetryStrategy.TRANSIENT_BACKOFF,
+            delay_seconds=jitter_seconds(_backoff_delay(base_delay_seconds, attempt), rand=rand),
+            attempt=attempt,
+            max_attempts=max_attempts,
+            reason="connect timeout permits one retry",
+        )
+
+    if error_class is ErrorClass.READ_TIMEOUT:
+        return RetryDecision(
+            error_class=error_class,
+            should_retry=False,
+            strategy=RetryStrategy.NONE,
+            delay_seconds=0.0,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            reason="read timeout may represent a completed generation",
+        )
+
     if error_class is ErrorClass.RESOURCE_UNAVAILABLE:
         return RetryDecision(
             error_class=error_class,
