@@ -34,8 +34,8 @@ class _FakePlanInference(ModelInferenceClient):
             await asyncio.sleep(self._state["generation_delay"])
         return InferenceResult(
             text=(
-                '{"schema_version":"m08.1","task_id":1,"spec_version":1,'
-                '"task_type":"SPECIFIED_SOURCE",'
+                '{"schema_version":"m08.1","task_id":999,"spec_version":999,'
+                '"task_type":"EXPLORATORY",'
                 '"nodes":['
                 '{"node_id":"n1","node_type":"fetch","definition_version":"1.0.0",'
                 '"parameters":{"url_template":"https://example.com/item/{id}"},"depends_on":[],"optional":false,"fail_policy":"block"},'
@@ -179,6 +179,30 @@ def test_plan_generate_persists_and_returns_summary(plan_client: dict, caplog) -
     assert summary.status_code == 200
     assert summary.json()["node_count"] == 2
     assert summary.json()["validation_status"] == body["validation_status"]
+
+
+def test_plan_persists_command_owned_identity_over_model_identity(plan_client: dict) -> None:
+    c = plan_client["client"]
+    _register(c, "identity@example.com")
+    c.post("/api/tasks", json={"content": "占用模型示例任务 ID"})
+    task_id = c.post("/api/tasks", json={"content": "抓取指定网站"}).json()["task_id"]
+    spec_version = _confirmed_spec(c, task_id)
+
+    response = c.post(
+        f"/api/tasks/{task_id}/plan",
+        json={"spec_version": spec_version, "expected_version": 2},
+    )
+
+    assert response.status_code == 200, response.text
+    session = plan_client["factory"]()
+    try:
+        row = session.query(PlanVersion).filter_by(task_id=task_id, version=1).one()
+    finally:
+        session.close()
+    graph = row.payload["graph"]
+    assert graph["task_id"] == task_id
+    assert graph["spec_version"] == spec_version
+    assert graph["task_type"] == TaskType.SPECIFIED_SOURCE.value
 
 
 def test_plan_rejects_missing_spec_owner_safe(plan_client: dict) -> None:
