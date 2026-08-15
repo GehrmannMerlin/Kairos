@@ -196,6 +196,38 @@ class PlanVersion(Base):
     )
 
 
+class ExecutionPreflightResult(Base):
+    """Immutable readiness fact for one frozen Plan and executor manifest."""
+
+    __tablename__ = "execution_preflight_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "plan_version",
+            "capability_manifest_version",
+            name="uq_execution_preflight_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    capability_manifest_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    issues: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    search_config_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    search_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class Run(Base):
     __tablename__ = "runs"
 
@@ -218,6 +250,7 @@ class Run(Base):
 
 class NodeRun(Base):
     __tablename__ = "node_runs"
+    __table_args__ = (UniqueConstraint("run_id", "node_id", name="uq_node_runs_run_node_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     run_id: Mapped[int] = mapped_column(
@@ -229,6 +262,8 @@ class NodeRun(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # Legacy rows predate frozen Plan node identity and remain nullable.
+    node_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     node_type: Mapped[str] = mapped_column(String(50), nullable=False)
     state: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

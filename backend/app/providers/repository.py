@@ -296,6 +296,19 @@ class SearchConfigRepository:
             )
         )
 
+    def get_first_available(self, user_id: int) -> SearchConfig | None:
+        """Stable owner-scoped selection for frozen execution preflight."""
+        return self._db.scalar(
+            select(SearchConfig)
+            .where(
+                SearchConfig.user_id == user_id,
+                SearchConfig.is_current.is_(True),
+                SearchConfig.connection_status == "available",
+            )
+            .order_by(SearchConfig.created_at.asc(), SearchConfig.id.asc())
+            .limit(1)
+        )
+
     def mark_connection(
         self, user_id: int, config_id: str, status: str, tested_at: datetime
     ) -> None:
