@@ -44,9 +44,16 @@ class PreparedPlanStart:
 
 
 class PlanService:
-    def __init__(self, db: Any, *, starter: TaskWorkflowStarter | Any | None) -> None:
+    def __init__(
+        self,
+        db: Any,
+        *,
+        starter: TaskWorkflowStarter | Any | None,
+        settings: Any | None = None,
+    ) -> None:
         self._db = db
         self._starter = starter
+        self._settings = settings
 
     @staticmethod
     def _preflight_issue_payloads(issues: list[Any]) -> list[dict]:
@@ -208,6 +215,15 @@ class PlanService:
     async def auto_start(
         self, *, user_id: int, task_id: int, spec_version: int, plan_version: int
     ) -> tuple[int | None, str | None]:
+        if self._settings is None:
+            raise RuntimeError("execution readiness settings are required")
+        self.require_ready_preflight(
+            user_id=user_id,
+            task_id=task_id,
+            spec_version=spec_version,
+            plan_version=plan_version,
+            settings=self._settings,
+        )
         prepared = self.prepare_start(
             user_id=user_id,
             task_id=task_id,
@@ -224,10 +240,12 @@ class PlanService:
 
         from app.domain.errors import DomainError
 
-        TaskRepository(self._db).get_owned_for_update(user_id, task_id)
+        task = TaskRepository(self._db).get_owned_for_update(user_id, task_id)
         plan = PlanVersionRepository(self._db).get_version(user_id, task_id, plan_version)
         if plan.spec_version != spec_version:
             raise DomainError("Plan 与 Spec 版本不匹配")
+        if task.current_spec_version != spec_version or task.current_plan_version != plan_version:
+            raise DomainError("Plan 与当前冻结任务版本不匹配")
 
         run_repo = RunRepository(self._db)
         run = run_repo.find_active_for_task(user_id, task_id)
