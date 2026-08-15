@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from app.providers.inference_policy import DEFAULT_PROVIDER_CAPABILITY, ProviderCapability
+
 
 class ProviderTestStatus(StrEnum):
     AVAILABLE = "AVAILABLE"
@@ -104,6 +106,7 @@ class ProviderDefinition:
     default_base_url: str | None
     protocol_family: str
     base_url_mode: BaseUrlMode
+    capability: ProviderCapability = DEFAULT_PROVIDER_CAPABILITY
 
 
 @dataclass(frozen=True)
