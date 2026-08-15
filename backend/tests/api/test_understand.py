@@ -14,6 +14,8 @@ from app.auth.rate_limit import InMemoryLoginLimiter
 from app.config import Settings, get_settings
 from app.credentials.repository import CredentialRepository
 from app.credentials.vault import CredentialVault
+from app.domain.models import UnderstandingAttempt
+from app.domain.spec import SourceScope
 from app.domain.task_types import TaskType
 from app.infra.db import Base
 from app.infra.deps import get_db
@@ -32,6 +34,30 @@ def _exploratory_result() -> GoalUnderstandingResult:
     return GoalUnderstandingResult(
         task_type=TaskType.EXPLORATORY,
         goal="搜集深圳的工业自动化设备供应商",
+        confidence=0.9,
+    )
+
+
+def _specified_result_without_url() -> GoalUnderstandingResult:
+    return GoalUnderstandingResult(
+        task_type=TaskType.SPECIFIED_SOURCE,
+        goal="采集指定网站公示",
+        source_scope=SourceScope(
+            mode=TaskType.SPECIFIED_SOURCE,
+            source_hints=["山东省人民政府官网"],
+        ),
+        confidence=0.9,
+    )
+
+
+def _result_with_invalid_source_url() -> GoalUnderstandingResult:
+    return GoalUnderstandingResult(
+        task_type=TaskType.SPECIFIED_SOURCE,
+        goal="采集指定网站公示",
+        source_scope=SourceScope(
+            mode=TaskType.SPECIFIED_SOURCE,
+            seed_urls=["ftp://example.com/notice"],
+        ),
         confidence=0.9,
     )
 
@@ -145,6 +171,33 @@ def client_provider_failure(tmp_path):
     app.dependency_overrides.clear()
 
 
+@pytest.fixture()
+def client_model_omits_url(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'model-omits-url.db'}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    app, limiter = _make_app(factory, fake_result=_specified_result_without_url())
+    with TestClient(app) as test_client:
+        yield {"client": test_client, "factory": factory, "limiter": limiter}
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def client_invalid_model_source(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'invalid-model-source.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    app, limiter = _make_app(factory, fake_result=_result_with_invalid_source_url())
+    with TestClient(app) as test_client:
+        yield {"client": test_client, "factory": factory, "limiter": limiter}
+    app.dependency_overrides.clear()
+
+
 def _register(client: TestClient, email: str) -> dict:
     resp = client.post(
         "/api/auth/register",
@@ -198,6 +251,47 @@ def test_understand_produces_typed_result_and_spec_draft(client: dict) -> None:
     chat = c.get(f"/api/tasks/{task_id}/chat")
     roles = [m["role"] for m in chat.json()["messages"]]
     assert roles == ["user", "assistant"]
+
+
+def test_understand_preserves_literal_user_url_omitted_by_model(
+    client_model_omits_url: dict,
+) -> None:
+    c, factory = client_model_omits_url["client"], client_model_omits_url["factory"]
+    user = _register(c, "alice@example.com")["user"]
+    _seed_available_model(factory, user["id"])
+    created = c.post(
+        "/api/tasks",
+        json={"content": "请采集 https://www.shandong.gov.cn/ 的任前公示"},
+    )
+
+    response = c.post(f"/api/tasks/{created.json()['task_id']}/understand")
+
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["task_type"] == "SPECIFIED_SOURCE"
+    assert result["source_scope"]["seed_urls"] == ["https://www.shandong.gov.cn/"]
+
+
+def test_understand_invalid_model_url_marks_attempt_failed(
+    client_invalid_model_source: dict,
+) -> None:
+    c, factory = client_invalid_model_source["client"], client_invalid_model_source["factory"]
+    user = _register(c, "alice@example.com")["user"]
+    _seed_available_model(factory, user["id"])
+    created = c.post("/api/tasks", json={"content": "请采集指定网站公示"})
+    task_id = created.json()["task_id"]
+
+    response = c.post(f"/api/tasks/{task_id}/understand")
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "PROVIDER_INFERENCE_ERROR"
+    session = factory()
+    try:
+        attempt = session.query(UnderstandingAttempt).filter_by(task_id=task_id).one()
+        assert attempt.status == "failed"
+        assert attempt.error_code == "PROVIDER_INFERENCE_ERROR"
+    finally:
+        session.close()
 
 
 def test_understand_model_not_configured_preserves_input(client_no_model: dict) -> None:

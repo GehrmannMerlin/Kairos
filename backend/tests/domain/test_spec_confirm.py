@@ -169,3 +169,65 @@ def test_confirm_rejects_specified_source_without_seed(db, service, user, task) 
             expected_version=task.version,
             spec_payload=payload,
         )
+
+
+def test_confirm_rejects_mismatched_specified_task_type_and_source_mode(
+    db, service, user, task
+) -> None:
+    payload = _payload()
+    payload["task_type"] = "SPECIFIED_SOURCE"
+    payload["source_scope"] = {
+        "mode": "EXPLORATORY",
+        "seed_urls": [],
+        "source_hints": [],
+    }
+    with pytest.raises(SpecValidationError, match="任务类型和来源范围"):
+        service.confirm_spec(
+            user_id=user.id,
+            task_id=task.id,
+            expected_version=task.version,
+            spec_payload=payload,
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://example.com/notice",
+        "https://user:password@example.com/notice",
+        "https://example.com:bad/notice",
+        "https://[::1",
+    ],
+)
+def test_confirm_rejects_unsafe_specified_source_url(db, service, user, task, url: str) -> None:
+    payload = _payload()
+    payload["task_type"] = "SPECIFIED_SOURCE"
+    payload["source_scope"] = {
+        "mode": "SPECIFIED_SOURCE",
+        "seed_urls": [url],
+        "source_hints": [],
+    }
+    with pytest.raises(SpecValidationError, match="网址不合法"):
+        service.confirm_spec(
+            user_id=user.id,
+            task_id=task.id,
+            expected_version=task.version,
+            spec_payload=payload,
+        )
+
+
+def test_confirm_canonicalizes_specified_source_before_persistence(db, service, user, task) -> None:
+    payload = _payload()
+    payload["task_type"] = "SPECIFIED_SOURCE"
+    payload["source_scope"] = {
+        "mode": "SPECIFIED_SOURCE",
+        "seed_urls": ["HTTPS://Example.COM/a/../notice#top"],
+        "source_hints": ["示例官网"],
+    }
+    version = service.confirm_spec(
+        user_id=user.id,
+        task_id=task.id,
+        expected_version=task.version,
+        spec_payload=payload,
+    )
+    assert version.payload["source_scope"]["seed_urls"] == ["https://example.com/notice"]

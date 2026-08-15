@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from app.discovery.errors import DiscoveryValidationError
 from app.discovery.url import canonical_url
 from app.domain.spec import SourceScope
 from app.domain.task_types import TaskType
@@ -39,9 +40,14 @@ def normalize_source_contract(
         for text in explicit_texts
         for match in re.findall(r"https?://[^\s<>\'\"]+", text, flags=re.IGNORECASE)
     ]
-    seed_urls = list(
-        dict.fromkeys(canonical_url(raw) for raw in [*source_scope.seed_urls, *explicit_urls])
-    )
+    try:
+        seed_urls = list(
+            dict.fromkeys(canonical_url(raw) for raw in [*source_scope.seed_urls, *explicit_urls])
+        )
+    except DiscoveryValidationError:
+        raise
+    except ValueError as exc:
+        raise DiscoveryValidationError("URL 格式不合法") from exc
     source_hints = list(dict.fromkeys(h.strip() for h in source_scope.source_hints if h.strip()))
     if seed_urls:
         return SourceContractResult(

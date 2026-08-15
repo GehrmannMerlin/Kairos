@@ -79,6 +79,8 @@ def test_literal_url_in_user_text_survives_model_omission() -> None:
     [
         ("ftp://example.com/notice", "不支持的 scheme"),
         ("https://user:password@example.com/notice", "URL 不允许包含用户信息"),
+        ("https://example.com:bad/notice", "URL 格式不合法"),
+        ("https://[::1", "URL 格式不合法"),
     ],
 )
 def test_unsafe_seed_url_is_rejected(url: str, message: str) -> None:
