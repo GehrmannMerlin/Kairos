@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -40,6 +41,7 @@ from app.plan.nodes import NodeRegistry
 from app.plan.schemas import PlanValidationResult
 from app.plan.service import PlanService, PreparedPlanStart, plan_fingerprint
 from app.providers.deps import get_credential_vault, get_provider_service
+from app.providers.inference_telemetry import emit_lifecycle_event
 from app.providers.service import ProviderService
 from app.workflows.starter import TaskWorkflowStarter
 
@@ -141,6 +143,7 @@ async def generate_plan(
             }
             graph_payload = outcome.graph.model_dump(mode="json")
             service = PlanService(db, starter=None)
+            persistence_started = perf_counter()
             row = service.persist_plan(
                 user_id=user.id,
                 task_id=task_id,
@@ -153,6 +156,14 @@ async def generate_plan(
                 model_config_version=outcome.audit.get("model_config_version"),
                 validation_issues=_validator_issue_summaries(outcome.issues),
                 expected_task_version=cmd.expected_version,
+            )
+            issue_codes = tuple(sorted({issue.code for issue in outcome.issues}))
+            emit_lifecycle_event(
+                "plan.persisted",
+                elapsed_ms=int((perf_counter() - persistence_started) * 1000),
+                response_status=row.validation_status,
+                plan_version=row.version,
+                issue_codes=issue_codes,
             )
 
             can_start = outcome.validation_result in (
@@ -167,6 +178,7 @@ async def generate_plan(
                     spec_version=cmd.spec_version,
                     plan_version=row.version,
                 )
+                workflow_start_started = perf_counter()
                 try:
                     temporal_client = await temporal_client_factory()
                     await service.dispatch_prepared_start(
@@ -174,6 +186,13 @@ async def generate_plan(
                         starter=TaskWorkflowStarter(temporal_client, settings),
                     )
                 except RPCError as exc:
+                    emit_lifecycle_event(
+                        "plan.workflow_start_finished",
+                        elapsed_ms=int((perf_counter() - workflow_start_started) * 1000),
+                        response_status="rpc_error",
+                        plan_version=row.version,
+                        run_state=prepared.run_state,
+                    )
                     raise PlanStartFailedError(
                         "计划已保存，但工作流服务暂时不可用；可安全重试启动",
                         context=_persisted_plan_context(
@@ -182,6 +201,22 @@ async def generate_plan(
                             node_count=len(outcome.graph.nodes),
                         ),
                     ) from exc
+                except Exception:
+                    emit_lifecycle_event(
+                        "plan.workflow_start_finished",
+                        elapsed_ms=int((perf_counter() - workflow_start_started) * 1000),
+                        response_status="internal_error",
+                        plan_version=row.version,
+                        run_state=prepared.run_state,
+                    )
+                    raise
+                emit_lifecycle_event(
+                    "plan.workflow_start_finished",
+                    elapsed_ms=int((perf_counter() - workflow_start_started) * 1000),
+                    response_status="success",
+                    plan_version=row.version,
+                    run_state=prepared.run_state,
+                )
 
             return _plan_response(
                 row=row,
@@ -225,6 +260,7 @@ async def start_persisted_plan(
     )
     graph = (row.payload or {}).get("graph", {})
     node_count = len(graph.get("nodes", []))
+    workflow_start_started = perf_counter()
     try:
         temporal_client = await temporal_client_factory()
         await service.dispatch_prepared_start(
@@ -232,10 +268,33 @@ async def start_persisted_plan(
             starter=TaskWorkflowStarter(temporal_client, settings),
         )
     except RPCError as exc:
+        emit_lifecycle_event(
+            "plan.workflow_start_finished",
+            elapsed_ms=int((perf_counter() - workflow_start_started) * 1000),
+            response_status="rpc_error",
+            plan_version=row.version,
+            run_state=prepared.run_state,
+        )
         raise PlanStartFailedError(
             "计划已保存，但工作流服务暂时不可用；可安全重试启动",
             context=_persisted_plan_context(row=row, prepared=prepared, node_count=node_count),
         ) from exc
+    except Exception:
+        emit_lifecycle_event(
+            "plan.workflow_start_finished",
+            elapsed_ms=int((perf_counter() - workflow_start_started) * 1000),
+            response_status="internal_error",
+            plan_version=row.version,
+            run_state=prepared.run_state,
+        )
+        raise
+    emit_lifecycle_event(
+        "plan.workflow_start_finished",
+        elapsed_ms=int((perf_counter() - workflow_start_started) * 1000),
+        response_status="success",
+        plan_version=row.version,
+        run_state=prepared.run_state,
+    )
     return _plan_response(row=row, prepared=prepared, node_count=node_count)
 
 

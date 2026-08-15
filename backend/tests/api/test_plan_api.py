@@ -151,7 +151,8 @@ def _confirmed_spec(client: TestClient, task_id: int) -> int:
     return r.json()["spec_version"]
 
 
-def test_plan_generate_persists_and_returns_summary(plan_client: dict) -> None:
+def test_plan_generate_persists_and_returns_summary(plan_client: dict, caplog) -> None:
+    caplog.set_level("INFO", logger="kairos.inference_lifecycle")
     c = plan_client["client"]
     _register(c, "alice@example.com")
     task_id = c.post("/api/tasks", json={"content": "抓取网站"}).json()["task_id"]
@@ -167,6 +168,12 @@ def test_plan_generate_persists_and_returns_summary(plan_client: dict) -> None:
     assert body["validation_status"] in ("VALID", "REQUIRES_APPROVAL")
     assert body["run_state"] == "pending"
     assert body["start_recoverable"] is False
+    lifecycle_events = [
+        record.event_name for record in caplog.records if hasattr(record, "event_name")
+    ]
+    assert "plan.validation_finished" in lifecycle_events
+    assert "plan.persisted" in lifecycle_events
+    assert "plan.workflow_start_finished" in lifecycle_events
 
     summary = c.get(f"/api/tasks/{task_id}/plans/1")
     assert summary.status_code == 200

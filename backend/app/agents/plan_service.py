@@ -21,6 +21,7 @@ from app.plan.schemas import PlanGraphDraft, PlanValidationIssue, PlanValidation
 from app.plan.validator import validate_plan
 from app.providers.errors import ProviderInferenceError
 from app.providers.inference import ModelInferenceClient
+from app.providers.inference_telemetry import emit_lifecycle_event
 from app.providers.protocol import ResolvedModel
 from app.providers.registry import build_model_provider
 from app.providers.service import ProviderService
@@ -134,6 +135,12 @@ class PlanGenerationService:
             available_search=bool(inp.execution_constraints.get("has_search_provider")),
         )
         validation_duration_ms = int((perf_counter() - validation_started) * 1000)
+        emit_lifecycle_event(
+            "plan.validation_finished",
+            elapsed_ms=validation_duration_ms,
+            response_status=outcome.result.value,
+            issue_codes=tuple(sorted({issue.code for issue in outcome.issues})),
+        )
         return PlanGenerationOutcome(
             graph=graph,
             validation_result=outcome.result,
@@ -163,9 +170,7 @@ class PlanGenerationService:
             repair_context = build_plan_repair_context(
                 outcome.graph, outcome.issues, self._registry
             )
-            repair_input = inp.model_copy(
-                update={"repair_context": repair_context}
-            )
+            repair_input = inp.model_copy(update={"repair_context": repair_context})
             outcome = await self._run_with_graph(
                 inp.spec_payload, repair_input, resolved, api_key=api_key
             )
