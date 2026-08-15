@@ -202,7 +202,7 @@ class TaskDraftService:
         """'添加网址' only writes into Draft Context (D-034); no fetch happens here."""
         try:
             url = canonical_url(url)
-        except DiscoveryValidationError as exc:
+        except (DiscoveryValidationError, ValueError) as exc:
             from app.domain.errors import DomainError
 
             raise DomainError(str(exc)) from exc

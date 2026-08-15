@@ -108,8 +108,32 @@ def validate_spec_payload(payload: dict) -> SpecDraftPayload:
 def validate_confirmable_spec_payload(payload: dict) -> SpecDraftPayload:
     """Validate a frozen spec while keeping editable drafts permissive."""
     spec = validate_spec_payload(payload)
-    if spec.source_scope.mode is TaskType.SPECIFIED_SOURCE and not spec.source_scope.seed_urls:
-        from app.domain.errors import SpecValidationError
+    from app.discovery.errors import DiscoveryValidationError
+    from app.domain.errors import SpecValidationError
+    from app.domain.source_contract import normalize_source_contract
 
+    if spec.task_type is not None and spec.task_type is not spec.source_scope.mode:
+        raise SpecValidationError("任务类型和来源范围必须一致")
+    try:
+        contract = normalize_source_contract(
+            task_type=spec.task_type or spec.source_scope.mode,
+            source_scope=spec.source_scope,
+            search_available=False,
+        )
+    except (DiscoveryValidationError, ValueError) as exc:
+        raise SpecValidationError("指定来源网址不合法") from exc
+
+    if contract.source_scope.seed_urls:
+        return spec.model_copy(
+            update={
+                "task_type": contract.task_type,
+                "source_scope": contract.source_scope,
+            }
+        )
+    if (
+        spec.task_type is TaskType.SPECIFIED_SOURCE
+        or spec.source_scope.mode is TaskType.SPECIFIED_SOURCE
+    ):
         raise SpecValidationError("指定来源任务必须提供至少一个完整网址")
+
     return spec

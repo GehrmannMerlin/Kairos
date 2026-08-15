@@ -175,3 +175,15 @@ def test_add_seed_url_writes_draft_context_only(client: dict) -> None:
     bad = c.post(f"/api/tasks/{task_id}/seed-urls", json={"url": "not-a-url"})
     assert bad.status_code == 400
     assert bad.json()["detail"]["code"] == "DOMAIN_ERROR"
+
+
+@pytest.mark.parametrize("url", ["https://example.com:bad/notice", "https://[::1"])
+def test_add_seed_url_rejects_malformed_urls_as_domain_errors(client: dict, url: str) -> None:
+    c = client["client"]
+    _register(c, "alice@example.com")
+    task_id = _create(c)["task_id"]
+
+    response = c.post(f"/api/tasks/{task_id}/seed-urls", json={"url": url})
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "DOMAIN_ERROR"

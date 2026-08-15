@@ -27,6 +27,7 @@ from app.agents.goal_understanding import GoalInput, GoalUnderstandingAgent
 from app.agents.schemas import GoalUnderstandingResult
 from app.auth.models import User
 from app.credentials.vault import CredentialVault
+from app.discovery.errors import DiscoveryValidationError
 from app.domain.idempotency import stable_fingerprint
 from app.domain.models import ChatMessage, Task
 from app.domain.source_contract import normalize_source_contract
@@ -218,12 +219,29 @@ class GoalUnderstandingService:
         user_texts = [m.content for m in user_msgs]
         started = perf_counter()
         try:
-            result = await self._agent.understand(
-                goal_input=goal_input,
-                chat_context=user_texts[:-1],
-                resolved=resolved,
-                api_key=api_key,
-            )
+            try:
+                result = await self._agent.understand(
+                    goal_input=goal_input,
+                    chat_context=user_texts[:-1],
+                    resolved=resolved,
+                    api_key=api_key,
+                )
+                contract = normalize_source_contract(
+                    task_type=result.task_type,
+                    source_scope=result.source_scope,
+                    search_available=self._provider.has_available_search_config(user),
+                    explicit_texts=tuple(user_texts),
+                )
+                result = result.model_copy(
+                    update={
+                        "task_type": contract.task_type,
+                        "source_scope": contract.source_scope,
+                        "clarification_required": not contract.ready,
+                        "clarification_question": contract.clarification_question,
+                    }
+                )
+            except (DiscoveryValidationError, ValueError) as exc:
+                raise ProviderInferenceError("模型返回的来源网址无效") from exc
         except provider_errors.ProviderError as exc:
             duration_ms = int((perf_counter() - started) * 1000)
             # Recoverable Agent error: persist an error message so the Chat shows
@@ -242,21 +260,6 @@ class GoalUnderstandingService:
             attempts.mark_failed(attempt, error_code="INTERNAL")
             raise
         duration_ms = int((perf_counter() - started) * 1000)
-
-        contract = normalize_source_contract(
-            task_type=result.task_type,
-            source_scope=result.source_scope,
-            search_available=self._provider.has_available_search_config(user),
-            explicit_texts=tuple(user_texts),
-        )
-        result = result.model_copy(
-            update={
-                "task_type": contract.task_type,
-                "source_scope": contract.source_scope,
-                "clarification_required": not contract.ready,
-                "clarification_question": contract.clarification_question,
-            }
-        )
 
         payload = result_to_spec_payload(result)
         drafts.save_spec_draft(user_id=user.id, task_id=task_id, payload=payload)
