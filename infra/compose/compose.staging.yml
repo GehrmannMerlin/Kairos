@@ -48,6 +48,9 @@ services:
   api:
     <<: *staging-env-file
     container_name: kairos-api
+    environment:
+      KAIROS_PROVIDER_INFERENCE_TIMEOUT_SECONDS: "45"
+      KAIROS_PLAN_LIFECYCLE_TIMEOUT_SECONDS: "105"
     networks:
       - default
       - edge
@@ -56,6 +59,8 @@ services:
     <<: *staging-env-file
     environment:
       <<: *m16-capacity
+      KAIROS_PROVIDER_INFERENCE_TIMEOUT_SECONDS: "45"
+      KAIROS_PLAN_LIFECYCLE_TIMEOUT_SECONDS: "105"
 
   web:
     <<: *staging-env-file

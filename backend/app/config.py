@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -75,10 +75,10 @@ class Settings(BaseSettings):
     credential_key_version: str = "k1"
     provider_test_timeout_seconds: float = 15.0
     # 同步模型调用（Goal Understanding / Plan 生成 / 语义提取）的 Provider 有界超时。
-    # 浏览器 AI 超时（60s）与反代 read timeout（90s）都必须显著大于此值，避免外层先断。
-    provider_inference_timeout_seconds: float = 45.0
+    # Plan 前端不自动超时；完整生命周期 105s、反代 120s 必须依次覆盖此值。
+    provider_inference_timeout_seconds: float = Field(default=45.0, gt=0)
     # 完整 Plan 生命周期：生成（至多两次）+ 校验 + 单次持久化 + Workflow 启动。
-    plan_lifecycle_timeout_seconds: float = 105.0
+    plan_lifecycle_timeout_seconds: float = Field(default=105.0, gt=0)
 
     # --- API / CORS ---
     api_port: int = 8000
