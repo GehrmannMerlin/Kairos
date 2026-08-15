@@ -14,7 +14,7 @@ from app.config import Settings
 from app.domain.task_types import TaskType
 from app.plan.nodes import NodeRegistry
 from app.plan.schemas import PlanGraphDraft
-from app.providers import errors
+from app.providers import errors, inference_telemetry
 from app.providers.inference import ModelInferenceClient
 from app.providers.inference_policy import InferenceIntent
 from app.providers.inference_telemetry import LIFECYCLE_EVENTS, emit_lifecycle_event
@@ -165,6 +165,23 @@ def test_lifecycle_event_is_rendered_to_stderr_as_safe_json() -> None:
     serialized = json.dumps(payload, ensure_ascii=False).lower()
     assert SECRET.lower() not in serialized
     assert PROMPT.lower() not in serialized
+
+
+def test_lifecycle_event_adds_the_active_correlation_id(
+    lifecycle_caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        inference_telemetry,
+        "_current_correlation_id",
+        lambda: "0123456789abcdef0123456789abcdef",
+        raising=False,
+    )
+
+    emit_lifecycle_event("inference.started", intent="PLAN_STRUCTURED")
+
+    records = _event_records(lifecycle_caplog)
+    assert records[-1].correlation_id == "0123456789abcdef0123456789abcdef"
 
 
 @pytest.mark.asyncio

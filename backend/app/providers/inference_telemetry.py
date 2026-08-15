@@ -63,6 +63,25 @@ def _configure_lifecycle_logger() -> None:
 _configure_lifecycle_logger()
 
 
+def _current_correlation_id() -> str | None:
+    from app.observability.context import get_log_context
+
+    context = get_log_context()
+    contextual = context.get("correlation_id") or context.get("trace_id")
+    if isinstance(contextual, str) and contextual:
+        return contextual
+    try:
+        from opentelemetry import trace
+
+        span = trace.get_current_span()
+        span_context = span.get_span_context() if span.is_recording() else None
+        if span_context is not None and span_context.is_valid:
+            return f"{span_context.trace_id:032x}"
+    except Exception:
+        return None
+    return None
+
+
 def _normalize_field(name: str, value: object) -> object:
     if value is None or isinstance(value, _SCALAR_TYPES):
         return value
@@ -82,6 +101,10 @@ def emit_lifecycle_event(event_name: str, **fields: object) -> None:
 
     if event_name not in LIFECYCLE_EVENTS:
         raise ValueError(f"lifecycle event {event_name!r} is not registered")
+    if "correlation_id" not in fields:
+        correlation_id = _current_correlation_id()
+        if correlation_id is not None:
+            fields["correlation_id"] = correlation_id
     unknown = fields.keys() - _ALLOWED_FIELDS
     if unknown:
         raise ValueError(f"telemetry fields are not allowlisted: {sorted(unknown)}")
