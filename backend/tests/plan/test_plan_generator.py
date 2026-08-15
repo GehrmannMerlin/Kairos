@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 from app.agents.plan_generator import PlanGeneratorAgent, PlanInput
-from app.agents.plan_service import PlanGenerationService
+from app.agents.plan_service import PlanGenerationService, PlanValidationFailure
 from app.domain.spec import SpecDraftPayload
 from app.domain.task_types import TaskType
 from app.plan.nodes import NodeRegistry
@@ -148,6 +148,9 @@ async def test_one_repair_then_pass() -> None:
         PlanValidationResult.VALID,
         PlanValidationResult.REQUIRES_APPROVAL,
     )
+    assert outcome.audit["generation_calls"] == 2
+    assert "generation_duration_ms" in outcome.audit
+    assert "validation_duration_ms" in outcome.audit
 
 
 @pytest.mark.asyncio
@@ -205,7 +208,8 @@ async def test_second_failure_is_blocked() -> None:
         '"nodes":[{"node_id":"n1","node_type":"ssh_into_server","definition_version":"1.0.0",'
         '"parameters":{},"depends_on":[],"optional":false,"fail_policy":"block"}],"edges":[]}'
     )
-    service = PlanGenerationService(inference=FakeInference(always_bad))
-    outcome = await service._repair_loop(_input(), RESOLVED, api_key=None, max_repairs=1)
-    assert outcome.validation_result == PlanValidationResult.INVALID
-    assert outcome.repair_used is True
+    fake = FakeInference(always_bad)
+    service = PlanGenerationService(inference=fake)
+    with pytest.raises(PlanValidationFailure) as caught:
+        await service._repair_loop(_input(), RESOLVED, api_key=None, max_repairs=1)
+    assert caught.value.issues[0].code == "NODE_NOT_REGISTERED"

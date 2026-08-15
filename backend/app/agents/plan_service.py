@@ -13,11 +13,13 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from app.agents.plan_generator import PlanGeneratorAgent, PlanInput
+from app.agents.plan_repair import build_plan_repair_context
 from app.auth.models import User
 from app.domain.task_types import TaskType
 from app.plan.nodes import NodeRegistry
 from app.plan.schemas import PlanGraphDraft, PlanValidationIssue, PlanValidationResult
 from app.plan.validator import validate_plan
+from app.providers.errors import ProviderInferenceError
 from app.providers.inference import ModelInferenceClient
 from app.providers.protocol import ResolvedModel
 from app.providers.registry import build_model_provider
@@ -35,6 +37,17 @@ class PlanGenerationOutcome:
     issues: list[PlanValidationIssue]
     repair_used: bool
     audit: dict[str, Any] = field(default_factory=dict)
+
+
+class PlanValidationFailure(ProviderInferenceError):
+    """The bounded repair call still produced a deterministically invalid graph."""
+
+    def __init__(
+        self, issues: list[PlanValidationIssue], *, audit: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__("模型未能生成通过确定性校验的计划")
+        self.issues = issues
+        self.audit = audit or {}
 
 
 class PlanGenerationService:
@@ -110,19 +123,27 @@ class PlanGenerationService:
         """
         started = perf_counter()
         resolved_model = resolved or ResolvedModel("deepseek", "placeholder", None, None)
+        generation_started = perf_counter()
         graph = await self._agent.generate(inp, resolved_model, api_key=api_key)
+        generation_duration_ms = int((perf_counter() - generation_started) * 1000)
+        validation_started = perf_counter()
         outcome = validate_plan(
             graph,
             spec_payload,
             self._registry,
             available_search=bool(inp.execution_constraints.get("has_search_provider")),
         )
+        validation_duration_ms = int((perf_counter() - validation_started) * 1000)
         return PlanGenerationOutcome(
             graph=graph,
             validation_result=outcome.result,
             issues=outcome.issues,
             repair_used=False,
-            audit={"duration_ms": int((perf_counter() - started) * 1000)},
+            audit={
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "generation_duration_ms": generation_duration_ms,
+                "validation_duration_ms": validation_duration_ms,
+            },
         )
 
     async def _repair_loop(
@@ -135,23 +156,34 @@ class PlanGenerationService:
     ) -> PlanGenerationOutcome:
         started = perf_counter()
         outcome = await self._run_with_graph(inp.spec_payload, inp, resolved, api_key=api_key)
+        attempt_audits = [outcome.audit]
         repair_used = False
         if outcome.validation_result == PlanValidationResult.INVALID and max_repairs > 0:
             repair_used = True
-            # 把 Validator 的可纠正结构问题作为明确证据喂回模型（D-013 有证据纠错）
+            repair_context = build_plan_repair_context(
+                outcome.graph, outcome.issues, self._registry
+            )
             repair_input = inp.model_copy(
-                update={
-                    "execution_constraints": {
-                        **inp.execution_constraints,
-                        "validator_issues": [i.model_dump(mode="json") for i in outcome.issues],
-                    }
-                }
+                update={"repair_context": repair_context}
             )
             outcome = await self._run_with_graph(
                 inp.spec_payload, repair_input, resolved, api_key=api_key
             )
+            attempt_audits.append(outcome.audit)
             outcome.repair_used = True
-        outcome.audit["duration_ms"] = int((perf_counter() - started) * 1000)
+        aggregate_audit = {
+            "duration_ms": int((perf_counter() - started) * 1000),
+            "generation_duration_ms": sum(
+                int(attempt.get("generation_duration_ms", 0)) for attempt in attempt_audits
+            ),
+            "validation_duration_ms": sum(
+                int(attempt.get("validation_duration_ms", 0)) for attempt in attempt_audits
+            ),
+            "generation_calls": len(attempt_audits),
+        }
+        if outcome.validation_result == PlanValidationResult.INVALID:
+            raise PlanValidationFailure(outcome.issues, audit=aggregate_audit)
+        outcome.audit.update(aggregate_audit)
         outcome.repair_used = repair_used
         return outcome
 

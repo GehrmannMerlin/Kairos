@@ -26,7 +26,9 @@ Validator 不调用 LLM。按固定顺序检查并返回结构化 error code；�
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.plan.nodes import NodeRegistry, NodeType, RiskLevel
 from app.plan.schemas import (
@@ -65,6 +67,34 @@ def _node_effective_risk(
     return definition_risk
 
 
+def _safe_value_summary(value: Any, *, limit: int = 500) -> str:
+    sensitive_fragments = (
+        "secret",
+        "token",
+        "password",
+        "authorization",
+        "api_key",
+        "credential",
+    )
+
+    def _redact(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {
+                str(key): (
+                    "[REDACTED]"
+                    if any(fragment in str(key).lower() for fragment in sensitive_fragments)
+                    else _redact(child)
+                )
+                for key, child in item.items()
+            }
+        if isinstance(item, list):
+            return [_redact(child) for child in item]
+        return item
+
+    rendered = json.dumps(_redact(value), ensure_ascii=False, sort_keys=True, default=str)
+    return rendered if len(rendered) <= limit else f"{rendered[:limit]}…"
+
+
 def _validate_parameters(
     node_type: NodeType | str,
     definition_risk: RiskLevel,
@@ -83,6 +113,9 @@ def _validate_parameters(
                 code="PARAMETER_SCHEMA_INVALID",
                 message=f"节点参数不符合契约: {str(exc)[:200]}",
                 path="parameters",
+                parameter_path="parameters",
+                expected_schema=definition.parameter_schema.model_json_schema(),
+                actual_value_summary=_safe_value_summary(parameters),
             )
         )
     return issues, _node_effective_risk(node_type, definition_risk, parameters)
@@ -177,6 +210,8 @@ def validate_plan(
         node_risk_levels[n.node_id] = effective_risk
         for pi in param_issues:
             pi.node_id = n.node_id
+            if pi.parameter_path is not None:
+                pi.parameter_path = f"nodes.{n.node_id}.{pi.parameter_path}"
             issues.append(pi)
 
     # 8. typed resource edge compatibility（基本方向校验；M-09 深化）
@@ -207,6 +242,12 @@ def validate_plan(
                                 f"{edge.from_node_id} 流向 {edge.to_node_id}"
                             ),
                             node_id=edge.to_node_id,
+                            path=(
+                                f"edges.{edge.from_node_id}->{edge.to_node_id}.resource_refs"
+                            ),
+                            edge_from_node_id=edge.from_node_id,
+                            edge_to_node_id=edge.to_node_id,
+                            resource_kind=ref.kind.value,
                         )
                     )
 
