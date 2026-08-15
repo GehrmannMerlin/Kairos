@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from temporalio.client import Client
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from app.config import Settings, get_settings
 from app.domain.repository import RunRepository, TaskRepository
@@ -49,11 +50,35 @@ class TaskWorkflowStarter:
         finally:
             session.close()
 
-        workflow_id = f"task-workflow-{task_id}"
+        return await self.start_persisted_run(
+            user_id=user_id,
+            task_id=task_id,
+            run_id=run.id,
+            spec_version=spec_version,
+            plan_version=plan_version,
+            workflow_id=f"task-workflow-{task_id}",
+            task_queue=task_queue,
+            pause_timeout_seconds=pause_timeout_seconds,
+        )
+
+    async def start_persisted_run(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        run_id: int,
+        spec_version: int,
+        plan_version: int,
+        workflow_id: str,
+        task_queue: str | None = None,
+        pause_timeout_seconds: int | None = None,
+    ) -> RunStartedResult:
+        """Start Temporal for a run that is already durable in PostgreSQL."""
+
         inp = TaskWorkflowInput(
             task_id=task_id,
             user_id=user_id,
-            run_id=run.id,
+            run_id=run_id,
             spec_version=spec_version,
             plan_version=plan_version,
             pause_timeout_seconds=(
@@ -63,13 +88,17 @@ class TaskWorkflowStarter:
             ),
             cancel_timeout_seconds=self._settings.task_cancel_timeout_seconds,
         )
-        await self._client.start_workflow(
-            "task_workflow",
-            arg=inp,
-            id=workflow_id,
-            task_queue=task_queue or self._settings.temporal_task_queue,
-        )
-        return RunStartedResult(run_id=run.id, workflow_id=workflow_id)
+        try:
+            await self._client.start_workflow(
+                "task_workflow",
+                arg=inp,
+                id=workflow_id,
+                task_queue=task_queue or self._settings.temporal_task_queue,
+            )
+        except WorkflowAlreadyStartedError as exc:
+            if exc.workflow_id != workflow_id:
+                raise
+        return RunStartedResult(run_id=run_id, workflow_id=workflow_id)
 
     async def submit_validated_plan(
         self,

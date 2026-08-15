@@ -67,6 +67,14 @@ class TaskRepository:
     def get_owned(self, user_id: int, task_id: int) -> Task:
         return _owned(self._db, Task, user_id, task_id)
 
+    def get_owned_for_update(self, user_id: int, task_id: int) -> Task:
+        row = self._db.scalar(
+            select(Task).where(Task.id == task_id, Task.user_id == user_id).with_for_update()
+        )
+        if row is None:
+            raise NotFoundError("资源不存在")
+        return row
+
     def list_by_user(self, user_id: int) -> list[Task]:
         return list(
             self._db.scalars(
@@ -413,6 +421,7 @@ class PlanVersionRepository:
         trigger_reason: str | None = None,
         replan_evidence_refs: list | None = None,
         diff_summary: dict | None = None,
+        commit: bool = True,
     ) -> PlanVersion:
         row = PlanVersion(
             user_id=user_id,
@@ -432,8 +441,11 @@ class PlanVersionRepository:
             diff_summary=diff_summary,
         )
         self._db.add(row)
-        self._db.commit()
-        self._db.refresh(row)
+        if commit:
+            self._db.commit()
+            self._db.refresh(row)
+        else:
+            self._db.flush()
         return row
 
     def get_owned(self, user_id: int, plan_id: int) -> PlanVersion:
@@ -477,7 +489,15 @@ class RunRepository:
     def __init__(self, db: Any) -> None:
         self._db = db
 
-    def create(self, *, user_id: int, task_id: int, spec_version: int, plan_version: int) -> Run:
+    def create(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        spec_version: int,
+        plan_version: int,
+        commit: bool = True,
+    ) -> Run:
         row = Run(
             user_id=user_id,
             task_id=task_id,
@@ -486,12 +506,27 @@ class RunRepository:
             state="pending",
         )
         self._db.add(row)
-        self._db.commit()
-        self._db.refresh(row)
+        if commit:
+            self._db.commit()
+            self._db.refresh(row)
+        else:
+            self._db.flush()
         return row
 
     def get_owned(self, user_id: int, run_id: int) -> Run:
         return _owned(self._db, Run, user_id, run_id)
+
+    def find_active_for_task(self, user_id: int, task_id: int) -> Run | None:
+        return self._db.scalar(
+            select(Run)
+            .where(
+                Run.user_id == user_id,
+                Run.task_id == task_id,
+                Run.state.in_(("pending", "running")),
+            )
+            .order_by(Run.id.desc())
+            .limit(1)
+        )
 
 
 class NodeRunRepository:

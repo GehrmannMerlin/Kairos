@@ -12,7 +12,7 @@ from typing import Any
 
 from app.domain.idempotency import stable_fingerprint
 from app.domain.models import PlanVersion
-from app.domain.repository import PlanVersionRepository, TaskRepository
+from app.domain.repository import PlanVersionRepository, RunRepository, TaskRepository
 from app.state.events import append_domain_event, enqueue_outbox
 from app.workflows.starter import TaskWorkflowStarter
 
@@ -30,8 +30,19 @@ class PlanCreatedResult:
     workflow_id: str | None
 
 
+@dataclass(frozen=True)
+class PreparedPlanStart:
+    run_id: int
+    workflow_id: str
+    user_id: int
+    task_id: int
+    spec_version: int
+    plan_version: int
+    run_state: str
+
+
 class PlanService:
-    def __init__(self, db: Any, *, starter: TaskWorkflowStarter | Any) -> None:
+    def __init__(self, db: Any, *, starter: TaskWorkflowStarter | Any | None) -> None:
         self._db = db
         self._starter = starter
 
@@ -51,7 +62,14 @@ class PlanService:
         trigger_reason: str | None = None,
         replan_evidence_refs: list | None = None,
         diff_summary: dict | None = None,
+        validation_issues: list[dict] | None = None,
+        expected_task_version: int | None = None,
     ) -> PlanVersion:
+        task = TaskRepository(self._db).get_owned_for_update(user_id, task_id)
+        if expected_task_version is not None and task.version != expected_task_version:
+            from app.domain.errors import StaleVersionError
+
+            raise StaleVersionError("任务已被其他操作修改")
         repo = PlanVersionRepository(self._db)
         version = repo.next_version(user_id, task_id)
         row = repo.create(
@@ -59,7 +77,7 @@ class PlanService:
             task_id=task_id,
             spec_version=spec_version,
             version=version,
-            payload={"graph": graph},
+            payload={"graph": graph, "validator_issues": validation_issues or []},
             validation_status=validation_status,
             plan_fingerprint=fingerprint_value,
             registry_versions=registry_versions,
@@ -69,8 +87,8 @@ class PlanService:
             trigger_reason=trigger_reason,
             replan_evidence_refs=replan_evidence_refs,
             diff_summary=diff_summary,
+            commit=False,
         )
-        task = TaskRepository(self._db).get_owned(user_id, task_id)
         task.current_plan_version = version
         task.version += 1
         self._db.add(task)
@@ -101,13 +119,76 @@ class PlanService:
     async def auto_start(
         self, *, user_id: int, task_id: int, spec_version: int, plan_version: int
     ) -> tuple[int | None, str | None]:
-        started = await self._starter.submit_validated_plan(
+        prepared = self.prepare_start(
             user_id=user_id,
             task_id=task_id,
             spec_version=spec_version,
             plan_version=plan_version,
         )
+        started = await self.dispatch_prepared_start(prepared)
         return started.run_id, started.workflow_id
+
+    def prepare_start(
+        self, *, user_id: int, task_id: int, spec_version: int, plan_version: int
+    ) -> PreparedPlanStart:
+        """Serialize active-run lookup and creation on the owned task row."""
+
+        from app.domain.errors import DomainError
+
+        TaskRepository(self._db).get_owned_for_update(user_id, task_id)
+        plan = PlanVersionRepository(self._db).get_version(user_id, task_id, plan_version)
+        if plan.spec_version != spec_version:
+            raise DomainError("Plan 与 Spec 版本不匹配")
+
+        run_repo = RunRepository(self._db)
+        run = run_repo.find_active_for_task(user_id, task_id)
+        if run is not None and run.plan_version != plan_version:
+            raise DomainError("任务已有其他计划版本正在执行")
+        if run is None:
+            run = run_repo.create(
+                user_id=user_id,
+                task_id=task_id,
+                spec_version=spec_version,
+                plan_version=plan_version,
+                commit=False,
+            )
+            self._db.commit()
+            self._db.refresh(run)
+        else:
+            # Release SELECT FOR UPDATE while the external Temporal RPC is in flight.
+            self._db.commit()
+
+        return PreparedPlanStart(
+            run_id=run.id,
+            workflow_id=f"task-workflow-{task_id}",
+            user_id=user_id,
+            task_id=task_id,
+            spec_version=spec_version,
+            plan_version=plan_version,
+            run_state=run.state,
+        )
+
+    async def dispatch_prepared_start(
+        self,
+        prepared: PreparedPlanStart,
+        *,
+        starter: TaskWorkflowStarter | Any | None = None,
+    ) -> Any:
+        selected_starter = starter or self._starter
+        if selected_starter is None:
+            raise RuntimeError("workflow starter is required")
+        if prepared.run_state == "running":
+            from app.workflows.starter import RunStartedResult
+
+            return RunStartedResult(prepared.run_id, prepared.workflow_id)
+        return await selected_starter.start_persisted_run(
+            user_id=prepared.user_id,
+            task_id=prepared.task_id,
+            run_id=prepared.run_id,
+            spec_version=prepared.spec_version,
+            plan_version=prepared.plan_version,
+            workflow_id=prepared.workflow_id,
+        )
 
     def create_replan(
         self,
@@ -135,7 +216,7 @@ class PlanService:
             task_id=task_id,
             spec_version=spec_version,
             version=version,
-            payload={"graph": graph},
+            payload={"graph": graph, "validator_issues": []},
             parent_plan_version_id=parent.id,
             validation_status="replan",
             plan_fingerprint=fingerprint_value,
@@ -177,6 +258,9 @@ class PlanService:
         row = PlanVersionRepository(self._db).get_version(user_id, task_id, plan_version)
         graph = (row.payload or {}).get("graph", {}) if row.payload else {}
         nodes = graph.get("nodes", []) if graph else []
+        active_run = RunRepository(self._db).find_active_for_task(user_id, task_id)
+        if active_run is not None and active_run.plan_version != plan_version:
+            active_run = None
         return {
             "task_id": task_id,
             "plan_version": row.version,
@@ -187,6 +271,10 @@ class PlanService:
             "node_types": [n.get("node_type") for n in nodes],
             "diff_summary": row.diff_summary,
             "trigger_reason": row.trigger_reason,
+            "run_id": active_run.id if active_run is not None else None,
+            "run_state": active_run.state if active_run is not None else None,
+            "start_recoverable": bool(active_run is not None and active_run.state == "pending"),
+            "validator_issues": (row.payload or {}).get("validator_issues", []),
             "created_at": row.created_at,
         }
 
