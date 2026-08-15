@@ -53,9 +53,7 @@ def _backoff_delay(base: float, attempt: int) -> float:
     return min(base * (2 ** max(0, attempt - 1)), _BACKOFF_CAP_SECONDS)
 
 
-def correction_fingerprint(
-    *, inputs: dict, tool: str, parameters: dict, environment: dict
-) -> str:
+def correction_fingerprint(*, inputs: dict, tool: str, parameters: dict, environment: dict) -> str:
     """纠错指纹：input/tool/parameter/environment 任一变化 → 新指纹。
 
     防 LLM 同样输入无限再试：相同指纹的重试被 decide_retry 拒绝。
@@ -184,9 +182,7 @@ def decide_retry(
             delay_seconds=jitter_seconds(base_delay_seconds, rand=rand),
             attempt=attempt,
             max_attempts=max_attempts,
-            reason=(
-                "correction retry" if changed else "correction retry requires strategy change"
-            ),
+            reason=("correction retry" if changed else "correction retry requires strategy change"),
             requires_change=not changed,
         )
 
