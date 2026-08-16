@@ -82,39 +82,25 @@ class ExecutionRepository:
             URLResource.task_id == task_id,
         )
 
-    def run_url_stats(
+    def run_url_facts(
         self,
         *,
         user_id: int,
         task_id: int,
         run_id: int,
         spec_version: int,
-    ) -> dict[str, int]:
-        return self._url_stats(
-            URLResource.user_id == user_id,
-            URLResource.task_id == task_id,
-            URLResource.run_id == run_id,
-            URLResource.spec_version == spec_version,
-        )
-
-    def run_url_hashes(
-        self,
-        *,
-        user_id: int,
-        task_id: int,
-        run_id: int,
-        spec_version: int,
-    ) -> set[str]:
-        return set(
-            self._db.scalars(
-                select(URLResource.url_hash).where(
+    ) -> dict[str, str]:
+        return {
+            str(url_hash): str(status)
+            for url_hash, status in self._db.execute(
+                select(URLResource.url_hash, URLResource.status).where(
                     URLResource.user_id == user_id,
                     URLResource.task_id == task_id,
                     URLResource.run_id == run_id,
                     URLResource.spec_version == spec_version,
                 )
-            )
-        )
+            ).all()
+        }
 
     def _url_stats(self, *conditions: Any) -> dict[str, int]:
         rows = self._db.execute(
