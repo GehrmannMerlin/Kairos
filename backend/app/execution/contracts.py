@@ -60,6 +60,26 @@ class PlanBrief(BaseModel):
     validation_status: str
 
 
+class ExecutionNodeSummary(BaseModel):
+    model_config = _STRICT
+
+    node_id: str
+    node_type: str
+    label: str
+    state: str
+    attempt: int
+    safe_message: str | None = None
+
+
+class ExecutionCounts(BaseModel):
+    model_config = _STRICT
+
+    discovered_pages: int = 0
+    fetched_pages: int = 0
+    extracted_records: int = 0
+    validated_records: int = 0
+
+
 class ExecutionView(BaseModel):
     model_config = _STRICT
 
@@ -69,6 +89,14 @@ class ExecutionView(BaseModel):
     urls: dict[str, int] = Field(default_factory=dict)
     records: dict[str, int] = Field(default_factory=dict)
     plan: PlanBrief | None = None
+    current_node: ExecutionNodeSummary | None = None
+    last_successful_node: ExecutionNodeSummary | None = None
+    last_activity_at: datetime | None = None
+    last_event_id: int = 0
+    counts: ExecutionCounts = Field(default_factory=ExecutionCounts)
+    waiting_reason_code: str | None = None
+    outcome_code: str | None = None
+    legacy_execution_facts: bool = False
 
 
 class TimelineEvent(BaseModel):

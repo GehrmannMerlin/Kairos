@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from app.domain.models import PlanVersion, Run
+from app.domain.models import NodeAttempt, NodeRun, PlanVersion, Run
 from app.domain.repository import TaskRepository
 from fastapi.testclient import TestClient
 
@@ -229,3 +229,50 @@ def test_dag_without_plan_is_empty(client: dict) -> None:
     body = resp.json()
     assert body["nodes"] == []
     assert body["edges"] == []
+
+
+def test_node_detail_prefers_persisted_node_attempt_facts(client: dict) -> None:
+    c, factory = client["client"], client["factory"]
+    alice = _register(c, "node-facts@example.com")["user"]
+    session = factory()
+    try:
+        task = TaskRepository(session).create(
+            user_id=alice["id"], title="seed", task_type="directed"
+        )
+        session.flush()
+        task_id = task.id
+    finally:
+        session.close()
+    _seed_plan(factory, alice["id"], task_id)
+    session = factory()
+    try:
+        run = session.query(Run).filter(Run.task_id == task_id).one()
+        node = NodeRun(
+            user_id=alice["id"],
+            task_id=task_id,
+            run_id=run.id,
+            node_id="n-fetch",
+            node_type="fetch",
+            state="SUCCEEDED",
+            position=2,
+        )
+        session.add(node)
+        session.flush()
+        session.add(
+            NodeAttempt(
+                user_id=alice["id"],
+                node_run_id=node.id,
+                attempt=2,
+                status="SUCCEEDED",
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    resp = c.get(f"/api/tasks/{task_id}/execution/nodes/n-fetch")
+
+    assert resp.status_code == 200, resp.text
+    execution = resp.json()["execution"]
+    assert execution["last_status"] == "SUCCEEDED"
+    assert execution["attempt_count"] == 2

@@ -15,6 +15,7 @@ from app.credentials.models import ModelConfig, SearchConfig
 from app.domain.models import CollectionSpecVersion, ExecutionPreflightResult, PlanVersion, Task
 from app.domain.spec import validate_confirmable_spec_payload
 from app.domain.task_types import TaskType
+from app.observability.execution_metrics import get_execution_metrics
 from app.plan.capabilities import (
     CAPABILITY_MANIFEST_VERSION,
     PRODUCTION_EXECUTOR_CAPABILITIES,
@@ -152,7 +153,12 @@ class ExecutionPreflightService:
             search_config_version=search.version if search is not None else None,
         )
         row, created = self._repository.get_or_create(outcome)
-        return self._outcome_from_persisted_result(row, created=created)
+        persisted = self._outcome_from_persisted_result(row, created=created)
+        get_execution_metrics().record_preflight(
+            status=persisted.status.value,
+            issue_codes=persisted.issue_codes,
+        )
+        return persisted
 
     @staticmethod
     def _outcome_from_persisted_result(

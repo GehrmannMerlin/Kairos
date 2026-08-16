@@ -14,10 +14,11 @@ from temporalio.exceptions import ApplicationError
 
 from app.crawling.errors import FetchErrorCode
 from app.domain.errors import IllegalTransitionError, StaleVersionError
-from app.domain.models import DomainEvent, Run
+from app.domain.models import CompletionDecision, DomainEvent, Run
 from app.domain.repository import RunRepository, SpecVersionRepository, TaskRepository
 from app.domain.service import DomainService
 from app.infra.deps import get_session_factory
+from app.observability.execution_metrics import get_execution_metrics
 from app.state.events import append_domain_event
 
 
@@ -333,6 +334,7 @@ async def _finish_run(
             "task_id": inp.task_id,
             "run_id": inp.run_id,
             "transition": event_type,
+            "outcome_code": error_code or reason,
         }
         if error_code is not None:
             payload["error_code"] = error_code
@@ -349,8 +351,32 @@ async def _finish_run(
         )
         session.commit()
         _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
+        metrics = get_execution_metrics()
+        metrics.record_run_terminal(
+            state=run_state.upper(),
+            outcome_code=error_code or reason,
+        )
+        if run_state == "partially_completed" and _eligible_count(session, inp) == 0:
+            metrics.record_invariant_violation(invariant="eligible_zero_partial")
     finally:
         session.close()
+
+
+def _eligible_count(session: Any, inp: Any) -> int | None:
+    decision = session.scalar(
+        select(CompletionDecision)
+        .where(
+            CompletionDecision.user_id == inp.user_id,
+            CompletionDecision.task_id == inp.task_id,
+            CompletionDecision.run_id == inp.run_id,
+        )
+        .order_by(CompletionDecision.id.desc())
+        .limit(1)
+    )
+    if decision is None or not isinstance(decision.scope_completion_metadata, dict):
+        return None
+    value = decision.scope_completion_metadata.get("eligible_urls")
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 @dataclass

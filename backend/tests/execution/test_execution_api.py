@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
-from app.domain.models import Record, URLResource
+from datetime import UTC, datetime, timedelta
+
+from app.domain.models import DomainEvent, NodeAttempt, NodeRun, PlanVersion, Record, URLResource
 from app.domain.repository import TaskRepository
 from fastapi.testclient import TestClient
 from tests.execution.conftest import _seed_events, _seed_run
@@ -108,6 +110,9 @@ def test_execution_overview_stage_aggregation(client: dict) -> None:
     assert body["urls"]["fetched"] == 1
     assert body["urls"]["failed"] == 1
     assert body["records"] == {"passed": 1, "needs_review": 1}
+    assert body["current_node"] is None
+    assert body["last_successful_node"] is None
+    assert body["legacy_execution_facts"] is True
 
 
 def test_timeline_stable_ordering_and_refs(client: dict) -> None:
@@ -255,3 +260,226 @@ def test_execution_cross_user_404(client: dict) -> None:
     resp = c.get(f"/api/tasks/{task_id}/execution")
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "NOT_FOUND"
+
+
+def test_execution_snapshot_uses_node_facts(client: dict) -> None:
+    c, factory = client["client"], client["factory"]
+    alice = _register(c, "snapshot@example.com")["user"]
+    session = factory()
+    started_at = datetime(2026, 8, 16, 3, 4, 5, tzinfo=UTC)
+    try:
+        task = TaskRepository(session).create(
+            user_id=alice["id"], title="snapshot", task_type="directed"
+        )
+        session.flush()
+        task_id = task.id
+        plan = PlanVersion(
+            user_id=alice["id"],
+            task_id=task_id,
+            spec_version=1,
+            version=1,
+            validation_status="VALID",
+            plan_fingerprint="snapshot-plan",
+            payload={
+                "graph": {
+                    "nodes": [
+                        {"node_id": "n2", "node_type": "extract", "label": "Extract"},
+                        {"node_id": "n3", "node_type": "fetch", "label": "Fetch"},
+                    ]
+                }
+            },
+        )
+        session.add(plan)
+        session.commit()
+        run_id = _seed_run(factory, alice["id"], task_id)
+        session.add(
+            PlanVersion(
+                user_id=alice["id"],
+                task_id=task_id,
+                spec_version=2,
+                version=2,
+                validation_status="VALID",
+                plan_fingerprint="newer-plan",
+                payload={
+                    "graph": {
+                        "nodes": [{"node_id": "n3", "node_type": "fetch", "label": "Wrong run"}]
+                    }
+                },
+            )
+        )
+        completed = NodeRun(
+            user_id=alice["id"],
+            task_id=task_id,
+            run_id=run_id,
+            node_id="n2",
+            node_type="extract",
+            state="SUCCEEDED",
+            position=2,
+            started_at=started_at - timedelta(minutes=2),
+            finished_at=started_at - timedelta(minutes=1),
+        )
+        current = NodeRun(
+            user_id=alice["id"],
+            task_id=task_id,
+            run_id=run_id,
+            node_id="n3",
+            node_type="fetch",
+            state="RUNNING",
+            position=3,
+            started_at=started_at,
+        )
+        session.add_all([completed, current])
+        session.flush()
+        session.add_all(
+            [
+                NodeAttempt(
+                    user_id=alice["id"],
+                    node_run_id=completed.id,
+                    attempt=1,
+                    status="SUCCEEDED",
+                    started_at=completed.started_at,
+                    finished_at=completed.finished_at,
+                ),
+                NodeAttempt(
+                    user_id=alice["id"],
+                    node_run_id=current.id,
+                    attempt=2,
+                    status="RUNNING",
+                    started_at=started_at,
+                ),
+            ]
+        )
+        for index in range(4):
+            session.add(
+                URLResource(
+                    user_id=alice["id"],
+                    task_id=task_id,
+                    run_id=run_id,
+                    url=f"https://example.com/{index}",
+                    url_hash=f"snapshot-{index}",
+                    source_type="official_site",
+                    status="FETCHED",
+                )
+            )
+        session.add_all(
+            [
+                Record(
+                    user_id=alice["id"],
+                    task_id=task_id,
+                    run_id=run_id,
+                    spec_version=1,
+                    partition="needs_review",
+                    payload={"values": {"name": "unvalidated"}},
+                ),
+                Record(
+                    user_id=alice["id"],
+                    task_id=task_id,
+                    run_id=run_id,
+                    spec_version=1,
+                    partition="passed",
+                    payload={"values": {"name": "validated"}},
+                    validated_at=started_at - timedelta(seconds=30),
+                ),
+            ]
+        )
+        session.add(
+            DomainEvent(
+                user_id=alice["id"],
+                aggregate_type="task",
+                aggregate_id=task_id,
+                event_type="run.failed",
+                aggregate_version=1,
+                payload={"error_code": "OLD_RUN_FAILURE"},
+                run_id=None,
+                occurred_at=started_at - timedelta(days=1),
+            )
+        )
+        session.add(
+            DomainEvent(
+                user_id=alice["id"],
+                aggregate_type="task",
+                aggregate_id=task_id,
+                event_type="run.node_started",
+                aggregate_version=1,
+                payload={"node_id": "n3", "node_type": "fetch", "state": "RUNNING"},
+                run_id=run_id,
+                node_run_id=current.id,
+                occurred_at=started_at - timedelta(seconds=1),
+            )
+        )
+        session.commit()
+        last_event_id = session.query(DomainEvent.id).order_by(DomainEvent.id.desc()).first()[0]
+    finally:
+        session.close()
+
+    resp = c.get(f"/api/tasks/{task_id}/execution")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["current_node"] == {
+        "node_id": "n3",
+        "node_type": "fetch",
+        "label": "Fetch",
+        "state": "RUNNING",
+        "attempt": 2,
+        "safe_message": None,
+    }
+    assert body["last_successful_node"]["node_id"] == "n2"
+    assert body["last_event_id"] == last_event_id
+    response_activity_at = datetime.fromisoformat(body["last_activity_at"])
+    if response_activity_at.tzinfo is None:
+        response_activity_at = response_activity_at.replace(tzinfo=UTC)
+    assert response_activity_at == started_at
+    assert body["counts"]["discovered_pages"] == 4
+    assert body["counts"]["fetched_pages"] == 4
+    assert body["counts"]["extracted_records"] == 2
+    assert body["counts"]["validated_records"] == 1
+    assert body["outcome_code"] is None
+    assert body["legacy_execution_facts"] is False
+
+
+def test_canonical_node_failure_projects_to_safe_timeline_fields(client: dict) -> None:
+    c, factory = client["client"], client["factory"]
+    alice = _register(c, "canonical-timeline@example.com")["user"]
+    session = factory()
+    try:
+        task = TaskRepository(session).create(
+            user_id=alice["id"], title="canonical", task_type="directed"
+        )
+        session.flush()
+        task_id = task.id
+    finally:
+        session.close()
+    run_id = _seed_run(factory, alice["id"], task_id)
+    session = factory()
+    try:
+        session.add(
+            DomainEvent(
+                user_id=alice["id"],
+                aggregate_type="task",
+                aggregate_id=task_id,
+                event_type="run.node_failed",
+                aggregate_version=1,
+                payload={
+                    "node_id": "n-fetch",
+                    "node_type": "fetch",
+                    "attempt": 2,
+                    "state": "FAILED",
+                    "reason_code": "NETWORK_TIMEOUT",
+                    "private_note": "sensitive-value",
+                },
+                run_id=run_id,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    resp = c.get(f"/api/tasks/{task_id}/execution/timeline")
+
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["items"][0]
+    assert item["categories"] == ["error", "retry"]
+    assert item["status"] == "FAILED"
+    assert item["error_code"] == "NETWORK_TIMEOUT"
+    assert "sensitive-value" not in resp.text

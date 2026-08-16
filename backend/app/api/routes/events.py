@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from collections.abc import AsyncGenerator
+from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -21,8 +22,15 @@ from app.auth.deps import require_user
 from app.auth.models import User
 from app.domain.repository import TaskRepository
 from app.infra.deps import get_db
+from app.observability.execution_metrics import get_execution_metrics
 
 router = APIRouter(prefix="/events", tags=["events"])
+
+
+class _StreamMetrics(Protocol):
+    def record_sse_replay(self, *, count: int) -> None: ...
+
+    def change_sse_connections(self, *, delta: int) -> None: ...
 
 
 def _parse_last_event_id(request: Request, after_id: str | None) -> int:
@@ -39,6 +47,39 @@ def _format_sse(event: SSETaskEvent) -> str:
     return f"id: {event.event_id}\nevent: {event.event_type}\ndata: {data}\n\n"
 
 
+async def _event_stream(
+    *,
+    db: Any,
+    user_id: int,
+    task_id: int,
+    cursor: int,
+    metrics: _StreamMetrics,
+    poll_interval: float = 2.0,
+) -> AsyncGenerator[str, None]:
+    metrics.change_sse_connections(delta=1)
+    try:
+        replay = query_task_events(db, user_id=user_id, task_id=task_id, after_id=cursor)
+        replay_count = sum(1 for ev in replay if ev.id > cursor)
+        metrics.record_sse_replay(count=replay_count)
+        for ev in replay:
+            if ev.id <= cursor:
+                continue
+            yield _format_sse(map_domain_event_to_sse(ev))
+            cursor = ev.id
+
+        while True:
+            new = query_task_events(db, user_id=user_id, task_id=task_id, after_id=cursor)
+            for ev in new:
+                if ev.id <= cursor:
+                    continue
+                yield _format_sse(map_domain_event_to_sse(ev))
+                cursor = ev.id
+            yield ": ping\n\n"
+            await asyncio.sleep(poll_interval)
+    finally:
+        metrics.change_sse_connections(delta=-1)
+
+
 @router.get("/tasks/{task_id}")
 async def task_events(
     task_id: int,
@@ -49,20 +90,11 @@ async def task_events(
 ) -> StreamingResponse:
     TaskRepository(db).get_owned(user.id, task_id)  # owner-safe 404
 
-    async def event_stream() -> Any:
-        cursor = _parse_last_event_id(request, after_id)
-        # 1) 重放 cursor 之后的已持久化事件
-        replay = query_task_events(db, user_id=user.id, task_id=task_id, after_id=cursor)
-        for ev in replay:
-            yield _format_sse(map_domain_event_to_sse(ev))
-            cursor = ev.id
-        # 2) 实时轮询 + keepalive（轻量；不引入 Redis）
-        while True:
-            new = query_task_events(db, user_id=user.id, task_id=task_id, after_id=cursor)
-            for ev in new:
-                yield _format_sse(map_domain_event_to_sse(ev))
-                cursor = ev.id
-            yield ": ping\n\n"
-            await asyncio.sleep(2.0)
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    stream = _event_stream(
+        db=db,
+        user_id=user.id,
+        task_id=task_id,
+        cursor=_parse_last_event_id(request, after_id),
+        metrics=get_execution_metrics(),
+    )
+    return StreamingResponse(stream, media_type="text/event-stream")

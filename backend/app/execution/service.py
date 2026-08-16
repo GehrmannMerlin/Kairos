@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from app.auth.errors import NotFoundError
@@ -15,6 +16,8 @@ from app.execution.contracts import (
     DagNodeDto,
     DagNodeExecution,
     DagView,
+    ExecutionCounts,
+    ExecutionNodeSummary,
     ExecutionView,
     NodeDetailDto,
     PlanBrief,
@@ -68,7 +71,14 @@ _NODE_TYPE_STAGE: dict[str, StageKey] = {
     "generate_artifact": StageKey.VALIDATION,
 }
 
-_ERROR_TYPES = {"task.fail", "fetch.failed", "extraction.failed", "node.blocked_high_risk"}
+_ERROR_TYPES = {
+    "task.fail",
+    "fetch.failed",
+    "extraction.failed",
+    "node.blocked_high_risk",
+    "run.node_failed",
+    "run.failed",
+}
 _TOOL_UPGRADE_TYPES = {
     "fetch.escalated",
     "fetch.strategy_selected",
@@ -120,6 +130,29 @@ _RECORD_LABELS = {
 _NODE_RESOURCE_LABELS = {
     "node.resource_waiting": "等待执行资源",
 }
+_RUN_EVENT_LABELS = {
+    "run.started": "执行已开始",
+    "run.node_started": "节点已开始",
+    "run.node_progress": "节点进度已更新",
+    "run.checkpoint_committed": "检查点已提交",
+    "run.node_completed": "节点已完成",
+    "run.node_blocked": "节点已阻塞",
+    "run.node_failed": "节点执行失败",
+    "run.completed": "执行已完成",
+    "run.partially_completed": "执行部分完成",
+    "run.failed": "执行失败",
+    "run.cancelled": "执行已取消",
+}
+_CURRENT_NODE_STATES = frozenset({"RUNNING", "WAITING_RESOURCE", "BLOCKED"})
+_SUCCESSFUL_NODE_STATES = frozenset({"SUCCEEDED"})
+_RUN_TERMINAL_TYPES = frozenset(
+    {
+        "run.completed",
+        "run.partially_completed",
+        "run.failed",
+        "run.cancelled",
+    }
+)
 
 _BATCH_SIZE = 500
 
@@ -138,14 +171,54 @@ class ExecutionService:
     # ---- overview ----
     def assemble_overview(self, *, user_id: int, task_id: int) -> ExecutionView:
         run = self._repo.latest_run(user_id=user_id, task_id=task_id)
-        plan = self._repo.latest_plan(user_id=user_id, task_id=task_id)
+        plan = (
+            self._repo.plan_version(
+                user_id=user_id,
+                task_id=task_id,
+                version=run.plan_version,
+            )
+            if run is not None
+            else self._repo.latest_plan(user_id=user_id, task_id=task_id)
+        )
         urls = self._repo.url_stats(user_id=user_id, task_id=task_id)
         records = self._repo.record_counts(user_id=user_id, task_id=task_id)
         record_total = sum(records.values())
+        validated_record_count = self._repo.validated_record_count(
+            user_id=user_id,
+            task_id=task_id,
+        )
 
         all_events = self._repo.events_after(
             user_id=user_id, task_id=task_id, after_id=0, limit=100_000
         )
+        node_facts = self._node_facts(
+            user_id=user_id,
+            task_id=task_id,
+            run_id=run.id if run is not None else None,
+        )
+        labels = self._node_labels(plan)
+        current_fact = self._latest_node_fact(
+            [fact for fact in node_facts if fact[0].state in _CURRENT_NODE_STATES]
+        )
+        successful_fact = self._latest_node_fact(
+            [fact for fact in node_facts if fact[0].state in _SUCCESSFUL_NODE_STATES]
+        )
+        terminal_event = next(
+            (
+                event
+                for event in reversed(all_events)
+                if run is not None
+                and event.run_id == run.id
+                and event.event_type in _RUN_TERMINAL_TYPES
+            ),
+            None,
+        )
+        waiting_reason_code = self._waiting_reason(
+            node_facts,
+            all_events,
+            run_id=run.id if run is not None else None,
+        )
+        outcome_code = self._outcome_code(terminal_event)
         stage_events: dict[StageKey, list[Any]] = {k: [] for k in _STAGE_ORDER}
         for ev in all_events:
             stage_events[self._stage(ev)].append(ev)
@@ -201,7 +274,142 @@ class ExecutionService:
                 if plan
                 else None
             ),
+            current_node=self._node_summary(current_fact, labels),
+            last_successful_node=self._node_summary(successful_fact, labels),
+            last_activity_at=self._last_activity(node_facts, all_events),
+            last_event_id=self._repo.max_event_id(user_id=user_id, task_id=task_id),
+            counts=ExecutionCounts(
+                discovered_pages=urls.get("discovered", 0),
+                fetched_pages=urls.get("fetched", 0),
+                extracted_records=record_total,
+                validated_records=validated_record_count,
+            ),
+            waiting_reason_code=waiting_reason_code,
+            outcome_code=outcome_code,
+            legacy_execution_facts=run is not None and not node_facts,
         )
+
+    def _node_facts(
+        self, *, user_id: int, task_id: int, run_id: int | None
+    ) -> list[tuple[Any, Any | None]]:
+        if run_id is None:
+            return []
+        facts: list[tuple[Any, Any | None]] = []
+        for node in self._repo.node_runs(
+            user_id=user_id,
+            task_id=task_id,
+            run_id=run_id,
+        ):
+            if not node.node_id:
+                continue
+            facts.append(
+                (
+                    node,
+                    self._repo.latest_attempt(user_id=user_id, node_run_id=node.id),
+                )
+            )
+        return facts
+
+    @staticmethod
+    def _node_labels(plan: Any | None) -> dict[str, str]:
+        graph = ((plan.payload or {}).get("graph") or {}) if plan is not None else {}
+        labels: dict[str, str] = {}
+        for node in graph.get("nodes") or []:
+            if not isinstance(node, dict) or not node.get("node_id"):
+                continue
+            node_id = str(node["node_id"])
+            labels[node_id] = str(node.get("label") or node.get("name") or node_id)
+        return labels
+
+    def _latest_node_fact(
+        self, facts: list[tuple[Any, Any | None]]
+    ) -> tuple[Any, Any | None] | None:
+        if not facts:
+            return None
+        return max(
+            facts,
+            key=lambda fact: (
+                self._datetime_order(self._node_fact_activity(fact)),
+                fact[0].position if fact[0].position is not None else -1,
+                fact[0].id,
+            ),
+        )
+
+    @staticmethod
+    def _node_summary(
+        fact: tuple[Any, Any | None] | None, labels: dict[str, str]
+    ) -> ExecutionNodeSummary | None:
+        if fact is None:
+            return None
+        node, attempt = fact
+        return ExecutionNodeSummary(
+            node_id=node.node_id,
+            node_type=node.node_type,
+            label=labels.get(node.node_id, node.node_id),
+            state=node.state,
+            attempt=attempt.attempt if attempt is not None else 0,
+            safe_message=attempt.error_summary if attempt is not None else None,
+        )
+
+    @staticmethod
+    def _node_fact_activity(fact: tuple[Any, Any | None]) -> datetime | None:
+        node, attempt = fact
+        candidates = [node.started_at, node.finished_at]
+        if attempt is not None:
+            candidates.extend([attempt.started_at, attempt.finished_at])
+        return ExecutionService._max_datetime(candidates) or (
+            attempt.created_at if attempt is not None else node.created_at
+        )
+
+    def _last_activity(
+        self, node_facts: list[tuple[Any, Any | None]], all_events: list[Any]
+    ) -> datetime | None:
+        candidates = [self._node_fact_activity(fact) for fact in node_facts]
+        candidates.extend(event.occurred_at for event in all_events)
+        return self._max_datetime(candidates)
+
+    @staticmethod
+    def _max_datetime(values: list[datetime | None]) -> datetime | None:
+        present = [value for value in values if value is not None]
+        if not present:
+            return None
+        return max(present, key=ExecutionService._datetime_order)
+
+    @staticmethod
+    def _datetime_order(value: datetime | None) -> float:
+        if value is None:
+            return float("-inf")
+        normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return normalized.timestamp()
+
+    @staticmethod
+    def _waiting_reason(
+        node_facts: list[tuple[Any, Any | None]],
+        all_events: list[Any],
+        *,
+        run_id: int | None,
+    ) -> str | None:
+        for node, attempt in reversed(node_facts):
+            if node.state in _CURRENT_NODE_STATES and attempt is not None and attempt.error_code:
+                return str(attempt.error_code)
+        for event in reversed(all_events):
+            payload = event.payload or {}
+            if event.run_id == run_id and event.event_type in {
+                "run.node_blocked",
+                "node.resource_waiting",
+            }:
+                reason = payload.get("reason_code") or payload.get("waiting_reason_code")
+                if reason:
+                    return str(reason)
+        return None
+
+    @staticmethod
+    def _outcome_code(event: Any | None) -> str | None:
+        if event is None:
+            return None
+        payload = event.payload or {}
+        value = payload.get("outcome_code") or payload.get("error_code")
+        return str(value) if value else None
 
     # ---- plan DAG + node detail ----
     def assemble_dag(self, *, user_id: int, task_id: int) -> DagView:
@@ -223,6 +431,14 @@ class ExecutionService:
         run = self._repo.latest_run(user_id=user_id, task_id=task_id)
         urls = self._repo.url_stats(user_id=user_id, task_id=task_id)
         record_total = self._repo.record_count_total(user_id=user_id, task_id=task_id)
+        node_facts = {
+            node.node_id: (node, attempt)
+            for node, attempt in self._node_facts(
+                user_id=user_id,
+                task_id=task_id,
+                run_id=run.id if run is not None else None,
+            )
+        }
         run_state = run.state if run else None
         stage_status = {k.value: v for k, v in self._stage_state_map(all_events, run_state).items()}
 
@@ -247,6 +463,7 @@ class ExecutionService:
                         all_events=all_events,
                         urls=urls,
                         record_total=record_total,
+                        node_fact=node_facts.get(node_id),
                     ),
                 )
             )
@@ -267,9 +484,7 @@ class ExecutionService:
             edges=edges,
         )
 
-    def node_detail(
-        self, *, user_id: int, task_id: int, node_id: str
-    ) -> NodeDetailDto:
+    def node_detail(self, *, user_id: int, task_id: int, node_id: str) -> NodeDetailDto:
         plan = self._repo.latest_plan(user_id=user_id, task_id=task_id)
         if plan is None:
             raise NotFoundError("资源不存在")
@@ -285,6 +500,14 @@ class ExecutionService:
         run = self._repo.latest_run(user_id=user_id, task_id=task_id)
         urls = self._repo.url_stats(user_id=user_id, task_id=task_id)
         record_total = self._repo.record_count_total(user_id=user_id, task_id=task_id)
+        node_facts = {
+            persisted_node.node_id: (persisted_node, attempt)
+            for persisted_node, attempt in self._node_facts(
+                user_id=user_id,
+                task_id=task_id,
+                run_id=run.id if run is not None else None,
+            )
+        }
         return NodeDetailDto(
             node_id=node_id,
             node_type=node_type,
@@ -314,6 +537,7 @@ class ExecutionService:
                 all_events=all_events,
                 urls=urls,
                 record_total=record_total,
+                node_fact=node_facts.get(node_id),
             ),
         )
 
@@ -346,29 +570,31 @@ class ExecutionService:
         all_events: list[Any],
         urls: dict[str, int],
         record_total: int,
+        node_fact: tuple[Any, Any | None] | None,
     ) -> DagNodeExecution:
-        """节点级执行证据：当前执行路径不写 NodeRun 行且事件大多不带 node_id，
-        因此 event_count 通常为 0；fetch/extract/validate 类型按任务级 URL/Record 事实展示。
-        """
+        """Prefer canonical NodeRun/Attempt state and supplement it with safe event stats."""
         node_events = [
             ev
             for ev in all_events
             if ev.payload and str(ev.payload.get("node_id") or "") == node_id
         ]
-        last_status = None
-        last_error = None
+        persisted_node, persisted_attempt = node_fact or (None, None)
+        last_status = persisted_node.state if persisted_node is not None else None
+        last_error = persisted_attempt.error_code if persisted_attempt is not None else None
         tool = None
         model = None
-        duration_ms = None
-        attempt_count = 0
+        duration_ms = self._duration_ms(persisted_node)
+        attempt_count = persisted_attempt.attempt if persisted_attempt is not None else 0
         tokens_in = None
         tokens_out = None
         for ev in node_events:
             payload = ev.payload or {}
-            if payload.get("status"):
-                last_status = str(payload["status"])
-            if payload.get("error_code"):
-                last_error = str(payload["error_code"])
+            if persisted_node is None and (payload.get("status") or payload.get("state")):
+                last_status = str(payload.get("status") or payload.get("state"))
+            if persisted_attempt is None and (
+                payload.get("error_code") or payload.get("reason_code")
+            ):
+                last_error = str(payload.get("error_code") or payload.get("reason_code"))
             if payload.get("tool"):
                 tool = str(payload["tool"])
             if payload.get("model"):
@@ -379,11 +605,10 @@ class ExecutionService:
                 tokens_in = _safe_int(payload["tokens_in"])
             if payload.get("tokens_out") is not None:
                 tokens_out = _safe_int(payload["tokens_out"])
-            attempt = _safe_int(payload.get("attempt"))
-            attempt_count = max(attempt_count, attempt)
-        url_fetched_count = (
-            urls["fetched"] + urls["failed"] if node_type == "fetch" else 0
-        )
+            if persisted_attempt is None:
+                attempt = _safe_int(payload.get("attempt"))
+                attempt_count = max(attempt_count, attempt)
+        url_fetched_count = urls["fetched"] + urls["failed"] if node_type == "fetch" else 0
         record_count = (
             record_total if node_type in ("extract", "normalize", "deduplicate", "validate") else 0
         )
@@ -400,6 +625,12 @@ class ExecutionService:
             url_fetched_count=url_fetched_count,
             record_count=record_count,
         )
+
+    @staticmethod
+    def _duration_ms(node: Any | None) -> int | None:
+        if node is None or node.started_at is None or node.finished_at is None:
+            return None
+        return max(0, int((node.finished_at - node.started_at).total_seconds() * 1000))
 
     @staticmethod
     def _parameters_summary(parameters: dict) -> dict:
@@ -491,8 +722,9 @@ class ExecutionService:
         cats: list[TimelineCategory] = []
         if (
             event_type in _ERROR_TYPES
-            or payload.get("status") == "FAILED"
+            or (payload.get("status") or payload.get("state")) == "FAILED"
             or payload.get("error_code")
+            or payload.get("reason_code")
         ):
             cats.append("error")
         if _safe_int(payload.get("retry_count")) > 0 or _safe_int(payload.get("attempt")) > 1:
@@ -533,6 +765,8 @@ class ExecutionService:
             return "需要网站凭据"
         if event_type == "node.blocked_high_risk":
             return "高风险节点已阻止"
+        if event_type in _RUN_EVENT_LABELS:
+            return _RUN_EVENT_LABELS[event_type]
         if event_type == "extraction.llm_fallback_used":
             return f"LLM 语义提取（{payload.get('model') or '—'}）"
         if event_type.startswith("discovery."):
@@ -563,9 +797,15 @@ class ExecutionService:
             categories=self._classify(ev),
             stage=self._stage(ev).value,
             summary=self._summary(ev),
-            status=str(payload["status"]) if payload.get("status") is not None else None,
+            status=(
+                str(payload.get("status") or payload.get("state"))
+                if payload.get("status") is not None or payload.get("state") is not None
+                else None
+            ),
             error_code=(
-                str(payload["error_code"]) if payload.get("error_code") is not None else None
+                str(payload.get("error_code") or payload.get("reason_code"))
+                if payload.get("error_code") is not None or payload.get("reason_code") is not None
+                else None
             ),
             run_id=ev.run_id,
             node_run_id=ev.node_run_id,
