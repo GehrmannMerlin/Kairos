@@ -393,6 +393,7 @@ def test_concurrent_checkpoint_event_backfill_claims_once(tmp_path) -> None:
         worker = factory()
         try:
             checkpoint = worker.get(Checkpoint, checkpoint_id)
+            assert checkpoint is not None
             outcomes.append(append_checkpoint_event(worker, checkpoint))
             worker.commit()
         except Exception as exc:  # test reports worker failures deterministically
@@ -592,6 +593,7 @@ def test_unknown_lifecycle_status_fails_closed_without_secret_text(
 
     event = lifecycle_case.session.query(DomainEvent).order_by(DomainEvent.id.desc()).first()
     attempt = lifecycle_case.session.query(NodeAttempt).one()
+    assert event is not None
     assert attempt.status == "FAILED"
     assert event.event_type == "run.node_failed"
     assert event.payload["reason_code"] == "INVALID_LIFECYCLE_STATUS"
