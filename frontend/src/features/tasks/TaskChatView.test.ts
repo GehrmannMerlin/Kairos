@@ -392,7 +392,11 @@ describe('TaskChatView Plan 生命周期恢复', () => {
     const wrapper = await mountConfirmedDraft()
     await flushPromises()
 
+    expect(tasksApi.getTask).toHaveBeenCalledTimes(3)
+    expect(plansApi.getPlanSummary).toHaveBeenCalledWith('1', 1)
+    expect(wrapper.find('[data-test="plan-summary"]').exists()).toBe(true)
     expect(wrapper.find('.chat__error').text()).toContain('冻结的来源输入无法直接执行。')
+    expect(wrapper.find('.chat__notice').exists()).toBe(false)
     expect(wrapper.findAll('button').some((button) => button.text() === '重试启动')).toBe(false)
   })
 
@@ -443,6 +447,59 @@ describe('TaskChatView Plan 生命周期恢复', () => {
 
     expect(plansApi.startPlan).toHaveBeenCalledWith('1', 1, expect.any(AbortSignal))
     expect(plansApi.generatePlan).toHaveBeenCalledTimes(1)
+  })
+
+  it('启动重试被执行就绪检查阻塞时刷新摘要并清除重试动作', async () => {
+    vi.mocked(tasksApi.getTask)
+      .mockResolvedValueOnce(taskShell())
+      .mockResolvedValueOnce(taskShell({ version: 2, current_spec_version: 1 }))
+      .mockResolvedValue(
+        taskShell({
+          version: 3,
+          current_spec_version: 1,
+          current_plan_version: 1,
+        }),
+      )
+    vi.mocked(plansApi.getPlanSummary)
+      .mockResolvedValueOnce(
+        planSummary({
+          run_id: 7,
+          run_state: 'pending',
+          start_recoverable: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        planSummary({
+          preflight_status: 'BLOCKED',
+          preflight_issues: [
+            {
+              code: 'EXECUTION_INPUT_UNMATERIALIZABLE',
+              safe_message: '冻结的来源输入无法直接执行。',
+            },
+          ],
+        }),
+      )
+    vi.mocked(plansApi.generatePlan).mockRejectedValue(
+      new ApiError(503, '计划已保存，但工作流服务暂时不可用', 'PLAN_START_FAILED'),
+    )
+    vi.mocked(plansApi.startPlan).mockRejectedValue(
+      new ApiError(409, '冻结的来源输入无法直接执行。', 'EXECUTION_PREFLIGHT_BLOCKED'),
+    )
+
+    const wrapper = await mountConfirmedDraft()
+    await flushPromises()
+
+    const retryStart = wrapper.findAll('button').find((button) => button.text() === '重试启动')
+    expect(retryStart).toBeTruthy()
+
+    await retryStart!.trigger('click')
+    await flushPromises()
+
+    expect(plansApi.startPlan).toHaveBeenCalledWith('1', 1, expect.any(AbortSignal))
+    expect(tasksApi.getTask).toHaveBeenCalledTimes(4)
+    expect(plansApi.getPlanSummary).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('.chat__error').text()).toContain('冻结的来源输入无法直接执行。')
+    expect(wrapper.findAll('button').some((button) => button.text() === '重试启动')).toBe(false)
   })
 
   it('模糊网络结果每三秒轮询且最多 45 次，绝不自动重新生成', async () => {
