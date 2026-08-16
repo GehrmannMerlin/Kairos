@@ -356,8 +356,10 @@ async def test_terminal_claim_rolls_back_and_can_retry_after_event_failure(
 
     session = factory()
     try:
-        assert session.get(Run, values["run_id"]).state == "running"
-        assert session.get(Task, values["task_id"]).state == "RUNNING"
+        stored_run = session.get(Run, values["run_id"])
+        stored_task = session.get(Task, values["task_id"])
+        assert stored_run is not None and stored_run.state == "running"
+        assert stored_task is not None and stored_task.state == "RUNNING"
         assert session.query(DomainEvent).count() == 0
     finally:
         session.close()
@@ -367,7 +369,8 @@ async def test_terminal_claim_rolls_back_and_can_retry_after_event_failure(
 
     session = factory()
     try:
-        assert session.get(Run, values["run_id"]).state == "completed"
+        stored_run = session.get(Run, values["run_id"])
+        assert stored_run is not None and stored_run.state == "completed"
         assert session.query(DomainEvent).filter_by(event_type="run.completed").count() == 1
     finally:
         session.close()
