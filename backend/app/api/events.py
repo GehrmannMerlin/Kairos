@@ -61,7 +61,99 @@ _EVENT_TYPE_MAP = {
     "record.reevaluate_requested": "RECORD_REEVALUATE_REQUESTED",
     "record.approved_batch": "RECORD_APPROVED_BATCH",
     "record.rejected_batch": "RECORD_REJECTED_BATCH",
+    # Canonical persisted execution facts (Task 8).
+    "task.execution_preflight_blocked": "EXECUTION_PREFLIGHT_BLOCKED",
+    "discovery.candidates_found": "SOURCE_CANDIDATES_FOUND",
+    "discovery.expanded": "LINKS_DISCOVERED",
+    "run.started": "RUN_STARTED",
+    "run.node_started": "NODE_STARTED",
+    "run.node_progress": "NODE_PROGRESS",
+    "run.checkpoint_committed": "CHECKPOINT_COMMITTED",
+    "run.node_completed": "NODE_COMPLETED",
+    "run.node_blocked": "NODE_BLOCKED",
+    "run.node_failed": "NODE_FAILED",
+    "run.completed": "RUN_COMPLETED",
+    "run.partially_completed": "RUN_PARTIALLY_COMPLETED",
+    "run.failed": "RUN_FAILED",
+    "run.cancelled": "RUN_CANCELLED",
 }
+
+_PAYLOAD_FIELDS = frozenset(
+    {
+        "schema_version",
+        "task_id",
+        "run_id",
+        "spec_version",
+        "plan_version",
+        "node_id",
+        "node_type",
+        "attempt",
+        "state",
+        "status",
+        "transition",
+        "command",
+        "from_state",
+        "to_state",
+        "reason",
+        "reason_code",
+        "error_code",
+        "safe_message",
+        "checkpoint_id",
+        "seed_count",
+        "counts",
+        "timestamps",
+        "candidate_sites",
+        "candidates",
+        "discovered_count",
+        "expanded_count",
+        "provider",
+        "tool",
+        "strategy",
+        "retry_count",
+        "model",
+        "field",
+        "tokens_in",
+        "tokens_out",
+        "duration_ms",
+        "partition",
+        "data_version",
+        "record_id",
+        "record_ids",
+        "review_type",
+        "success_count",
+        "failure_count",
+        "validation_status",
+        "approval_id",
+        "approval_type",
+        "risk_level",
+        "decision",
+        "snapshot_id",
+        "evidence_refs",
+        "trace_id",
+        "outcome_code",
+        "waiting_reason_code",
+    }
+)
+_TIMESTAMP_FIELDS = frozenset({"started_at", "finished_at", "committed_at"})
+_COUNT_FIELDS = frozenset(
+    {
+        "fetched",
+        "browser_pending",
+        "failed",
+        "discovered",
+        "extracted",
+        "normalized",
+        "deduplicated",
+        "validated",
+        "records",
+        "artifacts",
+        "eligible",
+        "terminal",
+        "passed",
+        "needs_review",
+        "rejected",
+    }
+)
 
 
 class SSETaskEvent(BaseModel):
@@ -110,5 +202,26 @@ def map_domain_event_to_sse(ev: DomainEvent) -> SSETaskEvent:
         task_id=task_id,
         run_id=ev.run_id,
         occurred_at=ev.occurred_at or datetime.now(UTC),
-        payload=ev.payload or {},
+        payload=_project_payload(ev.payload),
     )
+
+
+def _project_payload(payload: Any) -> dict[str, Any]:
+    """Build a safe copy; DomainEvent payload is never exposed wholesale."""
+    if not isinstance(payload, dict):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in _PAYLOAD_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if key == "timestamps":
+            if isinstance(value, dict):
+                projected[key] = {k: value[k] for k in _TIMESTAMP_FIELDS if k in value}
+            continue
+        if key == "counts":
+            if isinstance(value, dict):
+                projected[key] = {k: value[k] for k in _COUNT_FIELDS if k in value}
+            continue
+        projected[key] = value
+    return projected

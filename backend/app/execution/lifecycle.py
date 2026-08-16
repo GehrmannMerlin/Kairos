@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from app.activities.execution_seam import ExecutionUnit
 from app.domain.models import Checkpoint, DomainEvent, IdempotencyKey, NodeAttempt, NodeRun, Run
 from app.domain.repository import NodeAttemptRepository, NodeRunRepository, RunRepository
+from app.observability.execution_metrics import get_execution_metrics
 from app.state.events import append_domain_event
 
 _LIFECYCLE_STATUS = {
@@ -244,6 +245,12 @@ class ExecutionLifecycleRecorder:
             safe_message=safe_message,
         )
         self._db.commit()
+        if terminal:
+            get_execution_metrics().record_node_terminal(
+                node_type=node.node_type,
+                state=node_state,
+                reason_code=error_code,
+            )
         return LifecycleAttempt(node_run_id=node.id, node_attempt_id=node_attempt.id)
 
     def checkpoint_committed(self, checkpoint: Checkpoint) -> None:

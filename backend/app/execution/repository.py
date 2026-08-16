@@ -11,6 +11,8 @@ from sqlalchemy import func, select
 
 from app.domain.models import (
     DomainEvent,
+    NodeAttempt,
+    NodeRun,
     PlanVersion,
     Record,
     Run,
@@ -38,6 +40,39 @@ class ExecutionRepository:
             select(PlanVersion)
             .where(PlanVersion.user_id == user_id, PlanVersion.task_id == task_id)
             .order_by(PlanVersion.version.desc())
+            .limit(1)
+        )
+
+    def plan_version(self, *, user_id: int, task_id: int, version: int) -> PlanVersion | None:
+        return self._db.scalar(
+            select(PlanVersion).where(
+                PlanVersion.user_id == user_id,
+                PlanVersion.task_id == task_id,
+                PlanVersion.version == version,
+            )
+        )
+
+    def node_runs(self, *, user_id: int, task_id: int, run_id: int) -> list[NodeRun]:
+        return list(
+            self._db.scalars(
+                select(NodeRun)
+                .where(
+                    NodeRun.user_id == user_id,
+                    NodeRun.task_id == task_id,
+                    NodeRun.run_id == run_id,
+                )
+                .order_by(NodeRun.position, NodeRun.id)
+            )
+        )
+
+    def latest_attempt(self, *, user_id: int, node_run_id: int) -> NodeAttempt | None:
+        return self._db.scalar(
+            select(NodeAttempt)
+            .where(
+                NodeAttempt.user_id == user_id,
+                NodeAttempt.node_run_id == node_run_id,
+            )
+            .order_by(NodeAttempt.attempt.desc(), NodeAttempt.id.desc())
             .limit(1)
         )
 
@@ -70,9 +105,7 @@ class ExecutionRepository:
         self, *, user_id: int, task_id: int, after_id: int, limit: int
     ) -> list[DomainEvent]:
         """task 作用域事件 + 本 task 的 record.* 事件（同 M-07 query_task_events）。"""
-        record_ids = select(Record.id).where(
-            Record.user_id == user_id, Record.task_id == task_id
-        )
+        record_ids = select(Record.id).where(Record.user_id == user_id, Record.task_id == task_id)
         from sqlalchemy import and_, or_
 
         return list(
@@ -92,15 +125,36 @@ class ExecutionRepository:
                         ),
                     ),
                 )
-                .order_by(DomainEvent.occurred_at, DomainEvent.id)
+                .order_by(DomainEvent.id)
                 .limit(limit)
             )
         )
 
-    def has_event_after(self, *, user_id: int, task_id: int, after_id: int) -> bool:
-        record_ids = select(Record.id).where(
-            Record.user_id == user_id, Record.task_id == task_id
+    def max_event_id(self, *, user_id: int, task_id: int) -> int:
+        record_ids = select(Record.id).where(Record.user_id == user_id, Record.task_id == task_id)
+        from sqlalchemy import and_, or_
+
+        return int(
+            self._db.scalar(
+                select(func.max(DomainEvent.id)).where(
+                    DomainEvent.user_id == user_id,
+                    or_(
+                        and_(
+                            DomainEvent.aggregate_type == "task",
+                            DomainEvent.aggregate_id == task_id,
+                        ),
+                        and_(
+                            DomainEvent.aggregate_type == "record",
+                            DomainEvent.aggregate_id.in_(record_ids),
+                        ),
+                    ),
+                )
+            )
+            or 0
         )
+
+    def has_event_after(self, *, user_id: int, task_id: int, after_id: int) -> bool:
+        record_ids = select(Record.id).where(Record.user_id == user_id, Record.task_id == task_id)
         from sqlalchemy import and_, or_
 
         row = self._db.scalar(
@@ -130,6 +184,20 @@ class ExecutionRepository:
                 select(func.count())
                 .select_from(Record)
                 .where(Record.user_id == user_id, Record.task_id == task_id)
+            )
+            or 0
+        )
+
+    def validated_record_count(self, *, user_id: int, task_id: int) -> int:
+        return int(
+            self._db.scalar(
+                select(func.count())
+                .select_from(Record)
+                .where(
+                    Record.user_id == user_id,
+                    Record.task_id == task_id,
+                    Record.validated_at.is_not(None),
+                )
             )
             or 0
         )
