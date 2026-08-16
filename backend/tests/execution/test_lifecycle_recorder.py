@@ -462,3 +462,131 @@ def test_checkpoint_event_failure_rolls_back_its_idempotency_claim(
         .count()
         == 1
     )
+
+
+def test_older_terminal_attempt_cannot_regress_newer_success(lifecycle_case: LifecycleCase) -> None:
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=1
+    )
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=2
+    )
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=2,
+        status="SUCCEEDED",
+        committed_refs={"fetched": 1},
+        error_code=None,
+    )
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=1,
+        status="FAILED",
+        committed_refs={"failed": 1},
+        error_code="NETWORK",
+    )
+
+    node = lifecycle_case.session.query(NodeRun).one()
+    assert node.state == "SUCCEEDED"
+    assert node.finished_at is not None
+    assert lifecycle_case.event_types()[-2:] == ["run.node_completed", "run.node_failed"]
+
+
+def test_unknown_lifecycle_status_fails_closed_without_secret_text(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=1,
+        status="ARBITRARY_PROGRESS",
+        committed_refs={},
+        error_code="Authorization",
+        safe_message="Bearer secret-token",
+    )
+
+    event = lifecycle_case.session.query(DomainEvent).order_by(DomainEvent.id.desc()).first()
+    attempt = lifecycle_case.session.query(NodeAttempt).one()
+    assert attempt.status == "FAILED"
+    assert event.event_type == "run.node_failed"
+    assert event.payload["reason_code"] == "INVALID_LIFECYCLE_STATUS"
+    assert "secret-token" not in str(event.payload)
+
+
+def test_concurrent_start_attempt_claims_one_started_event(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'start-attempt-concurrent.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    session = factory()
+    try:
+        user = User(email="start-attempt-race@kairos.test", password_hash="hash")
+        session.add(user)
+        session.commit()
+        task = TaskRepository(session).create(user_id=user.id, title="race", task_type=None)
+        run = RunRepository(session).create(
+            user_id=user.id, task_id=task.id, spec_version=1, plan_version=1
+        )
+        unit = ExecutionUnit(
+            run_id=run.id,
+            index=1,
+            unit_type="fetch",
+            input_fingerprint="f" * 64,
+            node_id="fetch-1",
+            node_type="fetch",
+        )
+        node = NodeRun(
+            user_id=user.id,
+            run_id=run.id,
+            task_id=task.id,
+            node_id=unit.node_id,
+            node_type="fetch",
+            position=unit.index,
+            input_fingerprint=unit.input_fingerprint,
+            state="PENDING",
+            version=1,
+        )
+        session.add(node)
+        session.flush()
+        session.add(NodeAttempt(user_id=user.id, node_run_id=node.id, attempt=1, status="PENDING"))
+        session.commit()
+        run_id = run.id
+    finally:
+        session.close()
+
+    def start() -> None:
+        worker = factory()
+        try:
+            ExecutionLifecycleRecorder(worker).start_attempt(run_id=run_id, unit=unit, attempt=1)
+        finally:
+            worker.close()
+
+    barrier = threading.Barrier(2)
+
+    def synchronize_start_claim(conn, _cursor, statement, *_args) -> None:
+        if statement.lstrip().upper().startswith("UPDATE NODE_ATTEMPTS"):
+            barrier.wait(timeout=10)
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", synchronize_start_claim)
+    try:
+        workers = [threading.Thread(target=start) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=15)
+        assert all(not worker.is_alive() for worker in workers)
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", synchronize_start_claim)
+    session = factory()
+    try:
+        assert session.query(NodeAttempt).count() == 1
+        assert session.query(DomainEvent).filter_by(event_type="run.node_started").count() == 1
+        node = session.query(NodeRun).one()
+        assert node.state == "RUNNING"
+        assert node.finished_at is None
+    finally:
+        session.close()

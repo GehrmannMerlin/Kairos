@@ -13,6 +13,7 @@ from app.domain.repository import (
     CheckpointRepository,
     NodeAttemptRepository,
     NodeRunRepository,
+    RunRepository,
     SpecVersionRepository,
     TaskRepository,
 )
@@ -262,14 +263,27 @@ class DomainService:
         input_fingerprint: str,
         committed_refs: dict,
         content_hash: str | None,
-    ) -> Checkpoint:
+        return_reused: bool = False,
+    ) -> Checkpoint | tuple[Checkpoint, bool]:
         """Record a committed batch. Replay reuses; differing fingerprint conflicts."""
         db = self._tasks._db
+        from app.domain.errors import DomainError
+
+        run = RunRepository(db).get_owned(user_id, run_id)
+        if (
+            run.task_id != task_id
+            or run.spec_version != spec_version
+            or run.plan_version != plan_version
+        ):
+            raise DomainError("checkpoint 与 run/task/spec/plan 不匹配")
+        if node_run_id is not None:
+            node = NodeRunRepository(db).get_owned(user_id, node_run_id)
+            if node.run_id != run_id or node.task_id != task_id:
+                raise DomainError("checkpoint 与 node_run 不匹配")
         repo = CheckpointRepository(db)
         existing = repo.find_by_batch(run_id, batch_identity)
+        reused = existing is not None
         if existing is not None and existing.input_fingerprint != input_fingerprint:
-            from app.domain.errors import DomainError
-
             raise DomainError("相同批次身份但输入指纹不同")
         if existing is None:
             from sqlalchemy.exc import IntegrityError
@@ -294,16 +308,15 @@ class DomainService:
                 row = repo.find_by_batch(run_id, batch_identity)
                 if row is None:
                     raise
+                reused = True
         else:
             row = existing
         assert row is not None
         if row.input_fingerprint != input_fingerprint:
-            from app.domain.errors import DomainError
-
             raise DomainError("相同批次身份但输入指纹不同")
         from app.execution.lifecycle import append_checkpoint_event
 
         append_checkpoint_event(db, row)
         db.commit()
         db.refresh(row)
-        return row
+        return (row, reused) if return_reused else row

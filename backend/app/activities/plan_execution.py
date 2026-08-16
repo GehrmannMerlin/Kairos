@@ -143,14 +143,19 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
             else:
                 result = await executor(inp.unit)
         except Exception:
-            lifecycle.finish_attempt(
-                run_id=inp.run_id,
-                unit=inp.unit,
-                attempt=attempt,
-                status="FAILED",
-                committed_refs={},
-                error_code="INTERNAL",
-            )
+            # The executor error is the caller-visible failure. Lifecycle
+            # persistence is best-effort here and must not mask it.
+            try:
+                lifecycle.finish_attempt(
+                    run_id=inp.run_id,
+                    unit=inp.unit,
+                    attempt=attempt,
+                    status="FAILED",
+                    committed_refs={},
+                    error_code="INTERNAL",
+                )
+            except Exception:
+                lifecycle_session.rollback()
             raise
         lifecycle_status = "SUCCEEDED" if result.status == "OK" else result.status
         if lifecycle_status == "CREDENTIAL_REQUIRED":

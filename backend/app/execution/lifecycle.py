@@ -30,6 +30,11 @@ _NODE_STATES = {
     "WAITING_APPROVAL": "BLOCKED",
     "RESOURCE_WAITING": "WAITING_RESOURCE",
 }
+_LIFECYCLE_STATUSES = frozenset(_TERMINAL_EVENT_TYPES) | {"RUNNING"}
+_SAFE_REASON_CODES = frozenset(
+    {"INTERNAL", "NETWORK", "NODE_EXECUTOR_UNAVAILABLE", "INVALID_LIFECYCLE_STATUS"}
+)
+_SAFE_MESSAGES = frozenset({"fetch completed"})
 _COUNT_KEYS = {
     "fetched",
     "browser_pending",
@@ -68,6 +73,17 @@ def _counts(committed_refs: dict[str, Any]) -> dict[str, int | float]:
     }
 
 
+def _safe_error_fields(
+    status: str, error_code: str | None, safe_message: str | None
+) -> tuple[str, str | None, str | None]:
+    """Fail closed for unknown lifecycle input and never persist arbitrary text."""
+    if status not in _LIFECYCLE_STATUSES:
+        return "FAILED", "INVALID_LIFECYCLE_STATUS", None
+    code = error_code if error_code in _SAFE_REASON_CODES else None
+    message = safe_message if safe_message in _SAFE_MESSAGES else None
+    return status, code, message
+
+
 class ExecutionLifecycleRecorder:
     """Writes a single lifecycle command and its event in one transaction."""
 
@@ -78,14 +94,27 @@ class ExecutionLifecycleRecorder:
         self._runs = RunRepository(db)
 
     def start_attempt(self, *, run_id: int, unit: ExecutionUnit, attempt: int) -> LifecycleAttempt:
-        run, node, node_attempt, was_new = self._resolve_attempt(run_id, unit, attempt)
-        if was_new:
-            now = _utcnow()
-            node.state = "RUNNING"
-            node.started_at = node.started_at or now
-            node.version += 1
-            node_attempt.status = "RUNNING"
-            node_attempt.started_at = now
+        run, node, node_attempt, _ = self._resolve_attempt(run_id, unit, attempt)
+        now = _utcnow()
+        claimed = self._db.execute(
+            update(NodeAttempt)
+            .where(NodeAttempt.id == node_attempt.id, NodeAttempt.status == "PENDING")
+            .values(status="RUNNING", started_at=now)
+        )
+        if getattr(claimed, "rowcount", 0) == 1:
+            self._db.execute(
+                update(NodeRun)
+                .where(NodeRun.id == node.id)
+                .values(
+                    state="RUNNING",
+                    started_at=func.coalesce(NodeRun.started_at, now),
+                    finished_at=None,
+                    version=NodeRun.version + 1,
+                )
+            )
+            self._db.flush()
+            self._db.refresh(node)
+            self._db.refresh(node_attempt)
             self._append(
                 run=run,
                 node=node,
@@ -97,6 +126,9 @@ class ExecutionLifecycleRecorder:
                 safe_message=None,
             )
             self._db.commit()
+        else:
+            self._db.refresh(node_attempt)
+            self._db.refresh(node)
         return LifecycleAttempt(node_run_id=node.id, node_attempt_id=node_attempt.id)
 
     def finish_attempt(
@@ -111,9 +143,10 @@ class ExecutionLifecycleRecorder:
         safe_message: str | None = None,
     ) -> LifecycleAttempt:
         run, node, node_attempt, _ = self._resolve_attempt(run_id, unit, attempt)
+        status, error_code, safe_message = _safe_error_fields(status, error_code, safe_message)
         now = _utcnow()
-        event_type = _TERMINAL_EVENT_TYPES.get(status, "run.node_progress")
-        node_state = _NODE_STATES.get(status, "RUNNING")
+        event_type = _TERMINAL_EVENT_TYPES[status]
+        node_state = _NODE_STATES[status]
         attempt_status = "FAILED" if status in {"FAILED", "NODE_EXECUTOR_UNAVAILABLE"} else status
         if event_type != "run.node_progress":
             # The conditional write is the terminal-result linearization point.
@@ -133,9 +166,17 @@ class ExecutionLifecycleRecorder:
                 self._db.refresh(node_attempt)
                 self._db.refresh(node)
                 return LifecycleAttempt(node_run_id=node.id, node_attempt_id=node_attempt.id)
+            newer_attempt_exists = (
+                select(NodeAttempt.id)
+                .where(
+                    NodeAttempt.node_run_id == node.id,
+                    NodeAttempt.attempt > node_attempt.attempt,
+                )
+                .exists()
+            )
             self._db.execute(
                 update(NodeRun)
-                .where(NodeRun.id == node.id)
+                .where(NodeRun.id == node.id, ~newer_attempt_exists)
                 .values(state=node_state, finished_at=now, version=NodeRun.version + 1)
             )
             self._db.flush()
