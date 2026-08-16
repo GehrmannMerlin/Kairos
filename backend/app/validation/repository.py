@@ -59,24 +59,12 @@ class ValidationRepository:
         self._db.add(row)
         return row
 
-    def count_by_partition(
-        self,
-        *,
-        user_id: int,
-        task_id: int,
-        run_id: int | None = None,
-        spec_version: int | None = None,
-    ) -> dict[str, int]:
+    def count_by_partition(self, *, user_id: int, task_id: int) -> dict[str, int]:
         from sqlalchemy import func
 
-        conditions = [ValidationResult.user_id == user_id, ValidationResult.task_id == task_id]
-        if run_id is not None:
-            conditions.append(ValidationResult.run_id == run_id)
-        if spec_version is not None:
-            conditions.append(ValidationResult.spec_version_id == spec_version)
         rows = self._db.execute(
             select(ValidationResult.partition, func.count())
-            .where(*conditions)
+            .where(ValidationResult.user_id == user_id, ValidationResult.task_id == task_id)
             .group_by(ValidationResult.partition)
         ).all()
         return {p: int(c) for p, c in rows}
@@ -207,19 +195,6 @@ class ValidationRepository:
         )
 
     # ---- CompletionDecision ----
-    def find_completion(
-        self, *, user_id: int, task_id: int, run_id: int, spec_version: int, plan_version: int
-    ) -> CompletionDecision | None:
-        return self._db.scalar(
-            select(CompletionDecision).where(
-                CompletionDecision.user_id == user_id,
-                CompletionDecision.task_id == task_id,
-                CompletionDecision.run_id == run_id,
-                CompletionDecision.spec_version == spec_version,
-                CompletionDecision.plan_version == plan_version,
-            )
-        )
-
     def create_completion(
         self,
         *,

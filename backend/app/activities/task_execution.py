@@ -93,6 +93,13 @@ class RunSpecNotFrozenError(ApplicationError):
         super().__init__(message, non_retryable=True)
 
 
+class RunTerminalError(ApplicationError):
+    """Stable terminal identity/conflict failure that Temporal must not retry."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code, type=code, non_retryable=True)
+
+
 @activity.defn
 async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResult:
     session = get_session_factory()()
@@ -306,9 +313,9 @@ async def _finish_run(
             session.rollback()
             existing = RunRepository(session).get_owned(inp.user_id, inp.run_id)
             if existing.task_id != inp.task_id:
-                raise ValueError("RUN_IDENTITY_MISMATCH")
+                raise RunTerminalError("RUN_IDENTITY_MISMATCH")
             if existing.state != run_state:
-                raise ValueError("RUN_TERMINAL_CONFLICT")
+                raise RunTerminalError("RUN_TERMINAL_CONFLICT")
             _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
             return
         task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
