@@ -15,7 +15,7 @@ from app.activities.task_execution import (
 )
 from app.auth.models import User
 from app.domain.errors import DomainError
-from app.domain.models import Checkpoint, DomainEvent, Run, Task
+from app.domain.models import Checkpoint, DomainEvent, ResourceLease, Run, Task
 from app.domain.repository import RunRepository, TaskRepository
 from app.infra.db import Base
 from sqlalchemy import create_engine
@@ -156,6 +156,54 @@ async def test_commit_checkpoint_same_batch_different_fingerprint_raises(
         await commit_checkpoint(
             _commit_input(user_id=user_id, task_id=task_id, batch="unit-1", fp="fp-DIFFERENT")
         )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_checkpoint_activity_reports_creator_and_reuser(
+    monkeypatch, tmp_path
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'checkpoint-concurrent-result.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(task_execution, "get_session_factory", lambda: factory)
+    session = factory()
+    try:
+        user = User(email="checkpoint-race@kairos.test", password_hash="hash")
+        session.add(user)
+        session.commit()
+        task = TaskRepository(session).create(user_id=user.id, title="checkpoint", task_type=None)
+        RunRepository(session).create(
+            user_id=user.id, task_id=task.id, spec_version=1, plan_version=0
+        )
+        inp = _commit_input(user_id=user.id, task_id=task.id, batch="unit-1", fp="fp-1")
+    finally:
+        session.close()
+
+    barrier = threading.Barrier(2)
+
+    def synchronize_checkpoint_insert(conn, _cursor, statement, *_args) -> None:
+        if statement.lstrip().upper().startswith("INSERT INTO CHECKPOINTS"):
+            barrier.wait(timeout=10)
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", synchronize_checkpoint_insert)
+    try:
+        results = await asyncio.gather(commit_checkpoint(inp), commit_checkpoint(inp))
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", synchronize_checkpoint_insert)
+
+    assert sorted(result.reused for result in results) == [False, True]
+    session = factory()
+    try:
+        assert session.query(Checkpoint).count() == 1
+        assert (
+            session.query(DomainEvent).filter_by(event_type="run.checkpoint_committed").count() == 1
+        )
+        assert session.query(Run).count() == 1  # losing savepoint did not poison the outer session
+    finally:
+        session.close()
 
 
 def _spec_with_seeds(seed_urls: list[str]) -> dict:
@@ -474,5 +522,10 @@ async def test_ensure_run_started_concurrent_recovery_claims_run_started_once(
         assert sorted(result.started for result in results) == [False, True]
         assert session.get(Run, inp.run_id).state == "running"
         assert session.query(DomainEvent).filter_by(event_type="run.started").count() == 1
+        active_leases = session.query(ResourceLease).filter_by(state="active").all()
+        assert {(lease.scope, lease.scope_key, lease.holder_id) for lease in active_leases} == {
+            ("global", "deploy", f"run{inp.run_id}"),
+            ("user", str(inp.user_id), f"run{inp.run_id}"),
+        }
     finally:
         session.close()

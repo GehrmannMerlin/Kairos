@@ -32,6 +32,7 @@ class SlotResult:
     granted: bool
     reason: str | None = None  # global_limit | per_user_limit | pool_limit | None
     retry_after_seconds: float = 5.0
+    owned: bool = False
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -71,10 +72,20 @@ class ResourceLeaseRepository:
         user_id: int | None,
         resource_class: str | None,
         now: datetime,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         self._pg_advisory_lock(f"{scope}:{scope_key}")
+        existing = self._db.scalar(
+            select(ResourceLease).where(
+                ResourceLease.scope == scope,
+                ResourceLease.scope_key == scope_key,
+                ResourceLease.holder_id == holder_id,
+                ResourceLease.state == "active",
+            )
+        )
+        if existing is not None:
+            return True, False
         if self.count_active(scope, scope_key) >= limit:
-            return False
+            return False, False
         lease = ResourceLease(
             scope=scope,
             scope_key=scope_key,
@@ -89,7 +100,7 @@ class ResourceLeaseRepository:
         )
         self._db.add(lease)
         self._db.commit()
-        return True
+        return True, True
 
     def release(self, *, scope: str, scope_key: str, holder_id: str, now: datetime) -> bool:
         res = self._db.execute(
@@ -137,9 +148,7 @@ class ResourceLeaseRepository:
 
 
 class ResourceAdmission:
-    def __init__(
-        self, db: Session, capacity, *, now: Callable[[], datetime] | None = None
-    ) -> None:
+    def __init__(self, db: Session, capacity, *, now: Callable[[], datetime] | None = None) -> None:
         self._db = db
         self._cap = capacity
         self._repo = ResourceLeaseRepository(db)
@@ -149,7 +158,7 @@ class ResourceAdmission:
 
     def try_acquire_task_slot(self, *, user_id: int, holder_id: str) -> SlotResult:
         now = self._now()
-        if not self._repo.acquire(
+        global_granted, global_owned = self._repo.acquire(
             scope=LeaseScope.GLOBAL.value,
             scope_key="deploy",
             holder_type="run",
@@ -159,9 +168,10 @@ class ResourceAdmission:
             user_id=user_id,
             resource_class=None,
             now=now,
-        ):
+        )
+        if not global_granted:
             return SlotResult(False, reason="global_limit")
-        if not self._repo.acquire(
+        user_granted, user_owned = self._repo.acquire(
             scope=LeaseScope.USER.value,
             scope_key=str(user_id),
             holder_type="run",
@@ -171,13 +181,18 @@ class ResourceAdmission:
             user_id=user_id,
             resource_class=None,
             now=now,
-        ):
+        )
+        if not user_granted:
             # 半获得：回滚 global slot
-            self._repo.release(
-                scope=LeaseScope.GLOBAL.value, scope_key="deploy", holder_id=holder_id, now=now
-            )
+            if global_owned:
+                self._repo.release(
+                    scope=LeaseScope.GLOBAL.value,
+                    scope_key="deploy",
+                    holder_id=holder_id,
+                    now=now,
+                )
             return SlotResult(False, reason="per_user_limit")
-        return SlotResult(True)
+        return SlotResult(True, owned=global_owned or user_owned)
 
     def release_task_slot(self, *, user_id: int, holder_id: str) -> None:
         now = self._now()
@@ -195,8 +210,11 @@ class ResourceAdmission:
             (LeaseScope.USER.value, str(user_id)),
         ):
             self._repo.heartbeat(
-                scope=scope, scope_key=key, holder_id=holder_id,
-                ttl_seconds=self._cap.lease_ttl_seconds, now=now,
+                scope=scope,
+                scope_key=key,
+                holder_id=holder_id,
+                ttl_seconds=self._cap.lease_ttl_seconds,
+                now=now,
             )
 
     # ---- Level 3：pool slot ----
@@ -206,7 +224,7 @@ class ResourceAdmission:
     ) -> SlotResult:
         limit = self._cap.pool_limit(resource_class)
         now = self._now()
-        if not self._repo.acquire(
+        granted, _ = self._repo.acquire(
             scope=LeaseScope.RESOURCE_CLASS.value,
             scope_key=resource_class,
             holder_type="node",
@@ -216,7 +234,8 @@ class ResourceAdmission:
             user_id=user_id,
             resource_class=resource_class,
             now=now,
-        ):
+        )
+        if not granted:
             return SlotResult(False, reason="pool_limit", retry_after_seconds=5.0)
         return SlotResult(True)
 

@@ -122,3 +122,32 @@ async def test_execute_safe_unit_records_lookup_failure_before_reraising(
         assert events[-1].payload["reason_code"] == "INTERNAL"
     finally:
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_execute_safe_unit_preserves_executor_error_when_lifecycle_finish_fails(
+    monkeypatch, tmp_path
+) -> None:
+    _, run_id = _case(monkeypatch, tmp_path, "plan-lifecycle-failure")
+    original = RuntimeError("executor failure")
+
+    async def executor(_: ExecutionUnit) -> ExecuteUnitResult:
+        raise original
+
+    class FailingLifecycle:
+        def __init__(self, _session) -> None:
+            pass
+
+        def start_attempt(self, **_kwargs) -> None:
+            pass
+
+        def finish_attempt(self, **_kwargs) -> None:
+            raise RuntimeError("lifecycle persistence failure")
+
+    from app.execution import lifecycle
+
+    monkeypatch.setattr(plan_execution, "get_node_executor", lambda _: executor)
+    monkeypatch.setattr(lifecycle, "ExecutionLifecycleRecorder", FailingLifecycle)
+    with pytest.raises(RuntimeError) as raised:
+        await plan_execution.execute_safe_unit(_input(run_id))
+    assert raised.value is original

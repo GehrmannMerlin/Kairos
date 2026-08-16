@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from app.auth.errors import NotFoundError
+from app.auth.models import User
 from app.domain.errors import DomainError, StaleVersionError
 from app.domain.models import Checkpoint
 from app.domain.repository import RunRepository, TaskRepository
@@ -116,3 +118,41 @@ def test_commit_checkpoint_reuses_same_batch(db, user, task) -> None:
 
     rows = db.query(Checkpoint).filter_by(run_id=run.id).all()
     assert len(rows) == 1
+
+
+def test_checkpoint_rejects_cross_owner_run_and_version_mismatch(
+    db, service, user, task, run
+) -> None:
+    other = User(email="checkpoint-other@kairos.test", password_hash="hash")
+    db.add(other)
+    db.commit()
+    other_task = TaskRepository(db).create(user_id=other.id, title="other", task_type=None)
+    other_run = RunRepository(db).create(
+        user_id=other.id, task_id=other_task.id, spec_version=1, plan_version=1
+    )
+    with pytest.raises(NotFoundError):
+        service.commit_checkpoint(
+            user_id=user.id,
+            task_id=task.id,
+            run_id=other_run.id,
+            batch_identity="cross-owner",
+            spec_version=1,
+            plan_version=1,
+            node_run_id=None,
+            input_fingerprint="fp",
+            committed_refs={},
+            content_hash=None,
+        )
+    with pytest.raises(DomainError):
+        service.commit_checkpoint(
+            user_id=user.id,
+            task_id=task.id,
+            run_id=run.id,
+            batch_identity="version-mismatch",
+            spec_version=2,
+            plan_version=1,
+            node_run_id=None,
+            input_fingerprint="fp",
+            committed_refs={},
+            content_hash=None,
+        )

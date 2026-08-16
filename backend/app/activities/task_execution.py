@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select, update
 from temporalio import activity
@@ -14,12 +14,7 @@ from temporalio.exceptions import ApplicationError
 
 from app.domain.errors import IllegalTransitionError, StaleVersionError
 from app.domain.models import DomainEvent, Run
-from app.domain.repository import (
-    CheckpointRepository,
-    RunRepository,
-    SpecVersionRepository,
-    TaskRepository,
-)
+from app.domain.repository import RunRepository, SpecVersionRepository, TaskRepository
 from app.domain.service import DomainService
 from app.infra.deps import get_session_factory
 from app.state.events import append_domain_event
@@ -100,7 +95,7 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
                 waiting_reason=slot.reason,
                 retry_after_seconds=slot.retry_after_seconds,
             )
-        slot_acquired = True
+        slot_acquired = slot.owned
         # Claim the pending Run before changing task state or appending run.started.
         # The conditional write is the cross-worker linearization point: only its
         # winner owns the task transition and event in this transaction.
@@ -112,7 +107,8 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
         )
         if getattr(claimed, "rowcount", 0) != 1:
             session.rollback()
-            _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
+            # The other Run-claim contender may be using the same idempotent
+            # lease pair; never release a run-owned holder after losing CAS.
             slot_acquired = False
             return EnsureRunStartedResult(inp.run_id, started=False)
 
@@ -326,8 +322,7 @@ class CommitCheckpointResult:
 async def commit_checkpoint(inp: CommitCheckpointInput) -> CommitCheckpointResult:
     session = get_session_factory()()
     try:
-        existing = CheckpointRepository(session).find_by_batch(inp.run_id, inp.batch_identity)
-        row = await asyncio.to_thread(
+        checkpoint_result = await asyncio.to_thread(
             DomainService(TaskRepository(session)).commit_checkpoint,
             user_id=inp.user_id,
             task_id=inp.task_id,
@@ -339,8 +334,10 @@ async def commit_checkpoint(inp: CommitCheckpointInput) -> CommitCheckpointResul
             input_fingerprint=inp.input_fingerprint,
             committed_refs=inp.committed_refs,
             content_hash=inp.content_hash,
+            return_reused=True,
         )
-        return CommitCheckpointResult(row.id, reused=existing is not None)
+        row, reused = cast(tuple[Any, bool], checkpoint_result)
+        return CommitCheckpointResult(row.id, reused=reused)
     finally:
         session.close()
 
