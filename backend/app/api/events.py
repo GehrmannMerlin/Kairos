@@ -212,29 +212,37 @@ class SSETaskEvent(BaseModel):
     payload: dict[str, Any]
 
 
-def query_task_events(db: Any, user_id: int, task_id: int, after_id: int) -> list[DomainEvent]:
+def query_task_events(
+    db: Any,
+    user_id: int,
+    task_id: int,
+    after_id: int,
+    *,
+    limit: int | None = None,
+) -> list[DomainEvent]:
     # task.* 事件 + 本 task 的 record.* 事件（通过 records 表关联，record 事件无 task_id 列）
     record_ids = select(Record.id).where(Record.user_id == user_id, Record.task_id == task_id)
-    return list(
-        db.scalars(
-            select(DomainEvent)
-            .where(
-                DomainEvent.user_id == user_id,
-                DomainEvent.id > after_id,
-                or_(
-                    and_(
-                        DomainEvent.aggregate_type == "task",
-                        DomainEvent.aggregate_id == task_id,
-                    ),
-                    and_(
-                        DomainEvent.aggregate_type == "record",
-                        DomainEvent.aggregate_id.in_(record_ids),
-                    ),
+    statement = (
+        select(DomainEvent)
+        .where(
+            DomainEvent.user_id == user_id,
+            DomainEvent.id > after_id,
+            or_(
+                and_(
+                    DomainEvent.aggregate_type == "task",
+                    DomainEvent.aggregate_id == task_id,
                 ),
-            )
-            .order_by(DomainEvent.id)
+                and_(
+                    DomainEvent.aggregate_type == "record",
+                    DomainEvent.aggregate_id.in_(record_ids),
+                ),
+            ),
         )
+        .order_by(DomainEvent.id)
     )
+    if limit is not None:
+        statement = statement.limit(limit)
+    return list(db.scalars(statement))
 
 
 def map_domain_event_to_sse(ev: DomainEvent) -> SSETaskEvent:

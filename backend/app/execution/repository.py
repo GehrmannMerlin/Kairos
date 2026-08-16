@@ -77,10 +77,48 @@ class ExecutionRepository:
         )
 
     def url_stats(self, *, user_id: int, task_id: int) -> dict[str, int]:
+        return self._url_stats(
+            URLResource.user_id == user_id,
+            URLResource.task_id == task_id,
+        )
+
+    def run_url_stats(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        run_id: int,
+        spec_version: int,
+    ) -> dict[str, int]:
+        return self._url_stats(
+            URLResource.user_id == user_id,
+            URLResource.task_id == task_id,
+            URLResource.run_id == run_id,
+            URLResource.spec_version == spec_version,
+        )
+
+    def run_url_hashes(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        run_id: int,
+        spec_version: int,
+    ) -> set[str]:
+        return set(
+            self._db.scalars(
+                select(URLResource.url_hash).where(
+                    URLResource.user_id == user_id,
+                    URLResource.task_id == task_id,
+                    URLResource.run_id == run_id,
+                    URLResource.spec_version == spec_version,
+                )
+            )
+        )
+
+    def _url_stats(self, *conditions: Any) -> dict[str, int]:
         rows = self._db.execute(
-            select(URLResource.status, func.count())
-            .where(URLResource.user_id == user_id, URLResource.task_id == task_id)
-            .group_by(URLResource.status)
+            select(URLResource.status, func.count()).where(*conditions).group_by(URLResource.status)
         ).all()
         status_counts = {s: int(c) for s, c in rows}
         total = sum(status_counts.values())
@@ -102,18 +140,27 @@ class ExecutionRepository:
         return {p: int(c) for p, c in rows}
 
     def events_after(
-        self, *, user_id: int, task_id: int, after_id: int, limit: int
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        after_id: int,
+        limit: int,
+        through_id: int | None = None,
     ) -> list[DomainEvent]:
         """task 作用域事件 + 本 task 的 record.* 事件（同 M-07 query_task_events）。"""
         record_ids = select(Record.id).where(Record.user_id == user_id, Record.task_id == task_id)
         from sqlalchemy import and_, or_
 
+        id_conditions = [DomainEvent.id > after_id]
+        if through_id is not None:
+            id_conditions.append(DomainEvent.id <= through_id)
         return list(
             self._db.scalars(
                 select(DomainEvent)
                 .where(
                     DomainEvent.user_id == user_id,
-                    DomainEvent.id > after_id,
+                    *id_conditions,
                     or_(
                         and_(
                             DomainEvent.aggregate_type == "task",
@@ -188,6 +235,28 @@ class ExecutionRepository:
             or 0
         )
 
+    def run_record_count_total(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        run_id: int,
+        spec_version: int,
+    ) -> int:
+        return int(
+            self._db.scalar(
+                select(func.count())
+                .select_from(Record)
+                .where(
+                    Record.user_id == user_id,
+                    Record.task_id == task_id,
+                    Record.run_id == run_id,
+                    Record.spec_version == spec_version,
+                )
+            )
+            or 0
+        )
+
     def validated_record_count(self, *, user_id: int, task_id: int) -> int:
         return int(
             self._db.scalar(
@@ -196,6 +265,29 @@ class ExecutionRepository:
                 .where(
                     Record.user_id == user_id,
                     Record.task_id == task_id,
+                    Record.validated_at.is_not(None),
+                )
+            )
+            or 0
+        )
+
+    def run_validated_record_count(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        run_id: int,
+        spec_version: int,
+    ) -> int:
+        return int(
+            self._db.scalar(
+                select(func.count())
+                .select_from(Record)
+                .where(
+                    Record.user_id == user_id,
+                    Record.task_id == task_id,
+                    Record.run_id == run_id,
+                    Record.spec_version == spec_version,
                     Record.validated_at.is_not(None),
                 )
             )
