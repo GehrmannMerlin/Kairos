@@ -48,29 +48,33 @@ async def resolve_completion(inp: ResolveCompletionInput) -> ResolveCompletionRe
         from app.validation.policies import ValidationSettings
         from app.validation.repository import ValidationRepository
 
-        run = session.scalar(
-            select(Run).where(
-                Run.id == inp.run_id,
-                Run.user_id == inp.user_id,
-                Run.task_id == inp.task_id,
-                Run.spec_version == inp.spec_version,
-                Run.plan_version == inp.plan_version,
-            )
-        )
+        run = session.scalar(select(Run).where(Run.id == inp.run_id, Run.user_id == inp.user_id))
         if run is None:
-            exists = session.scalar(select(Run.id).where(Run.id == inp.run_id))
             return ResolveCompletionResult(
                 partial=False,
                 status="FAILED",
                 completion_type=None,
                 qualified_record_count=0,
-                failure_code="RUN_IDENTITY_MISMATCH" if exists is not None else "RUN_NOT_FOUND",
+                failure_code="RUN_NOT_FOUND",
+            )
+        if (
+            run.task_id != inp.task_id
+            or run.spec_version != inp.spec_version
+            or run.plan_version != inp.plan_version
+        ):
+            return ResolveCompletionResult(
+                partial=False,
+                status="FAILED",
+                completion_type=None,
+                qualified_record_count=0,
+                failure_code="RUN_IDENTITY_MISMATCH",
             )
         spec = SpecVersionRepository(session).get_version(
             inp.user_id, inp.task_id, inp.spec_version
         )
         repo = ValidationRepository(session)
-        existing = repo.find_completion(
+        existing = _find_completion(
+            session,
             user_id=inp.user_id,
             task_id=inp.task_id,
             run_id=inp.run_id,
@@ -78,14 +82,9 @@ async def resolve_completion(inp: ResolveCompletionInput) -> ResolveCompletionRe
             plan_version=inp.plan_version,
         )
         if existing is not None:
-            return ResolveCompletionResult(
-                partial=existing.is_partial,
-                status=existing.status,
-                completion_type=existing.completion_type,
-                qualified_record_count=existing.qualified_record_count,
-                completion_id=existing.id,
-            )
-        counts = repo.count_by_partition(
+            return _completion_result(existing)
+        counts = _count_partitions(
+            session,
             user_id=inp.user_id,
             task_id=inp.task_id,
             run_id=inp.run_id,
@@ -147,7 +146,8 @@ async def resolve_completion(inp: ResolveCompletionInput) -> ResolveCompletionRe
             session.commit()
         except IntegrityError:
             session.rollback()
-            existing = repo.find_completion(
+            existing = _find_completion(
+                session,
                 user_id=inp.user_id,
                 task_id=inp.task_id,
                 run_id=inp.run_id,
@@ -158,15 +158,63 @@ async def resolve_completion(inp: ResolveCompletionInput) -> ResolveCompletionRe
                 raise
             row = existing
         session.refresh(row)
-        return ResolveCompletionResult(
-            partial=decision.is_partial,
-            status=decision.status,
-            completion_type=decision.completion_type,
-            qualified_record_count=qualified,
-            completion_id=row.id,
-        )
+        return _completion_result(row)
     finally:
         session.close()
+
+
+def _completion_result(row) -> ResolveCompletionResult:
+    return ResolveCompletionResult(
+        partial=row.is_partial,
+        status=row.status,
+        completion_type=row.completion_type,
+        qualified_record_count=row.qualified_record_count,
+        completion_id=row.id,
+    )
+
+
+def _find_completion(
+    session,
+    *,
+    user_id: int,
+    task_id: int,
+    run_id: int,
+    spec_version: int,
+    plan_version: int,
+):
+    from sqlalchemy import select
+
+    from app.domain.models import CompletionDecision
+
+    return session.scalar(
+        select(CompletionDecision).where(
+            CompletionDecision.user_id == user_id,
+            CompletionDecision.task_id == task_id,
+            CompletionDecision.run_id == run_id,
+            CompletionDecision.spec_version == spec_version,
+            CompletionDecision.plan_version == plan_version,
+        )
+    )
+
+
+def _count_partitions(
+    session, *, user_id: int, task_id: int, run_id: int, spec_version: int
+) -> dict[str, int]:
+    from sqlalchemy import func, select
+
+    from app.domain.models import ValidationResult
+
+    rows = session.execute(
+        select(ValidationResult.partition, func.count())
+        .where(
+            ValidationResult.user_id == user_id,
+            ValidationResult.task_id == task_id,
+            ValidationResult.run_id == run_id,
+            ValidationResult.spec_version_id == spec_version,
+        )
+        .group_by(ValidationResult.partition)
+    ).all()
+    return {partition: int(count) for partition, count in rows}
 
 
 def _count_eligible(session, user_id: int, task_id: int, run_id: int, spec_version: int) -> int:
