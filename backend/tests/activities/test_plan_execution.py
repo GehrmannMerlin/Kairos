@@ -126,7 +126,7 @@ async def test_execute_safe_unit_records_lookup_failure_before_reraising(
 
 @pytest.mark.asyncio
 async def test_execute_safe_unit_preserves_executor_error_when_lifecycle_finish_fails(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, caplog
 ) -> None:
     _, run_id = _case(monkeypatch, tmp_path, "plan-lifecycle-failure")
     original = RuntimeError("executor failure")
@@ -142,7 +142,7 @@ async def test_execute_safe_unit_preserves_executor_error_when_lifecycle_finish_
             pass
 
         def finish_attempt(self, **_kwargs) -> None:
-            raise RuntimeError("lifecycle persistence failure")
+            raise RuntimeError("Bearer lifecycle-secret")
 
     from app.execution import lifecycle
 
@@ -151,3 +151,5 @@ async def test_execute_safe_unit_preserves_executor_error_when_lifecycle_finish_
     with pytest.raises(RuntimeError) as raised:
         await plan_execution.execute_safe_unit(_input(run_id))
     assert raised.value is original
+    assert "run_id=1" in caplog.text
+    assert "lifecycle-secret" not in caplog.text
