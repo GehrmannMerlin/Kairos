@@ -167,15 +167,17 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
                 )
             raise
         lifecycle_status = "SUCCEEDED" if result.status == "OK" else result.status
+        lifecycle_error_code = result.error_code
         if lifecycle_status == "CREDENTIAL_REQUIRED":
             lifecycle_status = "WAITING_APPROVAL"
+            lifecycle_error_code = result.error_code or "CREDENTIAL_REQUIRED"
         lifecycle.finish_attempt(
             run_id=inp.run_id,
             unit=inp.unit,
             attempt=attempt,
             status=lifecycle_status,
             committed_refs=result.committed_refs,
-            error_code=result.error_code,
+            error_code=lifecycle_error_code,
             safe_message=result.safe_message,
         )
         return result

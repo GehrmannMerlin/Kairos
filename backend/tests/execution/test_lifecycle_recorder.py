@@ -541,6 +541,42 @@ def test_authoritative_retry_start_clears_prior_terminal_timestamp(
     assert node.finished_at is None
 
 
+def test_delayed_pending_progress_cannot_reopen_newer_terminal(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=2
+    )
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=2,
+        status="SUCCEEDED",
+        committed_refs={},
+        error_code=None,
+    )
+    node = lifecycle_case.session.query(NodeRun).one()
+    lifecycle_case.session.add(
+        NodeAttempt(
+            user_id=lifecycle_case.run.user_id, node_run_id=node.id, attempt=1, status="PENDING"
+        )
+    )
+    lifecycle_case.session.commit()
+    finished_at = lifecycle_case.session.query(NodeRun).one().finished_at
+
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=1,
+        status="RUNNING",
+        committed_refs={},
+        error_code=None,
+    )
+    node = lifecycle_case.session.query(NodeRun).one()
+    assert node.state == "SUCCEEDED"
+    assert node.finished_at == finished_at
+
+
 def test_unknown_lifecycle_status_fails_closed_without_secret_text(
     lifecycle_case: LifecycleCase,
 ) -> None:

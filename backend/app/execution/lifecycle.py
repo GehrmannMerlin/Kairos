@@ -199,12 +199,40 @@ class ExecutionLifecycleRecorder:
             self._db.refresh(node_attempt)
             self._db.refresh(node)
         else:
-            node_attempt.status = attempt_status
-            node_attempt.error_code = error_code
-            node_attempt.error_summary = (safe_message or "")[:500] or None
-            node_attempt.started_at = node_attempt.started_at or now
-            node.state = node_state
-            node.version += 1
+            claimed = self._db.execute(
+                update(NodeAttempt)
+                .where(NodeAttempt.id == node_attempt.id, NodeAttempt.finished_at.is_(None))
+                .values(
+                    status=attempt_status,
+                    error_code=error_code,
+                    error_summary=(safe_message or "")[:500] or None,
+                    started_at=func.coalesce(NodeAttempt.started_at, now),
+                )
+            )
+            if getattr(claimed, "rowcount", 0) != 1:
+                self._db.refresh(node_attempt)
+                self._db.refresh(node)
+                return LifecycleAttempt(node_run_id=node.id, node_attempt_id=node_attempt.id)
+            newer_attempt_exists = (
+                select(NodeAttempt.id)
+                .where(
+                    NodeAttempt.node_run_id == node.id,
+                    NodeAttempt.attempt > node_attempt.attempt,
+                )
+                .exists()
+            )
+            self._db.execute(
+                update(NodeRun)
+                .where(
+                    NodeRun.id == node.id,
+                    ~newer_attempt_exists,
+                    NodeRun.finished_at.is_(None),
+                )
+                .values(state=node_state, version=NodeRun.version + 1)
+            )
+            self._db.flush()
+            self._db.refresh(node_attempt)
+            self._db.refresh(node)
         self._append(
             run=run,
             node=node,

@@ -153,3 +153,23 @@ async def test_execute_safe_unit_preserves_executor_error_when_lifecycle_finish_
     assert raised.value is original
     assert "run_id=1" in caplog.text
     assert "lifecycle-secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_execute_safe_unit_normalizes_credential_required_reason(
+    monkeypatch, tmp_path
+) -> None:
+    factory, run_id = _case(monkeypatch, tmp_path, "plan-credential-required")
+
+    async def executor(_: ExecutionUnit) -> ExecuteUnitResult:
+        return ExecuteUnitResult(unit_index=1, committed_refs={}, status="CREDENTIAL_REQUIRED")
+
+    monkeypatch.setattr(plan_execution, "get_node_executor", lambda _: executor)
+    await plan_execution.execute_safe_unit(_input(run_id))
+    session = factory()
+    try:
+        event = session.query(DomainEvent).order_by(DomainEvent.id.desc()).first()
+        assert event.event_type == "run.node_blocked"
+        assert event.payload["reason_code"] == "CREDENTIAL_REQUIRED"
+    finally:
+        session.close()
