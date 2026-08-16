@@ -121,16 +121,53 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
                 error_code="RESOURCE_UNAVAILABLE",
             )
     try:
+        try:
+            attempt = activity.info().attempt
+        except RuntimeError:
+            # Direct Activity unit tests have no Temporal context.
+            attempt = 1
+        from app.execution.lifecycle import ExecutionLifecycleRecorder
+
+        lifecycle_session = get_session_factory()()
+        lifecycle = ExecutionLifecycleRecorder(lifecycle_session)
+        lifecycle.start_attempt(run_id=inp.run_id, unit=inp.unit, attempt=attempt)
         executor = get_node_executor(inp.unit.node_type)
         if executor is None:
-            return ExecuteUnitResult(
+            result = ExecuteUnitResult(
                 unit_index=inp.unit.index,
                 committed_refs={},
                 status="NODE_EXECUTOR_UNAVAILABLE",
                 error_code="NODE_EXECUTOR_UNAVAILABLE",
             )
-        return await executor(inp.unit)
+        else:
+            try:
+                result = await executor(inp.unit)
+            except Exception:
+                lifecycle.finish_attempt(
+                    run_id=inp.run_id,
+                    unit=inp.unit,
+                    attempt=attempt,
+                    status="FAILED",
+                    committed_refs={},
+                    error_code="INTERNAL",
+                )
+                raise
+        lifecycle_status = "SUCCEEDED" if result.status == "OK" else result.status
+        if lifecycle_status == "CREDENTIAL_REQUIRED":
+            lifecycle_status = "WAITING_APPROVAL"
+        lifecycle.finish_attempt(
+            run_id=inp.run_id,
+            unit=inp.unit,
+            attempt=attempt,
+            status=lifecycle_status,
+            committed_refs=result.committed_refs,
+            error_code=result.error_code,
+            safe_message=result.safe_message,
+        )
+        return result
     finally:
+        if "lifecycle_session" in locals():
+            lifecycle_session.close()
         if rc is not None and admission_session is not None:
             try:
                 ResourceAdmission(admission_session, capacity).release_pool_slot(
