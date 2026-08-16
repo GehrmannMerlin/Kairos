@@ -12,7 +12,7 @@ from app.activities.task_execution import (
 )
 from app.auth.models import User
 from app.domain.errors import DomainError
-from app.domain.models import Checkpoint, Run, Task
+from app.domain.models import Checkpoint, DomainEvent, Run, Task
 from app.domain.repository import RunRepository, TaskRepository
 from app.infra.db import Base
 from sqlalchemy import create_engine
@@ -51,11 +51,13 @@ async def test_fail_run_marks_task_and_run_failed(monkeypatch, tmp_path) -> None
 
     session = factory()
     try:
-        task = session.get(Task, task_id)
-        run = session.get(Run, run_id)
-        assert task.state == "FAILED"
-        assert run.state == "failed"
-        assert run.finished_at is not None
+        stored_task = session.get(Task, task_id)
+        stored_run = session.get(Run, run_id)
+        assert stored_task is not None
+        assert stored_run is not None
+        assert stored_task.state == "FAILED"
+        assert stored_run.state == "failed"
+        assert stored_run.finished_at is not None
     finally:
         session.close()
 
@@ -90,6 +92,9 @@ async def test_commit_checkpoint_reuses_same_batch_activity(monkeypatch, tmp_pat
         session.add(user)
         session.commit()
         task = TaskRepository(session).create(user_id=user.id, title="cp reuse", task_type=None)
+        RunRepository(session).create(
+            user_id=user.id, task_id=task.id, spec_version=1, plan_version=0
+        )
         task_id = task.id
         user_id = user.id
     finally:
@@ -107,6 +112,9 @@ async def test_commit_checkpoint_reuses_same_batch_activity(monkeypatch, tmp_pat
     try:
         rows = session.query(Checkpoint).filter_by(run_id=1).all()
         assert len(rows) == 1
+        assert [
+            event.event_type for event in session.query(DomainEvent).order_by(DomainEvent.id)
+        ] == ["run.checkpoint_committed"]
     finally:
         session.close()
 
@@ -128,6 +136,9 @@ async def test_commit_checkpoint_same_batch_different_fingerprint_raises(
         session.add(user)
         session.commit()
         task = TaskRepository(session).create(user_id=user.id, title="cp conflict", task_type=None)
+        RunRepository(session).create(
+            user_id=user.id, task_id=task.id, spec_version=1, plan_version=0
+        )
         task_id = task.id
         user_id = user.id
     finally:
@@ -206,6 +217,11 @@ async def test_ensure_run_started_ingests_spec_seeds_into_frontier(monkeypatch, 
             task_id=task_id, user_id=user_id, run_id=run_id, spec_version=1, plan_version=1
         )
     )
+    replay = await ensure_run_started(
+        EnsureRunStartedInput(
+            task_id=task_id, user_id=user_id, run_id=run_id, spec_version=1, plan_version=1
+        )
+    )
 
     session = factory()
     try:
@@ -215,7 +231,13 @@ async def test_ensure_run_started_ingests_spec_seeds_into_frontier(monkeypatch, 
         assert urls[0].status == FrontierState.DISCOVERED.value
         assert urls[0].source_type == "USER_SEED"
         # 幂等：re-run 不产生重复 Frontier Entry
-        task = session.get(Task, task_id)
-        assert task.state == "RUNNING"
+        stored_task = session.get(Task, task_id)
+        assert stored_task is not None
+        assert stored_task.state == "RUNNING"
+        assert [event.event_type for event in session.query(DomainEvent).order_by(DomainEvent.id)][
+            -1
+        ] == ("run.started")
+        assert [event.event_type for event in session.query(DomainEvent)].count("run.started") == 1
+        assert replay.started is False
     finally:
         session.close()

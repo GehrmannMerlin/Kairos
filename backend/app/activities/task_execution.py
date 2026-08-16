@@ -20,6 +20,7 @@ from app.domain.repository import (
 )
 from app.domain.service import DomainService
 from app.infra.deps import get_session_factory
+from app.state.events import append_domain_event
 
 
 def _utcnow() -> datetime:
@@ -90,7 +91,9 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
         ).try_acquire_task_slot(user_id=inp.user_id, holder_id=f"run{inp.run_id}")
         if not slot.granted:
             return EnsureRunStartedResult(
-                inp.run_id, started=False, waiting_reason=slot.reason,
+                inp.run_id,
+                started=False,
+                waiting_reason=slot.reason,
                 retry_after_seconds=slot.retry_after_seconds,
             )
         task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
@@ -110,6 +113,26 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
         run.state = "running"
         run.started_at = _utcnow()
         session.add(run)
+        append_domain_event(
+            session,
+            user_id=inp.user_id,
+            aggregate_type="task",
+            aggregate_id=inp.task_id,
+            event_type="run.started",
+            aggregate_version=task.version,
+            payload={
+                "schema_version": 1,
+                "task_id": inp.task_id,
+                "run_id": inp.run_id,
+                "spec_version": inp.spec_version,
+                "plan_version": inp.plan_version,
+                "seed_count": len(
+                    ((spec.payload or {}).get("source_scope") or {}).get("seed_urls") or []
+                ),
+            },
+            actor_type="system",
+            run_id=inp.run_id,
+        )
         session.commit()
         return EnsureRunStartedResult(inp.run_id, started=True)
     finally:
@@ -295,6 +318,9 @@ async def commit_checkpoint(inp: CommitCheckpointInput) -> CommitCheckpointResul
             committed_refs=inp.committed_refs,
             content_hash=inp.content_hash,
         )
+        from app.execution.lifecycle import ExecutionLifecycleRecorder
+
+        ExecutionLifecycleRecorder(session).checkpoint_committed(row)
         return CommitCheckpointResult(row.id, reused=False)
     finally:
         session.close()

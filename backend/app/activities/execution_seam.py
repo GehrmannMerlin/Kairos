@@ -53,6 +53,7 @@ class ExecuteUnitResult:
     committed_refs: dict
     status: str = "OK"  # OK | NODE_EXECUTOR_UNAVAILABLE
     error_code: str | None = None
+    safe_message: str | None = None
 
 
 @activity.defn

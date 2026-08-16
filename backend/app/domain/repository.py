@@ -556,6 +556,41 @@ class NodeRunRepository:
         self._db.refresh(row)
         return row
 
+    def get_or_create(
+        self,
+        *,
+        user_id: int,
+        run_id: int,
+        task_id: int,
+        node_id: str,
+        node_type: str,
+        position: int,
+        input_fingerprint: str,
+    ) -> NodeRun:
+        row = self._db.scalar(
+            select(NodeRun).where(
+                NodeRun.user_id == user_id,
+                NodeRun.run_id == run_id,
+                NodeRun.node_id == node_id,
+            )
+        )
+        if row is not None:
+            return row
+        row = NodeRun(
+            user_id=user_id,
+            run_id=run_id,
+            task_id=task_id,
+            node_id=node_id,
+            node_type=node_type,
+            position=position,
+            input_fingerprint=input_fingerprint,
+            state="PENDING",
+            version=1,
+        )
+        self._db.add(row)
+        self._db.flush()
+        return row
+
     def get_owned(self, user_id: int, node_run_id: int) -> NodeRun:
         return _owned(self._db, NodeRun, user_id, node_run_id)
 
@@ -587,6 +622,26 @@ class NodeAttemptRepository:
             user_id=user_id, node_run_id=node_run_id, attempt=attempt, status="pending"
         )
         self._db.add(row)
+        return row
+
+    def get_or_create(self, *, user_id: int, node_run_id: int, attempt: int) -> NodeAttempt:
+        row = self._db.scalar(
+            select(NodeAttempt).where(
+                NodeAttempt.user_id == user_id,
+                NodeAttempt.node_run_id == node_run_id,
+                NodeAttempt.attempt == attempt,
+            )
+        )
+        if row is not None:
+            return row
+        row = NodeAttempt(
+            user_id=user_id,
+            node_run_id=node_run_id,
+            attempt=attempt,
+            status="PENDING",
+        )
+        self._db.add(row)
+        self._db.flush()
         return row
 
 
