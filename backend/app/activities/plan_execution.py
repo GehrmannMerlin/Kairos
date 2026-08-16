@@ -8,6 +8,8 @@ NODE_EXECUTORS（生产为空 → NODE_EXECUTOR_UNAVAILABLE）；测试/Staging 
 
 from __future__ import annotations
 
+import logging
+
 from temporalio import activity
 
 from app.activities.execution_seam import (
@@ -33,6 +35,7 @@ _NODE_TYPE_NAMES = {
     "validate",
     "generate_artifact",
 }
+logger = logging.getLogger(__name__)
 
 
 @activity.defn
@@ -156,6 +159,12 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
                 )
             except Exception:
                 lifecycle_session.rollback()
+                logger.warning(
+                    "lifecycle_finish_failed run_id=%s node_id=%s attempt=%s",
+                    inp.run_id,
+                    inp.unit.node_id or inp.unit.index,
+                    attempt,
+                )
             raise
         lifecycle_status = "SUCCEEDED" if result.status == "OK" else result.status
         if lifecycle_status == "CREDENTIAL_REQUIRED":

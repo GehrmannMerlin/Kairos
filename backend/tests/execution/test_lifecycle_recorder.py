@@ -494,6 +494,53 @@ def test_older_terminal_attempt_cannot_regress_newer_success(lifecycle_case: Lif
     assert lifecycle_case.event_types()[-2:] == ["run.node_completed", "run.node_failed"]
 
 
+def test_late_older_start_cannot_clear_newer_terminal_fact(lifecycle_case: LifecycleCase) -> None:
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=1
+    )
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=2
+    )
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=2,
+        status="SUCCEEDED",
+        committed_refs={},
+        error_code=None,
+    )
+    finished_at = lifecycle_case.session.query(NodeRun).one().finished_at
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=1
+    )
+    node = lifecycle_case.session.query(NodeRun).one()
+    assert node.state == "SUCCEEDED"
+    assert node.finished_at == finished_at
+
+
+def test_authoritative_retry_start_clears_prior_terminal_timestamp(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=1
+    )
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=1,
+        status="FAILED",
+        committed_refs={},
+        error_code="NETWORK",
+    )
+    assert lifecycle_case.session.query(NodeRun).one().finished_at is not None
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=2
+    )
+    node = lifecycle_case.session.query(NodeRun).one()
+    assert node.state == "RUNNING"
+    assert node.finished_at is None
+
+
 def test_unknown_lifecycle_status_fails_closed_without_secret_text(
     lifecycle_case: LifecycleCase,
 ) -> None:

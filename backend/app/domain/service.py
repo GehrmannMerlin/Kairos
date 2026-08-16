@@ -312,6 +312,15 @@ class DomainService:
         else:
             row = existing
         assert row is not None
+        if (
+            row.user_id != user_id
+            or row.task_id != task_id
+            or row.run_id != run_id
+            or row.spec_version != spec_version
+            or row.plan_version != plan_version
+            or row.node_run_id != node_run_id
+        ):
+            raise DomainError("已存在 checkpoint 与请求身份不匹配")
         if row.input_fingerprint != input_fingerprint:
             raise DomainError("相同批次身份但输入指纹不同")
         from app.execution.lifecycle import append_checkpoint_event

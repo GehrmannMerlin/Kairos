@@ -14,25 +14,35 @@ from app.domain.models import Checkpoint, DomainEvent, IdempotencyKey, NodeAttem
 from app.domain.repository import NodeAttemptRepository, NodeRunRepository, RunRepository
 from app.state.events import append_domain_event
 
-_TERMINAL_EVENT_TYPES = {
-    "SUCCEEDED": "run.node_completed",
-    "FAILED": "run.node_failed",
-    "NODE_EXECUTOR_UNAVAILABLE": "run.node_failed",
-    "BLOCKED": "run.node_blocked",
-    "WAITING_APPROVAL": "run.node_blocked",
-    "RESOURCE_WAITING": "run.node_blocked",
+_LIFECYCLE_STATUS = {
+    "RUNNING": ("run.node_progress", "RUNNING", "RUNNING", False),
+    "SUCCEEDED": ("run.node_completed", "SUCCEEDED", "SUCCEEDED", True),
+    "FAILED": ("run.node_failed", "FAILED", "FAILED", True),
+    "NODE_EXECUTOR_UNAVAILABLE": ("run.node_failed", "FAILED", "FAILED", True),
+    "BLOCKED": ("run.node_blocked", "BLOCKED", "BLOCKED", True),
+    "WAITING_APPROVAL": ("run.node_blocked", "BLOCKED", "WAITING_APPROVAL", True),
+    "RESOURCE_WAITING": ("run.node_blocked", "WAITING_RESOURCE", "RESOURCE_WAITING", True),
 }
-_NODE_STATES = {
-    "SUCCEEDED": "SUCCEEDED",
-    "FAILED": "FAILED",
-    "NODE_EXECUTOR_UNAVAILABLE": "FAILED",
-    "BLOCKED": "BLOCKED",
-    "WAITING_APPROVAL": "BLOCKED",
-    "RESOURCE_WAITING": "WAITING_RESOURCE",
-}
-_LIFECYCLE_STATUSES = frozenset(_TERMINAL_EVENT_TYPES) | {"RUNNING"}
 _SAFE_REASON_CODES = frozenset(
-    {"INTERNAL", "NETWORK", "NODE_EXECUTOR_UNAVAILABLE", "INVALID_LIFECYCLE_STATUS"}
+    {
+        "INTERNAL",
+        "NETWORK",
+        "NETWORK_ERROR",
+        "RUN_NOT_FOUND",
+        "STORAGE_ERROR",
+        "NODE_EXECUTOR_UNAVAILABLE",
+        "CREDENTIAL_REQUIRED",
+        "API_KEY_REQUIRED",
+        "ACCESS_DENIED",
+        "AUTH_REQUIRED",
+        "CAPTCHA_REQUIRED",
+        "NOT_FOUND",
+        "UNSUPPORTED_RESPONSE",
+        "BASE_URL_REQUIRED",
+        "INVALID_BASE_URL",
+        "RESOURCE_UNAVAILABLE",
+        "INVALID_LIFECYCLE_STATUS",
+    }
 )
 _SAFE_MESSAGES = frozenset({"fetch completed"})
 _COUNT_KEYS = {
@@ -77,7 +87,7 @@ def _safe_error_fields(
     status: str, error_code: str | None, safe_message: str | None
 ) -> tuple[str, str | None, str | None]:
     """Fail closed for unknown lifecycle input and never persist arbitrary text."""
-    if status not in _LIFECYCLE_STATUSES:
+    if status not in _LIFECYCLE_STATUS:
         return "FAILED", "INVALID_LIFECYCLE_STATUS", None
     code = error_code if error_code in _SAFE_REASON_CODES else None
     message = safe_message if safe_message in _SAFE_MESSAGES else None
@@ -102,9 +112,17 @@ class ExecutionLifecycleRecorder:
             .values(status="RUNNING", started_at=now)
         )
         if getattr(claimed, "rowcount", 0) == 1:
+            newer_attempt_exists = (
+                select(NodeAttempt.id)
+                .where(
+                    NodeAttempt.node_run_id == node.id,
+                    NodeAttempt.attempt > node_attempt.attempt,
+                )
+                .exists()
+            )
             self._db.execute(
                 update(NodeRun)
-                .where(NodeRun.id == node.id)
+                .where(NodeRun.id == node.id, ~newer_attempt_exists)
                 .values(
                     state="RUNNING",
                     started_at=func.coalesce(NodeRun.started_at, now),
@@ -145,10 +163,8 @@ class ExecutionLifecycleRecorder:
         run, node, node_attempt, _ = self._resolve_attempt(run_id, unit, attempt)
         status, error_code, safe_message = _safe_error_fields(status, error_code, safe_message)
         now = _utcnow()
-        event_type = _TERMINAL_EVENT_TYPES[status]
-        node_state = _NODE_STATES[status]
-        attempt_status = "FAILED" if status in {"FAILED", "NODE_EXECUTOR_UNAVAILABLE"} else status
-        if event_type != "run.node_progress":
+        event_type, node_state, attempt_status, terminal = _LIFECYCLE_STATUS[status]
+        if terminal:
             # The conditional write is the terminal-result linearization point.
             # A stale worker cannot overwrite the winner or emit a second fact.
             claimed = self._db.execute(
