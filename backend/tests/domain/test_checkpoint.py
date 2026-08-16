@@ -156,3 +156,33 @@ def test_checkpoint_rejects_cross_owner_run_and_version_mismatch(
             committed_refs={},
             content_hash=None,
         )
+
+
+def test_checkpoint_replay_rejects_mismatched_stored_identity(db, service, user, task, run) -> None:
+    checkpoint = service.commit_checkpoint(
+        user_id=user.id,
+        task_id=task.id,
+        run_id=run.id,
+        batch_identity="stored-identity",
+        spec_version=1,
+        plan_version=1,
+        node_run_id=None,
+        input_fingerprint="fp",
+        committed_refs={},
+        content_hash=None,
+    )
+    checkpoint.plan_version = 99
+    db.commit()
+    with pytest.raises(DomainError, match="身份不匹配"):
+        service.commit_checkpoint(
+            user_id=user.id,
+            task_id=task.id,
+            run_id=run.id,
+            batch_identity="stored-identity",
+            spec_version=1,
+            plan_version=1,
+            node_run_id=None,
+            input_fingerprint="fp",
+            committed_refs={},
+            content_hash=None,
+        )
