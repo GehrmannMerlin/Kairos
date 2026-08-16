@@ -11,9 +11,11 @@ import sys
 import time
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from app.activities.execution_seam import ExecuteUnitResult, ExecutionUnit, FetchUnitResult
 from app.config import get_settings
 from app.domain.models import Checkpoint, OutboxEvent, Run, Task
 from app.domain.repository import TaskRepository
@@ -21,12 +23,69 @@ from app.domain.task_commands import TaskCommandService
 from app.infra.deps import get_session_factory
 from app.infra.outbox_dispatch import OutboxTemporalDispatcher
 from app.infra.temporal import create_temporal_client
+from app.workflows import task_workflow
 from app.workflows.starter import TaskWorkflowStarter
-from app.workflows.task_workflow import TaskWorkflowResult
+from app.workflows.task_workflow import TaskWorkflow, TaskWorkflowInput, TaskWorkflowResult
 
 pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "error_code"),
+    [
+        ("NODE_EXECUTOR_UNAVAILABLE", "NODE_EXECUTOR_UNAVAILABLE"),
+        ("FAILED", "STORAGE_ERROR"),
+    ],
+)
+async def test_runtime_executor_failures_fail_before_checkpoint_or_completion(
+    monkeypatch, status: str, error_code: str
+) -> None:
+    calls: list[str] = []
+    unit = ExecutionUnit(
+        run_id=3,
+        index=1,
+        unit_type="fetch",
+        input_fingerprint="fingerprint",
+        node_id="fetch-1",
+        resource_class="core",
+    )
+
+    async def execute_activity(activity_fn, activity_input, **_kwargs):
+        name = activity_fn.__name__
+        calls.append(name)
+        if name == "ensure_run_started":
+            return SimpleNamespace(started=True)
+        if name == "heartbeat_task_slot":
+            return None
+        if name == "fetch_next_execution_unit":
+            return FetchUnitResult(unit=unit)
+        if name == "execute_safe_unit":
+            return ExecuteUnitResult(
+                unit_index=unit.index,
+                committed_refs={},
+                status=status,
+                error_code=error_code,
+            )
+        if name == "fail_run":
+            assert activity_input.error_code == error_code
+            return None
+        raise AssertionError(f"unexpected activity: {name}")
+
+    monkeypatch.setattr(task_workflow.workflow, "execute_activity", execute_activity)
+    monkeypatch.setattr(task_workflow, "workflow_queue_override", lambda _resource_class: None)
+
+    result = await TaskWorkflow().run(
+        TaskWorkflowInput(task_id=1, user_id=2, run_id=3, spec_version=1)
+    )
+
+    assert result.final_state == "FAILED"
+    assert calls.count("fail_run") == 1
+    assert "block_high_risk_node" not in calls
+    assert "commit_checkpoint" not in calls
+    assert "resolve_completion" not in calls
 
 
 def _wait_task_state(task_id: int, want: str, timeout: float = 30.0) -> None:

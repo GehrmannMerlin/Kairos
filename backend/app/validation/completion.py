@@ -52,6 +52,8 @@ class CompletionDecisionService:
         partition_counts: dict,
         eligible_url_count: int,
         terminal_url_count: int,
+        fetched_page_count: int,
+        record_count: int,
         batch_unique_counts: list[int],
         qualified_record_count: int,
         runtime_limit_reason: str | None,
@@ -63,8 +65,37 @@ class CompletionDecisionService:
         min_records = next(
             (c.get("target") for c in conditions if c.get("kind") == "min_records"), 0
         )
+        scope_done = eligible_url_count > 0 and terminal_url_count >= eligible_url_count
+        completed_work = fetched_page_count > 0 or record_count > 0
+        scope_metadata = {
+            "eligible_urls": eligible_url_count,
+            "terminal_urls": terminal_url_count,
+            "fetched_pages": fetched_page_count,
+            "records": record_count,
+            "scope_complete": scope_done,
+        }
+        # Empty source discovery is a successful, explicit outcome. It takes
+        # precedence over limits/stops because no completed subset exists.
+        if eligible_url_count == 0 and fetched_page_count == 0:
+            return CompletionDecisionView(
+                status="NORMAL_COMPLETED",
+                reason="未发现符合范围的页面",
+                is_partial=False,
+                completion_type="NO_MATCHING_PAGES",
+                qualified_record_count=qualified_record_count,
+                scope_completion_metadata=scope_metadata,
+            )
+        if scope_done and fetched_page_count > 0 and record_count == 0:
+            return CompletionDecisionView(
+                status="NORMAL_COMPLETED",
+                reason="已处理页面但没有符合条件的记录",
+                is_partial=False,
+                completion_type="NO_MATCHING_RECORDS",
+                qualified_record_count=qualified_record_count,
+                scope_completion_metadata=scope_metadata,
+            )
         # 无金额条件（模块需求 51）：只允许 max_pages/max_duration/retry limit/范围/饱和
-        if runtime_limit_reason:
+        if runtime_limit_reason and completed_work:
             return CompletionDecisionView(
                 status="PARTIALLY_COMPLETED",
                 reason=runtime_limit_reason,
@@ -72,37 +103,26 @@ class CompletionDecisionService:
                 completion_type="runtime_limit",
                 qualified_record_count=qualified_record_count,
                 runtime_limit_reason=runtime_limit_reason,
-                scope_completion_metadata={
-                    "eligible_urls": eligible_url_count,
-                    "terminal_urls": terminal_url_count,
-                },
+                scope_completion_metadata=scope_metadata,
             )
-        if user_stopped:
+        if user_stopped and completed_work:
             return CompletionDecisionView(
                 status="PARTIALLY_COMPLETED",
                 reason="用户停止且已有提交结果",
                 is_partial=True,
                 completion_type="user_stopped",
                 qualified_record_count=qualified_record_count,
-                scope_completion_metadata={
-                    "eligible_urls": eligible_url_count,
-                    "terminal_urls": terminal_url_count,
-                },
+                scope_completion_metadata=scope_metadata,
             )
         if task_type == "SPECIFIED_SOURCE":
             # 定向：范围中 eligible URL 全部进入 terminal state（范围完成，模块需求 44）
-            scope_done = eligible_url_count > 0 and terminal_url_count >= eligible_url_count
             return CompletionDecisionView(
                 status="NORMAL_COMPLETED" if scope_done else "PARTIALLY_COMPLETED",
                 reason="指定来源范围已全部处理" if scope_done else "指定来源范围未完整处理",
                 is_partial=not scope_done,
                 completion_type="directional_scope_complete" if scope_done else "access_limited",
                 qualified_record_count=qualified_record_count,
-                scope_completion_metadata={
-                    "eligible_urls": eligible_url_count,
-                    "terminal_urls": terminal_url_count,
-                    "scope_complete": scope_done,
-                },
+                scope_completion_metadata=scope_metadata,
             )
         # EXPLORATORY：最低合格 PASSED 数 + 信息饱和（模块需求 45/48）
         saturated = SaturationTracker(

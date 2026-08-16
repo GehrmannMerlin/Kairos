@@ -18,6 +18,8 @@ def test_directional_scope_complete_is_normal():
         partition_counts={"passed": 2},
         eligible_url_count=3,
         terminal_url_count=3,
+        fetched_page_count=3,
+        record_count=2,
         batch_unique_counts=[],
         qualified_record_count=2,
         runtime_limit_reason=None,
@@ -36,6 +38,8 @@ def test_directional_scope_incomplete_is_partial():
         partition_counts={"passed": 0},
         eligible_url_count=3,
         terminal_url_count=1,
+        fetched_page_count=1,
+        record_count=0,
         batch_unique_counts=[],
         qualified_record_count=0,
         runtime_limit_reason=None,
@@ -47,6 +51,65 @@ def test_directional_scope_incomplete_is_partial():
     assert d.completion_type == "access_limited"
 
 
+def test_zero_eligible_urls_is_empty_success_not_partial():
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec("HYBRID"),
+        partition_counts={"passed": 0},
+        eligible_url_count=0,
+        terminal_url_count=0,
+        fetched_page_count=0,
+        record_count=0,
+        batch_unique_counts=[],
+        qualified_record_count=0,
+        runtime_limit_reason=None,
+        user_stopped=False,
+        settings=ValidationSettings(),
+    )
+    assert d.status == "NORMAL_COMPLETED"
+    assert d.completion_type == "NO_MATCHING_PAGES"
+    assert d.is_partial is False
+
+
+def test_processed_pages_without_records_is_empty_record_success():
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec("SPECIFIED_SOURCE"),
+        partition_counts={"passed": 0},
+        eligible_url_count=3,
+        terminal_url_count=3,
+        fetched_page_count=3,
+        record_count=0,
+        batch_unique_counts=[],
+        qualified_record_count=0,
+        runtime_limit_reason=None,
+        user_stopped=False,
+        settings=ValidationSettings(),
+    )
+    assert d.status == "NORMAL_COMPLETED"
+    assert d.completion_type == "NO_MATCHING_RECORDS"
+    assert d.is_partial is False
+
+
+def test_runtime_limit_without_completed_work_is_not_partial():
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec("SPECIFIED_SOURCE"),
+        partition_counts={"passed": 0},
+        eligible_url_count=0,
+        terminal_url_count=0,
+        fetched_page_count=0,
+        record_count=0,
+        batch_unique_counts=[],
+        qualified_record_count=0,
+        runtime_limit_reason="max_pages_reached",
+        user_stopped=False,
+        settings=ValidationSettings(),
+    )
+    assert d.status == "NORMAL_COMPLETED"
+    assert d.is_partial is False
+
+
 def test_exploratory_min_records_and_saturation_is_normal():
     d = CompletionDecisionService().decide(
         run=None,
@@ -54,6 +117,8 @@ def test_exploratory_min_records_and_saturation_is_normal():
         partition_counts={"passed": 4},
         eligible_url_count=10,
         terminal_url_count=10,
+        fetched_page_count=10,
+        record_count=4,
         batch_unique_counts=[0, 0, 0],  # 最近 3 batch 新增 unique 率 0 → 饱和
         qualified_record_count=4,
         runtime_limit_reason=None,
@@ -72,6 +137,8 @@ def test_exploratory_not_saturated_is_partial():
         partition_counts={"passed": 1},
         eligible_url_count=10,
         terminal_url_count=5,
+        fetched_page_count=5,
+        record_count=1,
         batch_unique_counts=[3, 2, 1],  # 新增 unique 率 1~3 > 0 → 未饱和
         qualified_record_count=1,
         runtime_limit_reason=None,
@@ -88,6 +155,8 @@ def test_runtime_limit_is_partial():
         partition_counts={"passed": 2},
         eligible_url_count=10,
         terminal_url_count=4,
+        fetched_page_count=4,
+        record_count=2,
         batch_unique_counts=[],
         qualified_record_count=2,
         runtime_limit_reason="max_pages_reached",
@@ -106,6 +175,8 @@ def test_user_stopped_is_partial_and_keeps_committed():
         partition_counts={"passed": 5},
         eligible_url_count=10,
         terminal_url_count=10,
+        fetched_page_count=10,
+        record_count=5,
         batch_unique_counts=[],
         qualified_record_count=5,
         runtime_limit_reason=None,

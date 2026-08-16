@@ -217,25 +217,13 @@ class MarkCancelledInput:
 
 @activity.defn
 async def mark_cancelled(inp: MarkCancelledInput) -> None:
-    session = get_session_factory()()
-    try:
-        task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
-        with contextlib.suppress(IllegalTransitionError):
-            DomainService(TaskRepository(session)).transition_task(
-                user_id=inp.user_id,
-                task_id=inp.task_id,
-                command="mark_cancelled",
-                expected_version=task.version,
-                actor_type="system",
-                reason="workflow_cancelled",
-            )
-        run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
-        run.state = "cancelled"
-        run.finished_at = _utcnow()
-        session.commit()
-        _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
-    finally:
-        session.close()
+    await _finish_run(
+        inp,
+        command="mark_cancelled",
+        run_state="cancelled",
+        event_type="run.cancelled",
+        reason="workflow_cancelled",
+    )
 
 
 @dataclass
@@ -243,26 +231,69 @@ class FailRunInput:
     task_id: int
     user_id: int
     run_id: int
+    error_code: str | None = None
 
 
 @activity.defn
 async def fail_run(inp: FailRunInput) -> None:
+    await _finish_run(
+        inp,
+        command="fail",
+        run_state="failed",
+        event_type="run.failed",
+        reason=inp.error_code or "WORKFLOW_FAILED",
+        error_code=inp.error_code or "WORKFLOW_FAILED",
+    )
+
+
+async def _finish_run(
+    inp: Any,
+    *,
+    command: str,
+    run_state: str,
+    event_type: str,
+    reason: str,
+    error_code: str | None = None,
+) -> None:
+    """Atomically persist one terminal task transition and its Run lifecycle fact."""
     session = get_session_factory()()
     try:
-        task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
-        with contextlib.suppress(IllegalTransitionError):
-            # 已在终态（如 FAILED/COMPLETED）时视为幂等成功
-            DomainService(TaskRepository(session)).transition_task(
-                user_id=inp.user_id,
-                task_id=inp.task_id,
-                command="fail",
-                expected_version=task.version,
-                actor_type="system",
-                reason="workflow_failed",
-            )
         run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
-        run.state = "failed"
+        # Temporal may replay an already-completed Activity. The Run state is the
+        # terminal claim: same-state replay must not append another lifecycle event.
+        if run.state == run_state:
+            return
+        task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
+        DomainService(TaskRepository(session)).transition_task(
+            user_id=inp.user_id,
+            task_id=inp.task_id,
+            command=command,
+            expected_version=task.version,
+            actor_type="system",
+            reason=reason,
+            commit=False,
+        )
+        run.state = run_state
         run.finished_at = _utcnow()
+        payload = {
+            "schema_version": 1,
+            "task_id": inp.task_id,
+            "run_id": inp.run_id,
+            "transition": event_type,
+        }
+        if error_code is not None:
+            payload["error_code"] = error_code
+        append_domain_event(
+            session,
+            user_id=inp.user_id,
+            aggregate_type="task",
+            aggregate_id=inp.task_id,
+            event_type=event_type,
+            aggregate_version=task.version,
+            payload=payload,
+            actor_type="system",
+            run_id=inp.run_id,
+        )
         session.commit()
         _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
     finally:
@@ -278,24 +309,13 @@ class CompleteRunInput:
 
 @activity.defn
 async def complete_run(inp: CompleteRunInput) -> None:
-    session = get_session_factory()()
-    try:
-        task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
-        DomainService(TaskRepository(session)).transition_task(
-            user_id=inp.user_id,
-            task_id=inp.task_id,
-            command="complete",
-            expected_version=task.version,
-            actor_type="system",
-            reason="workflow_completed",
-        )
-        run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
-        run.state = "completed"
-        run.finished_at = _utcnow()
-        session.commit()
-        _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
-    finally:
-        session.close()
+    await _finish_run(
+        inp,
+        command="complete",
+        run_state="completed",
+        event_type="run.completed",
+        reason="workflow_completed",
+    )
 
 
 @dataclass
@@ -356,23 +376,10 @@ async def mark_partial(inp: MarkPartialInput) -> None:
     已提交数据保留（模块需求 50）；不把已 CANCELLED Run 改 COMPLETED，业务状态与
     数据可用性分开表达。
     """
-    session = get_session_factory()()
-    try:
-        task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
-        with contextlib.suppress(IllegalTransitionError):
-            # 已在终态（如 PARTIALLY_COMPLETED）时视为幂等成功
-            DomainService(TaskRepository(session)).transition_task(
-                user_id=inp.user_id,
-                task_id=inp.task_id,
-                command="mark_partial",
-                expected_version=task.version,
-                actor_type="system",
-                reason="partial_completion",
-            )
-        run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
-        run.state = "partially_completed"
-        run.finished_at = _utcnow()
-        session.commit()
-        _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
-    finally:
-        session.close()
+    await _finish_run(
+        inp,
+        command="mark_partial",
+        run_state="partially_completed",
+        event_type="run.partially_completed",
+        reason="partial_completion",
+    )
