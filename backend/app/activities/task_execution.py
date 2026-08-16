@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from app.domain.errors import IllegalTransitionError, StaleVersionError
+from app.domain.models import DomainEvent
 from app.domain.repository import (
     CheckpointRepository,
     RunRepository,
@@ -97,7 +99,7 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
                 retry_after_seconds=slot.retry_after_seconds,
             )
         task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
-        try:
+        if task.state == "QUEUED":
             DomainService(TaskRepository(session)).transition_task(
                 user_id=inp.user_id,
                 task_id=inp.task_id,
@@ -105,34 +107,40 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
                 expected_version=task.version,
                 actor_type="system",
                 reason="task_workflow_started",
+                commit=False,
             )
-        except StaleVersionError:
-            task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
-            if task.state != "RUNNING":
-                raise
+        elif task.state != "RUNNING":
+            raise StaleVersionError("任务未处于可恢复的启动状态")
         run.state = "running"
         run.started_at = _utcnow()
         session.add(run)
-        append_domain_event(
-            session,
-            user_id=inp.user_id,
-            aggregate_type="task",
-            aggregate_id=inp.task_id,
-            event_type="run.started",
-            aggregate_version=task.version,
-            payload={
-                "schema_version": 1,
-                "task_id": inp.task_id,
-                "run_id": inp.run_id,
-                "spec_version": inp.spec_version,
-                "plan_version": inp.plan_version,
-                "seed_count": len(
-                    ((spec.payload or {}).get("source_scope") or {}).get("seed_urls") or []
-                ),
-            },
-            actor_type="system",
-            run_id=inp.run_id,
+        started_event = session.scalar(
+            select(DomainEvent).where(
+                DomainEvent.run_id == inp.run_id,
+                DomainEvent.event_type == "run.started",
+            )
         )
+        if started_event is None:
+            append_domain_event(
+                session,
+                user_id=inp.user_id,
+                aggregate_type="task",
+                aggregate_id=inp.task_id,
+                event_type="run.started",
+                aggregate_version=task.version,
+                payload={
+                    "schema_version": 1,
+                    "task_id": inp.task_id,
+                    "run_id": inp.run_id,
+                    "spec_version": inp.spec_version,
+                    "plan_version": inp.plan_version,
+                    "seed_count": len(
+                        ((spec.payload or {}).get("source_scope") or {}).get("seed_urls") or []
+                    ),
+                },
+                actor_type="system",
+                run_id=inp.run_id,
+            )
         session.commit()
         return EnsureRunStartedResult(inp.run_id, started=True)
     finally:
@@ -299,12 +307,6 @@ async def commit_checkpoint(inp: CommitCheckpointInput) -> CommitCheckpointResul
     session = get_session_factory()()
     try:
         existing = CheckpointRepository(session).find_by_batch(inp.run_id, inp.batch_identity)
-        if existing is not None:
-            if existing.input_fingerprint != inp.input_fingerprint:
-                from app.domain.errors import DomainError
-
-                raise DomainError("相同批次身份但输入指纹不同")
-            return CommitCheckpointResult(existing.id, reused=True)
         row = await asyncio.to_thread(
             DomainService(TaskRepository(session)).commit_checkpoint,
             user_id=inp.user_id,
@@ -318,10 +320,7 @@ async def commit_checkpoint(inp: CommitCheckpointInput) -> CommitCheckpointResul
             committed_refs=inp.committed_refs,
             content_hash=inp.content_hash,
         )
-        from app.execution.lifecycle import ExecutionLifecycleRecorder
-
-        ExecutionLifecycleRecorder(session).checkpoint_committed(row)
-        return CommitCheckpointResult(row.id, reused=False)
+        return CommitCheckpointResult(row.id, reused=existing is not None)
     finally:
         session.close()
 

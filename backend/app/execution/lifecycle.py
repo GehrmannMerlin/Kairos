@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.activities.execution_seam import ExecutionUnit
-from app.domain.models import Checkpoint, NodeAttempt, NodeRun, Run
+from app.domain.models import Checkpoint, DomainEvent, NodeAttempt, NodeRun, Run
 from app.domain.repository import NodeAttemptRepository, NodeRunRepository, RunRepository
 from app.state.events import append_domain_event
 
@@ -28,6 +28,20 @@ _NODE_STATES = {
     "BLOCKED": "BLOCKED",
     "WAITING_APPROVAL": "BLOCKED",
     "RESOURCE_WAITING": "WAITING_RESOURCE",
+}
+_COUNT_KEYS = {
+    "fetched",
+    "browser_pending",
+    "failed",
+    "discovered",
+    "extracted",
+    "normalized",
+    "deduplicated",
+    "validated",
+    "records",
+    "artifacts",
+    "eligible",
+    "terminal",
 }
 
 
@@ -49,7 +63,7 @@ def _counts(committed_refs: dict[str, Any]) -> dict[str, int | float]:
     return {
         key: value
         for key, value in committed_refs.items()
-        if isinstance(key, str) and isinstance(value, (int, float)) and not isinstance(value, bool)
+        if key in _COUNT_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool)
     }
 
 
@@ -96,13 +110,15 @@ class ExecutionLifecycleRecorder:
         safe_message: str | None = None,
     ) -> LifecycleAttempt:
         run, node, node_attempt, _ = self._resolve_attempt(run_id, unit, attempt)
-        if node_attempt.finished_at is not None and node_attempt.status == status:
+        if node_attempt.finished_at is not None:
             return LifecycleAttempt(node_run_id=node.id, node_attempt_id=node_attempt.id)
 
         now = _utcnow()
         event_type = _TERMINAL_EVENT_TYPES.get(status, "run.node_progress")
         node_state = _NODE_STATES.get(status, "RUNNING")
-        node_attempt.status = status
+        node_attempt.status = (
+            "FAILED" if status in {"FAILED", "NODE_EXECUTOR_UNAVAILABLE"} else status
+        )
         node_attempt.error_code = error_code
         node_attempt.error_summary = (safe_message or "")[:500] or None
         node_attempt.started_at = node_attempt.started_at or now
@@ -125,39 +141,8 @@ class ExecutionLifecycleRecorder:
         return LifecycleAttempt(node_run_id=node.id, node_attempt_id=node_attempt.id)
 
     def checkpoint_committed(self, checkpoint: Checkpoint) -> None:
-        run = self._runs.get_owned(checkpoint.user_id, checkpoint.run_id)
-        node = (
-            self._nodes.get_owned(checkpoint.user_id, checkpoint.node_run_id)
-            if checkpoint.node_run_id is not None
-            else None
-        )
-        payload = {
-            "schema_version": 1,
-            "task_id": run.task_id,
-            "run_id": run.id,
-            "plan_version": run.plan_version,
-            "node_id": node.node_id if node is not None else None,
-            "node_type": node.node_type if node is not None else None,
-            "attempt": None,
-            "state": "COMMITTED",
-            "timestamps": {"committed_at": _timestamp(checkpoint.created_at)},
-            "counts": _counts(checkpoint.committed_object_refs),
-            "reason_code": None,
-            "safe_message": None,
-        }
-        append_domain_event(
-            self._db,
-            user_id=run.user_id,
-            aggregate_type="task",
-            aggregate_id=run.task_id,
-            event_type="run.checkpoint_committed",
-            aggregate_version=checkpoint.id,
-            payload=payload,
-            actor_type="system",
-            run_id=run.id,
-            node_run_id=node.id if node is not None else None,
-        )
-        self._db.commit()
+        if append_checkpoint_event(self._db, checkpoint):
+            self._db.commit()
 
     def _resolve_attempt(
         self, run_id: int, unit: ExecutionUnit, attempt: int
@@ -228,3 +213,50 @@ class ExecutionLifecycleRecorder:
             run_id=run.id,
             node_run_id=node.id,
         )
+
+
+def append_checkpoint_event(db: Any, checkpoint: Checkpoint) -> bool:
+    """Append the single event for a checkpoint; the caller owns the commit."""
+    existing_events = db.scalars(
+        select(DomainEvent).where(
+            DomainEvent.run_id == checkpoint.run_id,
+            DomainEvent.event_type == "run.checkpoint_committed",
+        )
+    )
+    if any(
+        (event.payload or {}).get("checkpoint_id") == checkpoint.id for event in existing_events
+    ):
+        return False
+    run = RunRepository(db).get_owned(checkpoint.user_id, checkpoint.run_id)
+    node = (
+        NodeRunRepository(db).get_owned(checkpoint.user_id, checkpoint.node_run_id)
+        if checkpoint.node_run_id is not None
+        else None
+    )
+    append_domain_event(
+        db,
+        user_id=run.user_id,
+        aggregate_type="task",
+        aggregate_id=run.task_id,
+        event_type="run.checkpoint_committed",
+        aggregate_version=checkpoint.id,
+        payload={
+            "schema_version": 1,
+            "task_id": run.task_id,
+            "run_id": run.id,
+            "plan_version": run.plan_version,
+            "node_id": node.node_id if node is not None else None,
+            "node_type": node.node_type if node is not None else None,
+            "attempt": None,
+            "state": "COMMITTED",
+            "timestamps": {"committed_at": _timestamp(checkpoint.created_at)},
+            "counts": _counts(checkpoint.committed_object_refs),
+            "reason_code": None,
+            "safe_message": None,
+            "checkpoint_id": checkpoint.id,
+        },
+        actor_type="system",
+        run_id=run.id,
+        node_run_id=node.id if node is not None else None,
+    )
+    return True
