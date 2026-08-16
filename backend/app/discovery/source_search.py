@@ -80,9 +80,11 @@ def filter_named_source_results(
     results: list[SearchResult], source_hint: str | None
 ) -> list[SearchResult]:
     """Keep only results whose title or snippet names the frozen requested source."""
-    normalized_hint = _normalize_source_hint(source_hint or "")
-    if not normalized_hint:
+    if source_hint is None:
         return results
+    normalized_hint = _normalize_source_hint(source_hint)
+    if not normalized_hint:
+        return []
     return [
         result
         for result in results

@@ -6,14 +6,16 @@ M-01 ships one adapter (MinIO) which is also S3-compatible for production use.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import io
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, TypeVar
 
 import anyio
 from minio import Minio
+from minio.error import MinioException, S3Error
+from urllib3.exceptions import HTTPError
 
 from app.config import Settings
 
@@ -25,6 +27,28 @@ class ObjectMetadata:
     content_type: str | None
     etag: str | None
     content_sha256: str
+
+
+class StorageOperationError(RuntimeError):
+    """A safe, typed failure from the object-storage adapter boundary."""
+
+    def __init__(self, operation: str) -> None:
+        self.operation = operation
+        super().__init__(f"object storage {operation} failed")
+
+
+_StorageResult = TypeVar("_StorageResult")
+_STORAGE_BACKEND_ERRORS = (MinioException, HTTPError, OSError)
+_MISSING_OBJECT_CODES = frozenset({"NoSuchKey", "NoSuchObject", "NoSuchVersion"})
+
+
+async def _run_storage_operation(
+    operation: str, fn: Callable[[], _StorageResult]
+) -> _StorageResult:
+    try:
+        return await anyio.to_thread.run_sync(fn)
+    except _STORAGE_BACKEND_ERRORS as exc:
+        raise StorageOperationError(operation) from exc
 
 
 class ObjectStorage(Protocol):
@@ -57,8 +81,12 @@ class MinioObjectStorage:
         return hashlib.sha256(data).hexdigest()
 
     async def ensure_bucket(self) -> None:
-        if not await anyio.to_thread.run_sync(self._client.bucket_exists, self._bucket):
-            await anyio.to_thread.run_sync(self._client.make_bucket, self._bucket)
+        if not await _run_storage_operation(
+            "ensure_bucket", lambda: self._client.bucket_exists(self._bucket)
+        ):
+            await _run_storage_operation(
+                "ensure_bucket", lambda: self._client.make_bucket(self._bucket)
+            )
 
     async def put(
         self, key: str, data: bytes, content_type: str = "application/octet-stream"
@@ -70,7 +98,7 @@ class MinioObjectStorage:
                 self._bucket, key, stream, length=len(data), content_type=content_type
             )
 
-        await anyio.to_thread.run_sync(_put)
+        await _run_storage_operation("put", _put)
         return ObjectMetadata(
             key=key,
             size=len(data),
@@ -80,9 +108,13 @@ class MinioObjectStorage:
         )
 
     async def get(self, key: str) -> bytes:
-        response = await anyio.to_thread.run_sync(self._client.get_object, self._bucket, key)
+        response: Any = await _run_storage_operation(
+            "get", lambda: self._client.get_object(self._bucket, key)
+        )
         try:
             return response.read()
+        except _STORAGE_BACKEND_ERRORS as exc:
+            raise StorageOperationError("get") from exc
         finally:
             response.close()
             response.release_conn()
@@ -93,9 +125,12 @@ class MinioObjectStorage:
     async def head(self, key: str) -> ObjectMetadata | None:
         try:
             stat = await anyio.to_thread.run_sync(self._client.stat_object, self._bucket, key)
-        except Exception:
-            # Missing object (NoSuchKey / NoSuchObject) or permission error -> treat as absent.
-            return None
+        except S3Error as exc:
+            if exc.code in _MISSING_OBJECT_CODES:
+                return None
+            raise StorageOperationError("head") from exc
+        except _STORAGE_BACKEND_ERRORS as exc:
+            raise StorageOperationError("head") from exc
         return ObjectMetadata(
             key=key,
             size=stat.size or 0,
@@ -106,11 +141,15 @@ class MinioObjectStorage:
 
     async def delete(self, key: str) -> None:
         def _delete() -> None:
-            with contextlib.suppress(Exception):
-                # NoSuchKey / NoSuchObject 视为已删除，幂等。
-                self._client.remove_object(self._bucket, key)
+            self._client.remove_object(self._bucket, key)
 
-        await anyio.to_thread.run_sync(_delete)
+        try:
+            await anyio.to_thread.run_sync(_delete)
+        except S3Error as exc:
+            if exc.code not in _MISSING_OBJECT_CODES:
+                raise StorageOperationError("delete") from exc
+        except _STORAGE_BACKEND_ERRORS as exc:
+            raise StorageOperationError("delete") from exc
 
 
 def create_object_storage(settings: Settings) -> MinioObjectStorage:

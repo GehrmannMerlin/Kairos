@@ -8,6 +8,7 @@ from app.artifacts.service import ArtifactService
 from app.domain.models import Run
 from app.domain.repository import TaskRepository
 from app.infra.deps import get_object_storage, get_session_factory
+from app.infra.object_storage import StorageOperationError
 from app.plan.executors import register_node_executor
 from app.plan.nodes import NodeType
 
@@ -31,7 +32,7 @@ async def generate_artifact(unit: ExecutionUnit) -> ExecuteUnitResult:
                 task_id=run.task_id,
                 request=ExportRequest(export_type=ExportType.FORMAL, scope=ExportScope.ALL),
             )
-        except OSError:
+        except StorageOperationError:
             return ExecuteUnitResult(
                 unit_index=unit.index,
                 status="FAILED",

@@ -94,10 +94,11 @@ async def test_generate_artifact_returns_typed_storage_error(
 ) -> None:
     """Would fail if an object-storage exception is reported as export success."""
     from app.artifacts.executor import generate_artifact
+    from app.infra.object_storage import StorageOperationError
 
     class BrokenStorage:
         async def exists(self, key: str) -> bool:
-            raise OSError("storage unreachable")
+            raise StorageOperationError("head")
 
     run = _run(db, user_id=user_a.id, task_id=task_a.id)
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)

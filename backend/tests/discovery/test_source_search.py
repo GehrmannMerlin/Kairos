@@ -64,7 +64,14 @@ class _SearchProvider:
         return self.results
 
 
-def _frozen_search_case(tmp_path) -> tuple[Session, User, Run, SearchConfig, SearchConfig]:
+class _SearchVault:
+    def read_for_execution(self, *, user_id: int, credential_version_id: int) -> str:
+        return "search-secret"
+
+
+def _frozen_search_case(
+    tmp_path, *, source_hint: str = "山东省人民政府官网"
+) -> tuple[Session, User, Run, SearchConfig, SearchConfig]:
     engine = create_engine(
         f"sqlite:///{tmp_path / 'source-search.db'}", connect_args={"check_same_thread": False}
     )
@@ -84,7 +91,7 @@ def _frozen_search_case(tmp_path) -> tuple[Session, User, Run, SearchConfig, Sea
                 "source_scope": {
                     "mode": TaskType.HYBRID.value,
                     "seed_urls": [],
-                    "source_hints": ["山东省人民政府官网"],
+                    "source_hints": [source_hint],
                     "resolution_scope": "NAMED_SOURCE_ONLY",
                 },
             },
@@ -98,7 +105,7 @@ def _frozen_search_case(tmp_path) -> tuple[Session, User, Run, SearchConfig, Sea
         name="frozen v1",
         provider_type="frozen-provider",
         base_url="https://v1.example.test",
-        credential_version_id=None,
+        credential_version_id=101,
     )
     v1.connection_status = "available"
     db.commit()
@@ -108,7 +115,7 @@ def _frozen_search_case(tmp_path) -> tuple[Session, User, Run, SearchConfig, Sea
         name="current v2",
         provider_type="current-provider",
         base_url="https://v2.example.test",
-        credential_version_id=None,
+        credential_version_id=202,
     )
     v2.connection_status = "available"
     db.add(
@@ -152,7 +159,23 @@ async def test_source_search_uses_frozen_config_and_filters_named_source(tmp_pat
             ),
         ]
     )
-    service = SearchService(db, vault=object(), provider_builder=lambda _: provider)
+
+    class Vault:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        def read_for_execution(self, *, user_id: int, credential_version_id: int) -> str:
+            self.calls.append((user_id, credential_version_id))
+            return "v1-secret"
+
+    vault = Vault()
+    provider_types: list[str] = []
+
+    def build_provider(provider_type: str) -> _SearchProvider:
+        provider_types.append(provider_type)
+        return provider
+
+    service = SearchService(db, vault=vault, provider_builder=build_provider)
 
     result = await service.execute(
         ExecutionUnit(
@@ -170,7 +193,10 @@ async def test_source_search_uses_frozen_config_and_filters_named_source(tmp_pat
     assert result.committed_refs["candidate_sites"] == 1
     urls = list(select_urls(db, run.task_id))
     assert urls == ["https://www.shandong.gov.cn/news"]
+    assert provider_types == [v1.provider_type]
     assert provider.calls[0]["base_url"] == v1.base_url
+    assert provider.calls[0]["api_key"] == "v1-secret"
+    assert vault.calls == [(run.user_id, v1.credential_version_id)]
 
 
 @pytest.mark.asyncio
@@ -200,6 +226,61 @@ async def test_source_search_missing_frozen_config_never_falls_back_to_current(t
 
 
 @pytest.mark.asyncio
+async def test_source_search_missing_ready_preflight_never_falls_back_to_current(tmp_path) -> None:
+    """Would fail if a Run without READY preflight silently selects a current config."""
+    db, _, run, _, _ = _frozen_search_case(tmp_path)
+    db.query(ExecutionPreflightResult).delete()
+    db.commit()
+    provider = _SearchProvider([])
+    service = SearchService(db, vault=_SearchVault(), provider_builder=lambda _: provider)
+
+    with pytest.raises(SourceSearchError) as exc:
+        await service.execute(
+            ExecutionUnit(
+                run_id=run.id,
+                index=1,
+                unit_type="node",
+                input_fingerprint="search-test",
+                node_id="search-1",
+                node_type="source_search",
+                parameters={"query": "山东政府"},
+            )
+        )
+
+    assert exc.value.code == "FROZEN_CONFIG_UNAVAILABLE"
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_source_search_null_frozen_refs_never_falls_back_to_current(tmp_path) -> None:
+    """Would fail if a READY preflight with incomplete identity selects a current config."""
+    db, _, run, _, _ = _frozen_search_case(tmp_path)
+    preflight = db.scalar(select(ExecutionPreflightResult))
+    assert preflight is not None
+    preflight.search_config_id = None
+    preflight.search_config_version = None
+    db.commit()
+    provider = _SearchProvider([])
+    service = SearchService(db, vault=_SearchVault(), provider_builder=lambda _: provider)
+
+    with pytest.raises(SourceSearchError) as exc:
+        await service.execute(
+            ExecutionUnit(
+                run_id=run.id,
+                index=1,
+                unit_type="node",
+                input_fingerprint="search-test",
+                node_id="search-1",
+                node_type="source_search",
+                parameters={"query": "山东政府"},
+            )
+        )
+
+    assert exc.value.code == "FROZEN_CONFIG_UNAVAILABLE"
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
 async def test_named_source_search_with_no_matching_result_admits_no_frontier_host(
     tmp_path,
 ) -> None:
@@ -217,7 +298,44 @@ async def test_named_source_search_with_no_matching_result_admits_no_frontier_ho
             )
         ]
     )
-    service = SearchService(db, vault=object(), provider_builder=lambda _: provider)
+    service = SearchService(db, vault=_SearchVault(), provider_builder=lambda _: provider)
+
+    result = await service.execute(
+        ExecutionUnit(
+            run_id=run.id,
+            index=1,
+            unit_type="node",
+            input_fingerprint="search-test",
+            node_id="search-1",
+            node_type="source_search",
+            parameters={"query": "山东政府"},
+        )
+    )
+
+    assert result.committed_refs["candidate_sites"] == 0
+    assert list(select_urls(db, run.task_id)) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_hint", ["官网", "网站", "，。！？"])
+async def test_named_source_search_with_empty_normalized_hint_admits_no_candidates(
+    tmp_path, source_hint: str
+) -> None:
+    """Would fail if an empty approved hint admitted every search result."""
+    db, _, run, _, _ = _frozen_search_case(tmp_path, source_hint=source_hint)
+    provider = _SearchProvider(
+        [
+            SearchResult(
+                url="https://commercial.example.test/ad",
+                title="商业推广",
+                snippet="无关结果",
+                provider="frozen-provider",
+                rank=1,
+                query="山东政府",
+            )
+        ]
+    )
+    service = SearchService(db, vault=_SearchVault(), provider_builder=lambda _: provider)
 
     result = await service.execute(
         ExecutionUnit(
