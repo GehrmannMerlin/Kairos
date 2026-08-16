@@ -67,4 +67,44 @@ describe('useTaskEvents', () => {
     store.disconnect()
     vi.unstubAllGlobals()
   })
+
+  it('accepts canonical events monotonically and reconciles once after reconnect', () => {
+    let fake: FakeEventSource | null = null
+    vi.stubGlobal(
+      'EventSource',
+      vi.fn().mockImplementation(() => {
+        fake = new FakeEventSource()
+        return fake
+      }),
+    )
+    const store = useTaskEvents(ref(25))
+    store.connect()
+
+    const emit = (id: number) =>
+      fake!.emit(
+        'NODE_STARTED',
+        JSON.stringify({
+          event_id: id,
+          event_type: 'NODE_STARTED',
+          task_id: 25,
+          run_id: 7,
+          occurred_at: '2026-08-16T00:00:00Z',
+          payload: { node_id: 'n-fetch' },
+        }),
+      )
+
+    emit(18)
+    emit(18)
+    emit(17)
+    expect(store.lastEventId.value).toBe(18)
+    expect(store.latestEvent.value?.event_id).toBe(18)
+
+    fake!.onerror?.()
+    fake!.onopen?.()
+    expect(store.connection.value).toBe('open')
+    expect(store.reconcileVersion.value).toBe(1)
+
+    store.disconnect()
+    vi.unstubAllGlobals()
+  })
 })

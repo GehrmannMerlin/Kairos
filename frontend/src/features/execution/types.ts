@@ -3,12 +3,7 @@
 export type StageKey = 'goal_plan' | 'source_discovery' | 'fetch' | 'extraction' | 'validation'
 export type StageState = 'not_started' | 'in_progress' | 'completed' | 'partial' | 'failed'
 export type TimelineCategory =
-  | 'error'
-  | 'retry'
-  | 'tool_upgrade'
-  | 'plan_change'
-  | 'model_call'
-  | 'pause_resume'
+  'error' | 'retry' | 'tool_upgrade' | 'plan_change' | 'model_call' | 'pause_resume'
 
 export interface RunSummary {
   run_id: number
@@ -35,6 +30,22 @@ export interface PlanBrief {
   validation_status: string
 }
 
+export interface ExecutionNodeSummary {
+  node_id: string
+  node_type: string
+  label: string
+  state: string
+  attempt: number
+  safe_message: string | null
+}
+
+export interface ExecutionCounts {
+  discovered_pages: number
+  fetched_pages: number
+  extracted_records: number
+  validated_records: number
+}
+
 export interface ExecutionView {
   task_id: number
   run: RunSummary | null
@@ -42,6 +53,14 @@ export interface ExecutionView {
   urls: Record<string, number>
   records: Record<string, number>
   plan: PlanBrief | null
+  current_node: ExecutionNodeSummary | null
+  last_successful_node: ExecutionNodeSummary | null
+  last_activity_at: string | null
+  last_event_id: number
+  counts: ExecutionCounts
+  waiting_reason_code: string | null
+  outcome_code: string | null
+  legacy_execution_facts: boolean
 }
 
 export interface TimelineEvent {

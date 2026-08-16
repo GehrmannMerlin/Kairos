@@ -37,6 +37,13 @@ vi.mock('@/features/tasks/plans.api', () => ({
   startPlan: vi.fn(),
 }))
 
+vi.mock('@/features/execution/ExecutionProgressPanel.vue', () => ({
+  default: {
+    props: ['taskId'],
+    template: '<div data-testid="execution-progress-panel" />',
+  },
+}))
+
 vi.mock('@/features/templates/templates.api', () => ({
   createTemplateFromTask: vi.fn().mockResolvedValue({ template_id: 't1', version: 1 }),
 }))
