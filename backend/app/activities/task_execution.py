@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from app.domain.errors import IllegalTransitionError, StaleVersionError
-from app.domain.models import DomainEvent
+from app.domain.models import DomainEvent, Run
 from app.domain.repository import (
     CheckpointRepository,
     RunRepository,
@@ -70,6 +70,7 @@ class RunSpecNotFrozenError(ApplicationError):
 @activity.defn
 async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResult:
     session = get_session_factory()()
+    slot_acquired = False
     try:
         spec = SpecVersionRepository(session).get_version(
             inp.user_id, inp.task_id, inp.spec_version
@@ -82,8 +83,9 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
         run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
         if run.state != "pending":
             return EnsureRunStartedResult(inp.run_id, started=False)
-        # M-16 Level 1+2 task admission（D-071）：无全局/单用户 slot → 等待（非失败），
-        # 任务保持 QUEUED。幂等：重放/重复调度重新检查。
+
+        # ResourceAdmission owns lease commits, so acquire before the lifecycle
+        # transaction; a lost claim or later error releases it before returning.
         from app.config import get_settings
         from app.reliability.admission import ResourceAdmission
         from app.reliability.capacity import capacity_from_settings
@@ -98,6 +100,22 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
                 waiting_reason=slot.reason,
                 retry_after_seconds=slot.retry_after_seconds,
             )
+        slot_acquired = True
+        # Claim the pending Run before changing task state or appending run.started.
+        # The conditional write is the cross-worker linearization point: only its
+        # winner owns the task transition and event in this transaction.
+        started_at = _utcnow()
+        claimed = session.execute(
+            update(Run)
+            .where(Run.id == inp.run_id, Run.user_id == inp.user_id, Run.state == "pending")
+            .values(state="running", started_at=started_at)
+        )
+        if getattr(claimed, "rowcount", 0) != 1:
+            session.rollback()
+            _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
+            slot_acquired = False
+            return EnsureRunStartedResult(inp.run_id, started=False)
+
         task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
         if task.state == "QUEUED":
             DomainService(TaskRepository(session)).transition_task(
@@ -111,9 +129,6 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
             )
         elif task.state != "RUNNING":
             raise StaleVersionError("任务未处于可恢复的启动状态")
-        run.state = "running"
-        run.started_at = _utcnow()
-        session.add(run)
         started_event = session.scalar(
             select(DomainEvent).where(
                 DomainEvent.run_id == inp.run_id,
@@ -143,6 +158,11 @@ async def ensure_run_started(inp: EnsureRunStartedInput) -> EnsureRunStartedResu
             )
         session.commit()
         return EnsureRunStartedResult(inp.run_id, started=True)
+    except Exception:
+        session.rollback()
+        if slot_acquired:
+            _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
+        raise
     finally:
         session.close()
 
