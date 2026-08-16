@@ -53,11 +53,19 @@ echo "==> validating compose config on server"
     docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml config -q" \
   || fail "compose config validation failed on server"
 
-echo "==> bringing up kairos-staging"
+echo "==> staging up: infra first (storage/db/temporal/init)"
+"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
+    KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
+    docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml \
+    --env-file /srv/kairos/env/staging.env up -d postgres minio temporal minio-init" \
+  || fail "infra up failed"
+
+echo "==> staging up: app stack with readiness wait"
 "${SSH[@]}" "set -o pipefail; cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
     KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
     docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml \
-    --env-file /srv/kairos/env/staging.env up -d --wait 2>&1 | tail -25" \
+    --env-file /srv/kairos/env/staging.env up -d --wait \
+    otel-collector migrate api worker web 2>&1 | tail -25" \
   || fail "compose up failed"
 
 echo "==> stack status"
