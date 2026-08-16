@@ -93,8 +93,12 @@ async def test_terminal_rejects_wrong_task_without_claiming_run(monkeypatch, tmp
 
     session = factory()
     try:
-        assert session.get(Run, run.id).state == "running"
-        assert session.get(Task, first.id).state == session.get(Task, second.id).state == "RUNNING"
+        stored_run = session.get(Run, run.id)
+        stored_first = session.get(Task, first.id)
+        stored_second = session.get(Task, second.id)
+        assert stored_run is not None and stored_run.state == "running"
+        assert stored_first is not None and stored_first.state == "RUNNING"
+        assert stored_second is not None and stored_second.state == "RUNNING"
         assert session.query(DomainEvent).count() == 0
     finally:
         session.close()
@@ -164,7 +168,8 @@ async def test_terminal_conflict_fails_but_same_replay_repairs_capacity(
 
     session = factory()
     try:
-        assert session.get(Run, run.id).state == "completed"
+        stored_run = session.get(Run, run.id)
+        assert stored_run is not None and stored_run.state == "completed"
         assert session.query(DomainEvent).filter_by(event_type="run.completed").count() == 1
         assert session.query(DomainEvent).filter_by(event_type="run.failed").count() == 0
     finally:
@@ -252,7 +257,14 @@ async def test_completion_concurrent_sessions_return_one_authoritative_row(
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-    monkeypatch.setattr(completion, "get_session_factory", lambda: factory)
+    caller_sessions = {}
+
+    def tracked_factory():
+        caller_session = factory()
+        caller_sessions[threading.get_ident()] = caller_session
+        return caller_session
+
+    monkeypatch.setattr(completion, "get_session_factory", lambda: tracked_factory)
     session = factory()
     try:
         values = _completion_context(session, task_type="SPECIFIED_SOURCE")
@@ -274,16 +286,17 @@ async def test_completion_concurrent_sessions_return_one_authoritative_row(
         return original_find(self, **kwargs)
 
     monkeypatch.setattr(ValidationRepository, "find_completion", synchronize_find)
-    results = await asyncio.gather(
-        *[
-            asyncio.to_thread(
-                lambda: asyncio.run(
-                    completion.resolve_completion(completion.ResolveCompletionInput(**values))
-                )
-            )
-            for _ in range(2)
-        ]
-    )
+
+    def invoke():
+        result = asyncio.run(
+            completion.resolve_completion(completion.ResolveCompletionInput(**values))
+        )
+        caller_session = caller_sessions[threading.get_ident()]
+        assert caller_session.query(CompletionDecision).count() == 1
+        caller_session.commit()
+        return result
+
+    results = await asyncio.gather(*[asyncio.to_thread(invoke) for _ in range(2)])
 
     assert {result.completion_id for result in results} == {results[0].completion_id}
     session = factory()
