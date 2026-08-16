@@ -292,14 +292,24 @@ async def _finish_run(
     try:
         claimed = session.execute(
             update(Run)
-            .where(Run.id == inp.run_id, Run.user_id == inp.user_id, Run.state == "running")
+            .where(
+                Run.id == inp.run_id,
+                Run.user_id == inp.user_id,
+                Run.task_id == inp.task_id,
+                Run.state == "running",
+            )
             .values(state=run_state, finished_at=_utcnow())
         )
         # The conditional update is the cross-worker terminal claim. A loser
         # writes neither Task state nor another run lifecycle event.
         if getattr(claimed, "rowcount", 0) != 1:
             session.rollback()
-            RunRepository(session).get_owned(inp.user_id, inp.run_id)
+            existing = RunRepository(session).get_owned(inp.user_id, inp.run_id)
+            if existing.task_id != inp.task_id:
+                raise ValueError("RUN_IDENTITY_MISMATCH")
+            if existing.state != run_state:
+                raise ValueError("RUN_TERMINAL_CONFLICT")
+            _release_task_slot(session, user_id=inp.user_id, run_id=inp.run_id)
             return
         task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
         DomainService(TaskRepository(session)).transition_task(

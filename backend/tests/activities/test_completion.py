@@ -230,8 +230,12 @@ async def test_resolve_completion_persists_exact_scope_metadata(monkeypatch, tmp
     result = await completion.resolve_completion(
         completion.ResolveCompletionInput(**values, spec_version=1, plan_version=1)
     )
+    replay = await completion.resolve_completion(
+        completion.ResolveCompletionInput(**values, spec_version=1, plan_version=1)
+    )
 
     assert result.completion_type == "directional_scope_complete"
+    assert replay.completion_id == result.completion_id
     session = factory()
     try:
         decision = session.query(CompletionDecision).one()
