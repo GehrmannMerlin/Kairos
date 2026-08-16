@@ -644,7 +644,9 @@ async def test_resolve_completion_missing_run_is_typed_failure(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_resolve_completion_persists_exact_scope_metadata(monkeypatch, tmp_path) -> None:
+async def test_resolve_completion_treats_fetched_run_record_as_terminal_scope(
+    monkeypatch, tmp_path
+) -> None:
     import app.activities.completion as completion
 
     engine = create_engine(f"sqlite:///{tmp_path / 'completion-metadata.db'}")
@@ -677,7 +679,7 @@ async def test_resolve_completion_persists_exact_scope_metadata(monkeypatch, tmp
                 run_id=run.id,
                 url="https://kairos.test/complete",
                 url_hash="a" * 64,
-                status="HANDED_OFF",
+                status="FETCHED",
             )
         )
         session.commit()

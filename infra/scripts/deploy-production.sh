@@ -75,7 +75,7 @@ echo "==> production up: infra first (storage/db/temporal/init) — no --wait (i
   || fail "infra up failed"
 
 echo "==> production up: app stack (migrate → api → worker → web) with readiness wait"
-"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
+"${SSH[@]}" "set -o pipefail; cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
     KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
     docker compose -p kairos-production -f compose.base.yml -f compose.production.yml \
     --env-file /srv/kairos/env/production.env up -d --wait 2>&1 | tail -20" \
