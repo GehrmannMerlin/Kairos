@@ -27,6 +27,7 @@ from app.discovery.http import DiscoveryHttp
 from app.discovery.link_discovery import LinkDiscoveryService
 from app.discovery.models import DiscoverySource, FrontierState
 from app.discovery.source_search import SearchService
+from app.domain.models import ExecutionPreflightResult
 from app.domain.repository import RunRepository, SpecVersionRepository, TaskRepository
 from app.infra.db import Base
 from app.providers.search_protocol import SearchResult
@@ -233,6 +234,25 @@ async def test_scenario_b_exploratory_fake_search_to_frontier(ctx, http) -> None
     class _CfgRepo:
         def list_current(self, user_id):
             return [_Cfg()]
+
+        def get_version(self, user_id, config_id, version):
+            assert (config_id, version) == (_Cfg.config_id, _Cfg.version)
+            return _Cfg()
+
+    db.add(
+        ExecutionPreflightResult(
+            user_id=user.id,
+            task_id=task.id,
+            spec_version=spec.version,
+            plan_version=run.plan_version,
+            capability_manifest_version="discovery-e2e",
+            status="READY",
+            issues=[],
+            search_config_id=_Cfg.config_id,
+            search_config_version=_Cfg.version,
+        )
+    )
+    db.commit()
 
     service = SearchService(
         db,

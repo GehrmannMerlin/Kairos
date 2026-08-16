@@ -12,7 +12,12 @@ Candidate Sites（保留 query/provider/rank/result URL 证据）并写入 Front
 
 from __future__ import annotations
 
+import re
+
+from sqlalchemy import select
+
 from app.activities.execution_seam import ExecuteUnitResult, ExecutionUnit
+from app.auth.errors import NotFoundError
 from app.discovery.errors import DiscoveryError
 from app.discovery.frontier import UrlFrontierRepository
 from app.discovery.models import (
@@ -25,6 +30,7 @@ from app.providers.search_protocol import SearchResult
 from app.reliability.provider_limit import ProviderLimiter
 
 SEARCH_PROVIDER_NOT_CONFIGURED = "SEARCH_PROVIDER_NOT_CONFIGURED"
+FROZEN_CONFIG_UNAVAILABLE = "FROZEN_CONFIG_UNAVAILABLE"
 
 # M-16 进程内 provider 限流缓存（key = 安全 metadata hash，非明文 Key）
 _SEARCH_LIMITERS: dict[str, ProviderLimiter] = {}
@@ -62,9 +68,39 @@ def merge_into_candidate_sites(results: list[SearchResult]) -> list[CandidateSit
     return list(by_host.values())
 
 
+def _normalize_source_hint(value: str) -> str:
+    normalized = re.sub(r"[\W_]+", "", value, flags=re.UNICODE)
+    for suffix in ("官方网站", "官网", "网站"):
+        if normalized.endswith(suffix):
+            return normalized[: -len(suffix)]
+    return normalized
+
+
+def filter_named_source_results(
+    results: list[SearchResult], source_hint: str | None
+) -> list[SearchResult]:
+    """Keep only results whose title or snippet names the frozen requested source."""
+    normalized_hint = _normalize_source_hint(source_hint or "")
+    if not normalized_hint:
+        return results
+    return [
+        result
+        for result in results
+        if normalized_hint in _normalize_source_hint(result.title)
+        or normalized_hint in _normalize_source_hint(result.snippet)
+    ]
+
+
 class SearchService:
-    def __init__(self, db, *, vault=None, search_configs=None, provider_builder=None,
-                 retry_base_delay_seconds: float = 2.0) -> None:
+    def __init__(
+        self,
+        db,
+        *,
+        vault=None,
+        search_configs=None,
+        provider_builder=None,
+        retry_base_delay_seconds: float = 2.0,
+    ) -> None:
         self._db = db
         self._vault = vault
         self._search_configs = search_configs
@@ -97,11 +133,54 @@ class SearchService:
                 return cfg
         return None
 
-    def _require_config(self, user_id: int):
-        cfg = self._available_search_config(user_id)
-        if cfg is None:
-            raise SourceSearchError(SEARCH_PROVIDER_NOT_CONFIGURED, "尚未配置可用的搜索服务")
-        return cfg
+    def _require_config(self, run):
+        if isinstance(run, int):
+            cfg = self._available_search_config(run)
+            if cfg is None:
+                raise SourceSearchError(SEARCH_PROVIDER_NOT_CONFIGURED, "尚未配置可用的搜索服务")
+            return cfg
+
+        from app.domain.models import ExecutionPreflightResult
+        from app.providers.repository import SearchConfigRepository
+
+        preflight = self._db.scalar(
+            select(ExecutionPreflightResult)
+            .where(
+                ExecutionPreflightResult.user_id == run.user_id,
+                ExecutionPreflightResult.task_id == run.task_id,
+                ExecutionPreflightResult.spec_version == run.spec_version,
+                ExecutionPreflightResult.plan_version == run.plan_version,
+                ExecutionPreflightResult.status == "READY",
+            )
+            .order_by(ExecutionPreflightResult.id.desc())
+            .limit(1)
+        )
+        if (
+            preflight is None
+            or preflight.search_config_id is None
+            or preflight.search_config_version is None
+        ):
+            raise SourceSearchError(FROZEN_CONFIG_UNAVAILABLE, "冻结的搜索服务配置不可用")
+        repo = self._search_configs or SearchConfigRepository(self._db)
+        try:
+            return repo.get_version(
+                run.user_id, preflight.search_config_id, preflight.search_config_version
+            )
+        except NotFoundError as exc:
+            raise SourceSearchError(FROZEN_CONFIG_UNAVAILABLE, "冻结的搜索服务配置不可用") from exc
+
+    def _named_source_hint(self, run) -> str | None:
+        from app.domain.repository import SpecVersionRepository
+
+        spec = SpecVersionRepository(self._db).get_version(
+            run.user_id, run.task_id, run.spec_version
+        )
+        source_scope = (spec.payload or {}).get("source_scope") or {}
+        if source_scope.get("resolution_scope") != "NAMED_SOURCE_ONLY":
+            return None
+        return next(
+            (hint for hint in source_scope.get("source_hints", []) if str(hint).strip()), None
+        )
 
     def _build_provider(self, provider_type: str):
         if self._provider_builder is not None:
@@ -123,7 +202,7 @@ class SearchService:
                 error_code="RUN_NOT_FOUND",
                 committed_refs={},
             )
-        cfg = self._require_config(run.user_id)
+        cfg = self._require_config(run)
         vault = self._vault_instance()
         api_key = (
             vault.read_for_execution(
@@ -147,7 +226,8 @@ class SearchService:
 
         cap = capacity_from_settings(get_settings())
         key = ThrottleKey(
-            family=cfg.provider_type, config_id=cfg.credential_version_id or 0,
+            family=cfg.provider_type,
+            config_id=cfg.credential_version_id or 0,
             user_id=run.user_id,
         )
         limiter = _SEARCH_LIMITERS.setdefault(
@@ -167,6 +247,7 @@ class SearchService:
             error_class_fn=classify_provider_error,
             base_delay_seconds=self._retry_base_delay,
         )
+        results = filter_named_source_results(results, self._named_source_hint(run))
         sites = merge_into_candidate_sites(results)
         frontier = UrlFrontierRepository(self._db)
         hashes: list[str] = []
