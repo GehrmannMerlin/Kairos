@@ -42,6 +42,7 @@ class DomainService:
         actor_type: str = "user",
         actor_id: int | None = None,
         reason: str | None = None,
+        commit: bool = True,
     ) -> DomainEvent:
         db = self._tasks._db
         task = self._tasks.get_owned(user_id, task_id)
@@ -94,8 +95,9 @@ class DomainService:
             payload=payload,
             dispatch_key=f"task:{task_id}:{command}",
         )
-        db.commit()
-        db.refresh(event)
+        if commit:
+            db.commit()
+            db.refresh(event)
         return event
 
     def confirm_spec(
@@ -265,24 +267,43 @@ class DomainService:
         db = self._tasks._db
         repo = CheckpointRepository(db)
         existing = repo.find_by_batch(run_id, batch_identity)
-        if existing is not None:
-            if existing.input_fingerprint != input_fingerprint:
-                from app.domain.errors import DomainError
+        if existing is not None and existing.input_fingerprint != input_fingerprint:
+            from app.domain.errors import DomainError
 
-                raise DomainError("相同批次身份但输入指纹不同")
-            return existing  # replay: reuse committed result
-        row = repo.create(
-            user_id=user_id,
-            task_id=task_id,
-            run_id=run_id,
-            batch_identity=batch_identity,
-            spec_version=spec_version,
-            plan_version=plan_version,
-            node_run_id=node_run_id,
-            input_fingerprint=input_fingerprint,
-            committed_object_refs=committed_refs,
-            content_hash=content_hash,
-        )
+            raise DomainError("相同批次身份但输入指纹不同")
+        if existing is None:
+            from sqlalchemy.exc import IntegrityError
+
+            row: Checkpoint | None = None
+            try:
+                with db.begin_nested():
+                    row = repo.create(
+                        user_id=user_id,
+                        task_id=task_id,
+                        run_id=run_id,
+                        batch_identity=batch_identity,
+                        spec_version=spec_version,
+                        plan_version=plan_version,
+                        node_run_id=node_run_id,
+                        input_fingerprint=input_fingerprint,
+                        committed_object_refs=committed_refs,
+                        content_hash=content_hash,
+                    )
+                    db.flush()
+            except IntegrityError:
+                row = repo.find_by_batch(run_id, batch_identity)
+                if row is None:
+                    raise
+        else:
+            row = existing
+        assert row is not None
+        if row.input_fingerprint != input_fingerprint:
+            from app.domain.errors import DomainError
+
+            raise DomainError("相同批次身份但输入指纹不同")
+        from app.execution.lifecycle import append_checkpoint_event
+
+        append_checkpoint_event(db, row)
         db.commit()
         db.refresh(row)
         return row

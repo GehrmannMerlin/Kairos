@@ -86,11 +86,12 @@ def test_commit_checkpoint_reuses_same_batch(db, user, task) -> None:
     from app.domain.repository import TaskRepository
     from app.domain.service import DomainService
 
+    run = RunRepository(db).create(user_id=user.id, task_id=task.id, spec_version=1, plan_version=0)
     svc = DomainService(TaskRepository(db))
     first = svc.commit_checkpoint(
         user_id=user.id,
         task_id=task.id,
-        run_id=1,
+        run_id=run.id,
         batch_identity="unit-1",
         spec_version=1,
         plan_version=0,
@@ -102,7 +103,7 @@ def test_commit_checkpoint_reuses_same_batch(db, user, task) -> None:
     second = svc.commit_checkpoint(
         user_id=user.id,
         task_id=task.id,
-        run_id=1,
+        run_id=run.id,
         batch_identity="unit-1",
         spec_version=1,
         plan_version=0,
@@ -113,5 +114,5 @@ def test_commit_checkpoint_reuses_same_batch(db, user, task) -> None:
     )
     assert second.id == first.id  # 复用，不重复提交
 
-    rows = db.query(Checkpoint).filter_by(run_id=1).all()
+    rows = db.query(Checkpoint).filter_by(run_id=run.id).all()
     assert len(rows) == 1

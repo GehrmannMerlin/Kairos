@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.auth.errors import NotFoundError
 from app.domain.models import (
@@ -576,19 +577,31 @@ class NodeRunRepository:
         )
         if row is not None:
             return row
-        row = NodeRun(
-            user_id=user_id,
-            run_id=run_id,
-            task_id=task_id,
-            node_id=node_id,
-            node_type=node_type,
-            position=position,
-            input_fingerprint=input_fingerprint,
-            state="PENDING",
-            version=1,
-        )
-        self._db.add(row)
-        self._db.flush()
+        try:
+            with self._db.begin_nested():
+                row = NodeRun(
+                    user_id=user_id,
+                    run_id=run_id,
+                    task_id=task_id,
+                    node_id=node_id,
+                    node_type=node_type,
+                    position=position,
+                    input_fingerprint=input_fingerprint,
+                    state="PENDING",
+                    version=1,
+                )
+                self._db.add(row)
+                self._db.flush()
+        except IntegrityError:
+            row = self._db.scalar(
+                select(NodeRun).where(
+                    NodeRun.user_id == user_id,
+                    NodeRun.run_id == run_id,
+                    NodeRun.node_id == node_id,
+                )
+            )
+            if row is None:
+                raise
         return row
 
     def get_owned(self, user_id: int, node_run_id: int) -> NodeRun:
@@ -634,14 +647,26 @@ class NodeAttemptRepository:
         )
         if row is not None:
             return row
-        row = NodeAttempt(
-            user_id=user_id,
-            node_run_id=node_run_id,
-            attempt=attempt,
-            status="PENDING",
-        )
-        self._db.add(row)
-        self._db.flush()
+        try:
+            with self._db.begin_nested():
+                row = NodeAttempt(
+                    user_id=user_id,
+                    node_run_id=node_run_id,
+                    attempt=attempt,
+                    status="PENDING",
+                )
+                self._db.add(row)
+                self._db.flush()
+        except IntegrityError:
+            row = self._db.scalar(
+                select(NodeAttempt).where(
+                    NodeAttempt.user_id == user_id,
+                    NodeAttempt.node_run_id == node_run_id,
+                    NodeAttempt.attempt == attempt,
+                )
+            )
+            if row is None:
+                raise
         return row
 
 

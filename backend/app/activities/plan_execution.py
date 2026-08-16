@@ -131,27 +131,27 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
         lifecycle_session = get_session_factory()()
         lifecycle = ExecutionLifecycleRecorder(lifecycle_session)
         lifecycle.start_attempt(run_id=inp.run_id, unit=inp.unit, attempt=attempt)
-        executor = get_node_executor(inp.unit.node_type)
-        if executor is None:
-            result = ExecuteUnitResult(
-                unit_index=inp.unit.index,
-                committed_refs={},
-                status="NODE_EXECUTOR_UNAVAILABLE",
-                error_code="NODE_EXECUTOR_UNAVAILABLE",
-            )
-        else:
-            try:
-                result = await executor(inp.unit)
-            except Exception:
-                lifecycle.finish_attempt(
-                    run_id=inp.run_id,
-                    unit=inp.unit,
-                    attempt=attempt,
-                    status="FAILED",
+        try:
+            executor = get_node_executor(inp.unit.node_type)
+            if executor is None:
+                result = ExecuteUnitResult(
+                    unit_index=inp.unit.index,
                     committed_refs={},
-                    error_code="INTERNAL",
+                    status="NODE_EXECUTOR_UNAVAILABLE",
+                    error_code="NODE_EXECUTOR_UNAVAILABLE",
                 )
-                raise
+            else:
+                result = await executor(inp.unit)
+        except Exception:
+            lifecycle.finish_attempt(
+                run_id=inp.run_id,
+                unit=inp.unit,
+                attempt=attempt,
+                status="FAILED",
+                committed_refs={},
+                error_code="INTERNAL",
+            )
+            raise
         lifecycle_status = "SUCCEEDED" if result.status == "OK" else result.status
         if lifecycle_status == "CREDENTIAL_REQUIRED":
             lifecycle_status = "WAITING_APPROVAL"
