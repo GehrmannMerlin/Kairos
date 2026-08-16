@@ -18,7 +18,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
 
-from app.api.events import SSETaskEvent, map_domain_event_to_sse, query_task_events
+from app.api.events import (
+    SSETaskEvent,
+    map_domain_event_to_sse,
+    max_task_event_id,
+    query_task_events,
+)
 from app.auth.deps import require_user
 from app.auth.models import User
 from app.domain.repository import TaskRepository
@@ -74,8 +79,34 @@ async def _event_stream(
 ) -> AsyncGenerator[str, None]:
     metrics.change_sse_connections(delta=1)
     try:
-        replaying = True
+        replay_through_id = await asyncio.to_thread(
+            _load_max_event_id,
+            session_factory,
+            user_id,
+            task_id,
+        )
         replayed_any = False
+        while cursor < replay_through_id:
+            page = await asyncio.to_thread(
+                _load_event_page,
+                session_factory,
+                user_id,
+                task_id,
+                cursor,
+                replay_through_id,
+            )
+            if not page:
+                break
+            metrics.record_sse_replay(count=len(page))
+            replayed_any = True
+            for event in page:
+                if event.event_id <= cursor:
+                    continue
+                yield _format_sse(event)
+                cursor = event.event_id
+        if not replayed_any:
+            metrics.record_sse_replay(count=0)
+
         while True:
             page = await asyncio.to_thread(
                 _load_event_page,
@@ -83,21 +114,15 @@ async def _event_stream(
                 user_id,
                 task_id,
                 cursor,
+                None,
             )
             if page:
-                if replaying:
-                    metrics.record_sse_replay(count=len(page))
-                    replayed_any = True
                 for event in page:
                     if event.event_id <= cursor:
                         continue
                     yield _format_sse(event)
                     cursor = event.event_id
                 continue
-            if replaying:
-                if not replayed_any:
-                    metrics.record_sse_replay(count=0)
-                replaying = False
             # No event list survives the poll boundary.
             yield ": ping\n\n"
             await asyncio.sleep(poll_interval)
@@ -110,6 +135,7 @@ def _load_event_page(
     user_id: int,
     task_id: int,
     cursor: int,
+    through_id: int | None,
 ) -> list[SSETaskEvent]:
     db = session_factory()
     try:
@@ -119,8 +145,22 @@ def _load_event_page(
             task_id=task_id,
             after_id=cursor,
             limit=_SSE_PAGE_SIZE,
+            through_id=through_id,
         )
         return [map_domain_event_to_sse(event) for event in events]
+    finally:
+        db.rollback()
+        db.close()
+
+
+def _load_max_event_id(
+    session_factory: _SessionFactory,
+    user_id: int,
+    task_id: int,
+) -> int:
+    db = session_factory()
+    try:
+        return max_task_event_id(db, user_id=user_id, task_id=task_id)
     finally:
         db.rollback()
         db.close()

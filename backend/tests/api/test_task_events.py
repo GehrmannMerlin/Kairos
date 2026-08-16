@@ -564,5 +564,52 @@ async def test_sse_large_replay_uses_multiple_bounded_ordered_pages(tmp_path) ->
 
     assert delivered == list(range(1, 202))
     assert len(selects) >= 2
-    assert all("LIMIT" in statement for statement in selects)
+    replay_selects = [statement for statement in selects if "ORDER BY" in statement]
+    assert replay_selects and all("LIMIT" in statement for statement in replay_selects)
+    assert any("MAX(" in statement for statement in selects)
     assert max(metrics.replay_counts) < 205
+
+
+@pytest.mark.asyncio
+async def test_sse_replay_freezes_initial_boundary_before_live_events(
+    db, user, monkeypatch
+) -> None:
+    task_id = 43
+    _seed_events(db, user.id, task_id)
+    initial = query_task_events(db, user.id, task_id, after_id=0)
+    monkeypatch.setattr("app.api.routes.events._SSE_PAGE_SIZE", 2)
+    metrics = _FakeStreamMetrics()
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+    stream = _event_stream(
+        session_factory=factory,
+        user_id=user.id,
+        task_id=task_id,
+        cursor=0,
+        metrics=metrics,
+        poll_interval=0,
+    )
+
+    delivered: list[int] = []
+    try:
+        first = await anext(stream)
+        delivered.append(int(first.splitlines()[0].removeprefix("id: ")))
+        append_domain_event(
+            db,
+            user_id=user.id,
+            aggregate_type="task",
+            aggregate_id=task_id,
+            event_type="run.node_progress",
+            aggregate_version=4,
+            payload={"node_id": "live", "state": "RUNNING"},
+            actor_type="system",
+        )
+        db.commit()
+        live_id = query_task_events(db, user.id, task_id, after_id=initial[-1].id)[0].id
+        for _ in range(3):
+            chunk = await anext(stream)
+            delivered.append(int(chunk.splitlines()[0].removeprefix("id: ")))
+    finally:
+        await stream.aclose()
+
+    assert delivered == [event.id for event in initial] + [live_id]
+    assert metrics.replay_counts == [2, 1]

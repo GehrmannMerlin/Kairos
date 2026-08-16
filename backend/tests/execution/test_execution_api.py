@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import gc
 from datetime import UTC, datetime, timedelta
 
 from app.auth.repository import UserRepository
@@ -714,6 +715,235 @@ def test_execution_counts_use_latest_run_while_legacy_totals_remain_task_wide(
     assert stages["fetch"]["url_processed"] == 2
     assert stages["extraction"]["record_count"] == 2
     assert stages["validation"]["record_count"] == 2
+
+
+def test_execution_url_counts_union_persisted_and_reused_identities(client: dict) -> None:
+    c, factory = client["client"], client["factory"]
+    alice = _register(c, "url-identity-union@example.com")["user"]
+    session = factory()
+    try:
+        task = TaskRepository(session).create(
+            user_id=alice["id"], title="url identity union", task_type="directed"
+        )
+        session.flush()
+        old_run = Run(
+            user_id=alice["id"], task_id=task.id, spec_version=1, plan_version=1, state="COMPLETED"
+        )
+        current_run = Run(
+            user_id=alice["id"], task_id=task.id, spec_version=2, plan_version=2, state="RUNNING"
+        )
+        session.add_all([old_run, current_run])
+        session.flush()
+        session.add(
+            NodeRun(
+                user_id=alice["id"],
+                task_id=task.id,
+                run_id=current_run.id,
+                node_id="fetch-current",
+                node_type="fetch",
+                state="RUNNING",
+                position=1,
+            )
+        )
+        session.add_all(
+            [
+                URLResource(
+                    user_id=alice["id"],
+                    task_id=task.id,
+                    run_id=current_run.id,
+                    spec_version=2,
+                    url="https://union.example/a",
+                    url_hash="a",
+                    status="FAILED",
+                ),
+                URLResource(
+                    user_id=alice["id"],
+                    task_id=task.id,
+                    run_id=current_run.id,
+                    spec_version=2,
+                    url="https://union.example/b",
+                    url_hash="b",
+                    status="DISCOVERED",
+                ),
+                # The task-wide frontier keeps reused c owned by its first run.
+                URLResource(
+                    user_id=alice["id"],
+                    task_id=task.id,
+                    run_id=old_run.id,
+                    spec_version=1,
+                    url="https://union.example/c",
+                    url_hash="c",
+                    status="FETCHED",
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                DomainEvent(
+                    user_id=alice["id"],
+                    aggregate_type="task",
+                    aggregate_id=task.id,
+                    event_type="fetch.completed",
+                    aggregate_version=1,
+                    payload={"node_id": "fetch-current", "url_hash": "c"},
+                    run_id=current_run.id,
+                ),
+                # A later current-run completion supersedes persisted failure a.
+                DomainEvent(
+                    user_id=alice["id"],
+                    aggregate_type="task",
+                    aggregate_id=task.id,
+                    event_type="fetch.completed",
+                    aggregate_version=2,
+                    payload={"node_id": "fetch-current", "url_hash": "a"},
+                    run_id=current_run.id,
+                ),
+            ]
+        )
+        session.commit()
+        task_id = task.id
+    finally:
+        session.close()
+
+    response = c.get(f"/api/tasks/{task_id}/execution")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["counts"]["discovered_pages"] == 3
+    assert body["counts"]["fetched_pages"] == 2
+    stages = {stage["key"]: stage for stage in body["stages"]}
+    assert stages["source_discovery"]["url_processed"] == 3
+    assert stages["fetch"]["url_processed"] == 2
+
+
+def test_execution_read_endpoints_reduce_pages_without_retaining_full_history(
+    client: dict, monkeypatch
+) -> None:
+    c, factory = client["client"], client["factory"]
+    alice = _register(c, "bounded-read-facts@example.com")["user"]
+    session = factory()
+    try:
+        task = TaskRepository(session).create(
+            user_id=alice["id"], title="bounded read facts", task_type="directed"
+        )
+        session.flush()
+        plan = PlanVersion(
+            user_id=alice["id"],
+            task_id=task.id,
+            spec_version=1,
+            version=1,
+            validation_status="VALID",
+            plan_fingerprint="bounded-read",
+            payload={
+                "graph": {
+                    "nodes": [
+                        {
+                            "node_id": "n-fetch",
+                            "node_type": "fetch",
+                            "definition_version": "1.0.0",
+                            "depends_on": [],
+                        }
+                    ],
+                    "edges": [],
+                }
+            },
+        )
+        run = Run(
+            user_id=alice["id"],
+            task_id=task.id,
+            spec_version=1,
+            plan_version=1,
+            state="RUNNING",
+        )
+        session.add_all([plan, run])
+        session.flush()
+        session.add(
+            NodeRun(
+                user_id=alice["id"],
+                task_id=task.id,
+                run_id=run.id,
+                node_id="n-fetch",
+                node_type="fetch",
+                state="RUNNING",
+                position=1,
+            )
+        )
+        session.add_all(
+            [
+                DomainEvent(
+                    user_id=alice["id"],
+                    aggregate_type="task",
+                    aggregate_id=task.id,
+                    event_type="run.node_progress",
+                    aggregate_version=index,
+                    payload={
+                        "node_id": "n-fetch",
+                        "node_type": "fetch",
+                        "attempt": 1,
+                        "state": "RUNNING",
+                        "tool": f"tool-{index}",
+                    },
+                    run_id=run.id,
+                )
+                for index in range(30)
+            ]
+        )
+        session.commit()
+        task_id = task.id
+    finally:
+        session.close()
+
+    original_events_after = ExecutionRepository.events_after
+
+    class TrackedEvent:
+        live = 0
+        peak = 0
+
+        def __init__(self, event: DomainEvent) -> None:
+            self.id = event.id
+            self.event_type = event.event_type
+            self.payload = event.payload
+            self.run_id = event.run_id
+            self.node_run_id = event.node_run_id
+            self.occurred_at = event.occurred_at
+            type(self).live += 1
+            type(self).peak = max(type(self).peak, type(self).live)
+
+        def __del__(self) -> None:
+            type(self).live -= 1
+
+    def tracked_three_event_pages(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        after_id: int,
+        limit: int,
+        through_id: int | None = None,
+    ):
+        page = original_events_after(
+            self,
+            user_id=user_id,
+            task_id=task_id,
+            after_id=after_id,
+            limit=min(limit, 3),
+            through_id=through_id,
+        )
+        return [TrackedEvent(event) for event in page]
+
+    monkeypatch.setattr(ExecutionRepository, "events_after", tracked_three_event_pages)
+
+    for path in (
+        f"/api/tasks/{task_id}/execution",
+        f"/api/tasks/{task_id}/execution/dag",
+        f"/api/tasks/{task_id}/execution/nodes/n-fetch",
+    ):
+        TrackedEvent.peak = 0
+        response = c.get(path)
+        assert response.status_code == 200, response.text
+        gc.collect()
+        assert TrackedEvent.live == 0
+        assert TrackedEvent.peak <= 6
 
 
 def test_execution_overview_pages_to_newest_event_facts(client: dict, monkeypatch) -> None:

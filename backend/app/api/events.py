@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, TypeGuard
 
 from pydantic import BaseModel
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from app.domain.models import DomainEvent, Record
 
@@ -219,14 +219,18 @@ def query_task_events(
     after_id: int,
     *,
     limit: int | None = None,
+    through_id: int | None = None,
 ) -> list[DomainEvent]:
     # task.* 事件 + 本 task 的 record.* 事件（通过 records 表关联，record 事件无 task_id 列）
     record_ids = select(Record.id).where(Record.user_id == user_id, Record.task_id == task_id)
+    id_conditions = [DomainEvent.id > after_id]
+    if through_id is not None:
+        id_conditions.append(DomainEvent.id <= through_id)
     statement = (
         select(DomainEvent)
         .where(
             DomainEvent.user_id == user_id,
-            DomainEvent.id > after_id,
+            *id_conditions,
             or_(
                 and_(
                     DomainEvent.aggregate_type == "task",
@@ -243,6 +247,28 @@ def query_task_events(
     if limit is not None:
         statement = statement.limit(limit)
     return list(db.scalars(statement))
+
+
+def max_task_event_id(db: Any, user_id: int, task_id: int) -> int:
+    record_ids = select(Record.id).where(Record.user_id == user_id, Record.task_id == task_id)
+    return int(
+        db.scalar(
+            select(func.max(DomainEvent.id)).where(
+                DomainEvent.user_id == user_id,
+                or_(
+                    and_(
+                        DomainEvent.aggregate_type == "task",
+                        DomainEvent.aggregate_id == task_id,
+                    ),
+                    and_(
+                        DomainEvent.aggregate_type == "record",
+                        DomainEvent.aggregate_id.in_(record_ids),
+                    ),
+                ),
+            )
+        )
+        or 0
+    )
 
 
 def map_domain_event_to_sse(ev: DomainEvent) -> SSETaskEvent:
