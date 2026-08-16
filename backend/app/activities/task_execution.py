@@ -12,6 +12,7 @@ from sqlalchemy import select, update
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from app.crawling.errors import FetchErrorCode
 from app.domain.errors import IllegalTransitionError, StaleVersionError
 from app.domain.models import DomainEvent, Run
 from app.domain.repository import RunRepository, SpecVersionRepository, TaskRepository
@@ -22,6 +23,36 @@ from app.state.events import append_domain_event
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+_SAFE_EXECUTION_ERROR_CODES = frozenset(
+    {
+        "INTERNAL",
+        "NETWORK",
+        "NETWORK_ERROR",
+        "RUN_NOT_FOUND",
+        "STORAGE_ERROR",
+        "NODE_EXECUTOR_UNAVAILABLE",
+        "CREDENTIAL_REQUIRED",
+        "API_KEY_REQUIRED",
+        "ACCESS_DENIED",
+        "AUTH_REQUIRED",
+        "CAPTCHA_REQUIRED",
+        "NOT_FOUND",
+        "UNSUPPORTED_RESPONSE",
+        "BASE_URL_REQUIRED",
+        "INVALID_BASE_URL",
+        "RESOURCE_UNAVAILABLE",
+        "INVALID_LIFECYCLE_STATUS",
+        "WORKFLOW_FAILED",
+        "EXECUTION_FAILED",
+        "INCOMPLETE_WITHOUT_COMPLETED_WORK",
+    }
+).union(code.value for code in FetchErrorCode)
+
+
+def _safe_error_code(error_code: str | None) -> str:
+    return error_code if error_code in _SAFE_EXECUTION_ERROR_CODES else "EXECUTION_FAILED"
 
 
 def _release_task_slot(session, *, user_id: int, run_id: int) -> None:
@@ -236,13 +267,14 @@ class FailRunInput:
 
 @activity.defn
 async def fail_run(inp: FailRunInput) -> None:
+    error_code = _safe_error_code(inp.error_code)
     await _finish_run(
         inp,
         command="fail",
         run_state="failed",
         event_type="run.failed",
-        reason=inp.error_code or "WORKFLOW_FAILED",
-        error_code=inp.error_code or "WORKFLOW_FAILED",
+        reason=error_code,
+        error_code=error_code,
     )
 
 
@@ -258,10 +290,16 @@ async def _finish_run(
     """Atomically persist one terminal task transition and its Run lifecycle fact."""
     session = get_session_factory()()
     try:
-        run = RunRepository(session).get_owned(inp.user_id, inp.run_id)
-        # Temporal may replay an already-completed Activity. The Run state is the
-        # terminal claim: same-state replay must not append another lifecycle event.
-        if run.state == run_state:
+        claimed = session.execute(
+            update(Run)
+            .where(Run.id == inp.run_id, Run.user_id == inp.user_id, Run.state == "running")
+            .values(state=run_state, finished_at=_utcnow())
+        )
+        # The conditional update is the cross-worker terminal claim. A loser
+        # writes neither Task state nor another run lifecycle event.
+        if getattr(claimed, "rowcount", 0) != 1:
+            session.rollback()
+            RunRepository(session).get_owned(inp.user_id, inp.run_id)
             return
         task = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
         DomainService(TaskRepository(session)).transition_task(
@@ -273,8 +311,6 @@ async def _finish_run(
             reason=reason,
             commit=False,
         )
-        run.state = run_state
-        run.finished_at = _utcnow()
         payload = {
             "schema_version": 1,
             "task_id": inp.task_id,

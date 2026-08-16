@@ -88,6 +88,42 @@ async def test_runtime_executor_failures_fail_before_checkpoint_or_completion(
     assert "resolve_completion" not in calls
 
 
+@pytest.mark.asyncio
+async def test_incomplete_completion_fails_instead_of_marking_partial(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    async def execute_activity(activity_fn, activity_input, **_kwargs):
+        name = activity_fn.__name__
+        calls.append((name, activity_input))
+        if name == "ensure_run_started":
+            return SimpleNamespace(started=True)
+        if name == "heartbeat_task_slot":
+            return None
+        if name == "fetch_next_execution_unit":
+            return FetchUnitResult(unit=None)
+        if name == "resolve_completion":
+            return SimpleNamespace(
+                status="FAILED",
+                partial=False,
+                failure_code="INCOMPLETE_WITHOUT_COMPLETED_WORK",
+            )
+        if name == "fail_run":
+            return None
+        raise AssertionError(f"unexpected activity: {name}")
+
+    monkeypatch.setattr(task_workflow.workflow, "execute_activity", execute_activity)
+    monkeypatch.setattr(task_workflow, "workflow_queue_override", lambda _resource_class: None)
+
+    result = await TaskWorkflow().run(
+        TaskWorkflowInput(task_id=1, user_id=2, run_id=3, spec_version=1)
+    )
+
+    assert result.final_state == "FAILED"
+    assert [name for name, _ in calls].count("mark_partial") == 0
+    fail_input = next(value for name, value in calls if name == "fail_run")
+    assert fail_input.error_code == "INCOMPLETE_WITHOUT_COMPLETED_WORK"
+
+
 def _wait_task_state(task_id: int, want: str, timeout: float = 30.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:

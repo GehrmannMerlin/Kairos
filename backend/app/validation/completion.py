@@ -15,6 +15,15 @@ from pydantic import BaseModel, ConfigDict
 _STRICT = ConfigDict(extra="forbid")
 
 
+class CompletionIncompleteError(Exception):
+    """A non-empty scope stopped before any work was committed."""
+
+    code = "INCOMPLETE_WITHOUT_COMPLETED_WORK"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
 class CompletionDecisionView(BaseModel):
     model_config = _STRICT
 
@@ -59,6 +68,7 @@ class CompletionDecisionService:
         runtime_limit_reason: str | None,
         user_stopped: bool,
         settings,
+        access_limited_reason: str | None = None,
     ) -> CompletionDecisionView:
         task_type = spec_payload.get("task_type")
         conditions = spec_payload.get("completion_conditions") or []
@@ -85,6 +95,8 @@ class CompletionDecisionService:
                 qualified_record_count=qualified_record_count,
                 scope_completion_metadata=scope_metadata,
             )
+        if not completed_work:
+            raise CompletionIncompleteError()
         if scope_done and fetched_page_count > 0 and record_count == 0:
             return CompletionDecisionView(
                 status="NORMAL_COMPLETED",
@@ -114,16 +126,27 @@ class CompletionDecisionService:
                 qualified_record_count=qualified_record_count,
                 scope_completion_metadata=scope_metadata,
             )
-        if task_type == "SPECIFIED_SOURCE":
-            # 定向：范围中 eligible URL 全部进入 terminal state（范围完成，模块需求 44）
+        if access_limited_reason and completed_work:
             return CompletionDecisionView(
-                status="NORMAL_COMPLETED" if scope_done else "PARTIALLY_COMPLETED",
-                reason="指定来源范围已全部处理" if scope_done else "指定来源范围未完整处理",
-                is_partial=not scope_done,
-                completion_type="directional_scope_complete" if scope_done else "access_limited",
+                status="PARTIALLY_COMPLETED",
+                reason=access_limited_reason,
+                is_partial=True,
+                completion_type="access_limited",
                 qualified_record_count=qualified_record_count,
                 scope_completion_metadata=scope_metadata,
             )
+        if task_type == "SPECIFIED_SOURCE":
+            # 定向：范围中 eligible URL 全部进入 terminal state（范围完成，模块需求 44）
+            if scope_done:
+                return CompletionDecisionView(
+                    status="NORMAL_COMPLETED",
+                    reason="指定来源范围已全部处理",
+                    is_partial=False,
+                    completion_type="directional_scope_complete",
+                    qualified_record_count=qualified_record_count,
+                    scope_completion_metadata=scope_metadata,
+                )
+            raise CompletionIncompleteError()
         # EXPLORATORY：最低合格 PASSED 数 + 信息饱和（模块需求 45/48）
         saturated = SaturationTracker(
             settings.saturation_batch_window, settings.saturation_new_unique_threshold
@@ -142,18 +165,14 @@ class CompletionDecisionService:
                     "recent_batch_unique_counts": batch_unique_counts,
                     "saturated": True,
                 },
+                scope_completion_metadata=scope_metadata,
             )
-        return CompletionDecisionView(
-            status="PARTIALLY_COMPLETED",
-            reason="未达到最低合格记录或尚未饱和",
-            is_partial=True,
-            completion_type="access_limited",
-            qualified_record_count=qualified_record_count,
-            saturation_evidence={
-                "recent_batch_unique_counts": batch_unique_counts,
-                "saturated": saturated,
-            },
-        )
+        raise CompletionIncompleteError()
 
 
-__all__ = ["CompletionDecisionView", "CompletionDecisionService", "SaturationTracker"]
+__all__ = [
+    "CompletionDecisionView",
+    "CompletionDecisionService",
+    "CompletionIncompleteError",
+    "SaturationTracker",
+]
