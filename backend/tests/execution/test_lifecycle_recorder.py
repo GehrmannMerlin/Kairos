@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Generator
 from dataclasses import dataclass
 
 import pytest
 from app.activities.execution_seam import ExecutionUnit
 from app.auth.models import User
-from app.domain.models import DomainEvent, NodeAttempt, NodeRun, Run
+from app.domain.models import Checkpoint, DomainEvent, NodeAttempt, NodeRun, Run
 from app.domain.repository import (
     NodeAttemptRepository,
     NodeRunRepository,
     RunRepository,
     TaskRepository,
 )
-from app.execution.lifecycle import ExecutionLifecycleRecorder
+from app.execution.lifecycle import ExecutionLifecycleRecorder, append_checkpoint_event
 from app.infra.db import Base
 from sqlalchemy import create_engine
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.orm import Session, sessionmaker
 
 
@@ -249,3 +251,214 @@ def test_node_attempt_identity_conflict_keeps_session_usable(
 
     assert row.id == existing.id
     assert lifecycle_case.session.query(Run).count() == 1
+
+
+def test_concurrent_terminal_results_preserve_one_winner(tmp_path) -> None:
+    """Both workers can read an unfinished attempt; only one may finish it."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'terminal-concurrent.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    session = factory()
+    try:
+        user = User(email="terminal-concurrent@kairos.test", password_hash="hash")
+        session.add(user)
+        session.commit()
+        task = TaskRepository(session).create(user_id=user.id, title="race", task_type=None)
+        run = RunRepository(session).create(
+            user_id=user.id, task_id=task.id, spec_version=1, plan_version=1
+        )
+        unit = ExecutionUnit(
+            run_id=run.id,
+            index=1,
+            unit_type="fetch",
+            input_fingerprint="f" * 64,
+            node_id="fetch-1",
+            node_type="fetch",
+        )
+        ExecutionLifecycleRecorder(session).start_attempt(run_id=run.id, unit=unit, attempt=1)
+        ids = run.id, unit
+    finally:
+        session.close()
+
+    barrier = threading.Barrier(2)
+
+    def synchronize_terminal_claim(conn, _cursor, statement, *_args) -> None:
+        if statement.lstrip().upper().startswith("UPDATE NODE_ATTEMPTS"):
+            barrier.wait(timeout=10)
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", synchronize_terminal_claim)
+
+    def finish(status: str, error_code: str | None) -> None:
+        worker = factory()
+        try:
+            ExecutionLifecycleRecorder(worker).finish_attempt(
+                run_id=ids[0],
+                unit=ids[1],
+                attempt=1,
+                status=status,
+                committed_refs={"fetched": 1},
+                error_code=error_code,
+            )
+        finally:
+            worker.close()
+
+    try:
+        workers = [
+            threading.Thread(target=finish, args=("SUCCEEDED", None)),
+            threading.Thread(target=finish, args=("FAILED", "NETWORK")),
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=15)
+        assert all(not worker.is_alive() for worker in workers)
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", synchronize_terminal_claim)
+
+    session = factory()
+    try:
+        attempt = session.query(NodeAttempt).one()
+        terminal_events = session.query(DomainEvent).filter(
+            DomainEvent.event_type.in_(("run.node_completed", "run.node_failed"))
+        )
+        assert attempt.status in {"SUCCEEDED", "FAILED"}
+        assert terminal_events.count() == 1
+        event = terminal_events.one()
+        assert event.event_type == (
+            "run.node_completed" if attempt.status == "SUCCEEDED" else "run.node_failed"
+        )
+    finally:
+        session.close()
+
+
+def test_concurrent_checkpoint_event_backfill_claims_once(tmp_path) -> None:
+    """A legacy checkpoint without an event is backfilled by exactly one worker."""
+    from app.domain.models import Checkpoint
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'checkpoint-concurrent.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    session = factory()
+    try:
+        user = User(email="checkpoint-concurrent@kairos.test", password_hash="hash")
+        session.add(user)
+        session.commit()
+        task = TaskRepository(session).create(user_id=user.id, title="race", task_type=None)
+        run = RunRepository(session).create(
+            user_id=user.id, task_id=task.id, spec_version=1, plan_version=1
+        )
+        checkpoint = Checkpoint(
+            user_id=user.id,
+            task_id=task.id,
+            run_id=run.id,
+            batch_identity="batch",
+            spec_version=1,
+            plan_version=1,
+            node_run_id=None,
+            input_fingerprint="f" * 64,
+            committed_object_refs={"fetched": 1},
+            content_hash=None,
+        )
+        session.add(checkpoint)
+        session.commit()
+        checkpoint_id = checkpoint.id
+    finally:
+        session.close()
+
+    barrier = threading.Barrier(2)
+    claim_statements = 0
+    claim_lock = threading.Lock()
+
+    def synchronize_event_claim(conn, _cursor, statement, *_args) -> None:
+        nonlocal claim_statements
+        normalized = statement.lstrip().upper()
+        if normalized.startswith(("INSERT INTO IDEMPOTENCY_KEYS", "INSERT INTO DOMAIN_EVENTS")):
+            with claim_lock:
+                claim_statements += 1
+                should_wait = claim_statements <= 2
+            if should_wait:
+                barrier.wait(timeout=10)
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", synchronize_event_claim)
+    outcomes: list[bool] = []
+    errors: list[Exception] = []
+
+    def backfill() -> None:
+        worker = factory()
+        try:
+            checkpoint = worker.get(Checkpoint, checkpoint_id)
+            outcomes.append(append_checkpoint_event(worker, checkpoint))
+            worker.commit()
+        except Exception as exc:  # test reports worker failures deterministically
+            errors.append(exc)
+            worker.rollback()
+        finally:
+            worker.close()
+
+    try:
+        workers = [threading.Thread(target=backfill) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=15)
+        assert all(not worker.is_alive() for worker in workers)
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", synchronize_event_claim)
+
+    assert not errors
+    assert sorted(outcomes) == [False, True]
+    session = factory()
+    try:
+        assert (
+            session.query(DomainEvent).filter_by(event_type="run.checkpoint_committed").count() == 1
+        )
+    finally:
+        session.close()
+
+
+def test_checkpoint_event_failure_rolls_back_its_idempotency_claim(
+    lifecycle_case: LifecycleCase, monkeypatch
+) -> None:
+    """A failed backfill remains retryable; it must not leave a durable claim."""
+    checkpoint = Checkpoint(
+        user_id=lifecycle_case.run.user_id,
+        task_id=lifecycle_case.run.task_id,
+        run_id=lifecycle_case.run.id,
+        batch_identity="event-fault",
+        spec_version=lifecycle_case.run.spec_version,
+        plan_version=lifecycle_case.run.plan_version,
+        node_run_id=None,
+        input_fingerprint="f" * 64,
+        committed_object_refs={"fetched": 1},
+        content_hash=None,
+    )
+    lifecycle_case.session.add(checkpoint)
+    lifecycle_case.session.commit()
+
+    from app.execution import lifecycle
+
+    original_append = lifecycle.append_domain_event
+    monkeypatch.setattr(
+        lifecycle,
+        "append_domain_event",
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError("event fault")),
+    )
+    with pytest.raises(RuntimeError, match="event fault"):
+        append_checkpoint_event(lifecycle_case.session, checkpoint)
+    lifecycle_case.session.commit()
+
+    monkeypatch.setattr(lifecycle, "append_domain_event", original_append)
+    assert append_checkpoint_event(lifecycle_case.session, checkpoint) is True
+    lifecycle_case.session.commit()
+    assert (
+        lifecycle_case.session.query(DomainEvent)
+        .filter_by(event_type="run.checkpoint_committed")
+        .count()
+        == 1
+    )

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import app.activities.task_execution as task_execution
 import pytest
 from app.activities.task_execution import (
@@ -16,6 +19,7 @@ from app.domain.models import Checkpoint, DomainEvent, Run, Task
 from app.domain.repository import RunRepository, TaskRepository
 from app.infra.db import Base
 from sqlalchemy import create_engine
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.orm import sessionmaker
 
 
@@ -402,5 +406,73 @@ async def test_checkpoint_replay_backfills_missing_event(monkeypatch, tmp_path) 
         assert [event.event_type for event in session.query(DomainEvent)] == [
             "run.checkpoint_committed"
         ]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_run_started_concurrent_recovery_claims_run_started_once(
+    monkeypatch, tmp_path
+) -> None:
+    """Two workers observing a pending Run must produce one start fact."""
+    from app.activities.task_execution import EnsureRunStartedInput, ensure_run_started
+    from app.domain.repository import SpecVersionRepository
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'start-concurrent.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(task_execution, "get_session_factory", lambda: factory)
+    session = factory()
+    try:
+        from datetime import UTC, datetime
+
+        user = User(email="start-concurrent@kairos.test", password_hash="hash")
+        session.add(user)
+        session.commit()
+        task = TaskRepository(session).create(user_id=user.id, title="race", task_type=None)
+        run = RunRepository(session).create(
+            user_id=user.id, task_id=task.id, spec_version=1, plan_version=1
+        )
+        spec = SpecVersionRepository(session).create(
+            user_id=user.id,
+            task_id=task.id,
+            version=1,
+            spec_type="collection",
+            schema_version="m06.1",
+            payload=_spec_with_seeds([]),
+        )
+        spec.confirmed_at = datetime.now(UTC)
+        # Exercise the restartable RUNNING-task/pending-Run recovery path so
+        # both workers reach the Run claim before any unrelated task write.
+        task.state = "RUNNING"
+        session.commit()
+        inp = EnsureRunStartedInput(
+            task_id=task.id, run_id=run.id, user_id=user.id, spec_version=1, plan_version=1
+        )
+    finally:
+        session.close()
+
+    barrier = threading.Barrier(2)
+
+    def synchronize_run_claim(conn, _cursor, statement, *_args) -> None:
+        if statement.lstrip().upper().startswith("UPDATE RUNS"):
+            barrier.wait(timeout=10)
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", synchronize_run_claim)
+    try:
+        results = await asyncio.gather(
+            *[asyncio.to_thread(lambda: asyncio.run(ensure_run_started(inp))) for _ in range(2)]
+        )
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", synchronize_run_claim)
+
+    session = factory()
+    try:
+        assert sorted(result.started for result in results) == [False, True]
+        assert session.get(Run, inp.run_id).state == "running"
+        assert session.query(DomainEvent).filter_by(event_type="run.started").count() == 1
     finally:
         session.close()
