@@ -11,11 +11,12 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator
-from typing import Any, Protocol
+from typing import Protocol
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import sessionmaker
 
 from app.api.events import SSETaskEvent, map_domain_event_to_sse, query_task_events
 from app.auth.deps import require_user
@@ -25,6 +26,8 @@ from app.infra.deps import get_db
 from app.observability.execution_metrics import get_execution_metrics
 
 router = APIRouter(prefix="/events", tags=["events"])
+_MAX_EVENT_ID = 2**63 - 1
+_SSE_PAGE_SIZE = 200
 
 
 class _StreamMetrics(Protocol):
@@ -33,12 +36,25 @@ class _StreamMetrics(Protocol):
     def change_sse_connections(self, *, delta: int) -> None: ...
 
 
+class _SessionFactory(Protocol):
+    def __call__(self) -> DbSession: ...
+
+
+def _parse_event_id(value: str) -> int:
+    if not value.isascii() or not value.isdecimal() or not 0 < len(value) <= 19:
+        raise HTTPException(status_code=400, detail="Invalid event cursor")
+    cursor = int(value)
+    if cursor > _MAX_EVENT_ID:
+        raise HTTPException(status_code=400, detail="Invalid event cursor")
+    return cursor
+
+
 def _parse_last_event_id(request: Request, after_id: str | None) -> int:
     header = request.headers.get("last-event-id")
-    if header and header.isdigit():
-        return int(header)
-    if after_id and after_id.isdigit():
-        return int(after_id)
+    if header is not None:
+        return _parse_event_id(header)
+    if after_id is not None:
+        return _parse_event_id(after_id)
     return 0
 
 
@@ -49,7 +65,7 @@ def _format_sse(event: SSETaskEvent) -> str:
 
 async def _event_stream(
     *,
-    db: Any,
+    session_factory: _SessionFactory,
     user_id: int,
     task_id: int,
     cursor: int,
@@ -58,43 +74,77 @@ async def _event_stream(
 ) -> AsyncGenerator[str, None]:
     metrics.change_sse_connections(delta=1)
     try:
-        replay = query_task_events(db, user_id=user_id, task_id=task_id, after_id=cursor)
-        replay_count = sum(1 for ev in replay if ev.id > cursor)
-        metrics.record_sse_replay(count=replay_count)
-        for ev in replay:
-            if ev.id <= cursor:
-                continue
-            yield _format_sse(map_domain_event_to_sse(ev))
-            cursor = ev.id
-
+        replaying = True
+        replayed_any = False
         while True:
-            new = query_task_events(db, user_id=user_id, task_id=task_id, after_id=cursor)
-            for ev in new:
-                if ev.id <= cursor:
-                    continue
-                yield _format_sse(map_domain_event_to_sse(ev))
-                cursor = ev.id
+            page = await asyncio.to_thread(
+                _load_event_page,
+                session_factory,
+                user_id,
+                task_id,
+                cursor,
+            )
+            if page:
+                if replaying:
+                    metrics.record_sse_replay(count=len(page))
+                    replayed_any = True
+                for event in page:
+                    if event.event_id <= cursor:
+                        continue
+                    yield _format_sse(event)
+                    cursor = event.event_id
+                continue
+            if replaying:
+                if not replayed_any:
+                    metrics.record_sse_replay(count=0)
+                replaying = False
+            # No event list survives the poll boundary.
             yield ": ping\n\n"
             await asyncio.sleep(poll_interval)
     finally:
         metrics.change_sse_connections(delta=-1)
 
 
+def _load_event_page(
+    session_factory: _SessionFactory,
+    user_id: int,
+    task_id: int,
+    cursor: int,
+) -> list[SSETaskEvent]:
+    db = session_factory()
+    try:
+        events = query_task_events(
+            db,
+            user_id=user_id,
+            task_id=task_id,
+            after_id=cursor,
+            limit=_SSE_PAGE_SIZE,
+        )
+        return [map_domain_event_to_sse(event) for event in events]
+    finally:
+        db.rollback()
+        db.close()
+
+
 @router.get("/tasks/{task_id}")
-async def task_events(
+def task_events(
     task_id: int,
     request: Request,
     after_id: str | None = None,
     user: User = Depends(require_user),
     db: DbSession = Depends(get_db),
 ) -> StreamingResponse:
-    TaskRepository(db).get_owned(user.id, task_id)  # owner-safe 404
+    user_id = user.id
+    cursor = _parse_last_event_id(request, after_id)
+    TaskRepository(db).get_owned(user_id, task_id)  # owner-safe 404
+    stream_sessions = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+    db.rollback()
 
     stream = _event_stream(
-        db=db,
-        user_id=user.id,
+        session_factory=stream_sessions,
+        user_id=user_id,
         task_id=task_id,
-        cursor=_parse_last_event_id(request, after_id),
+        cursor=cursor,
         metrics=get_execution_metrics(),
     )
     return StreamingResponse(stream, media_type="text/event-stream")

@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+from typing import cast
+
 import pytest
 from app.api.events import map_domain_event_to_sse, query_task_events
 from app.api.routes.events import _event_stream, _parse_last_event_id
 from app.domain.models import DomainEvent
+from app.infra.db import Base
 from app.state.events import append_domain_event
+from fastapi import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy import event as sqlalchemy_event
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import QueuePool
 from starlette.requests import Request
 
 
@@ -343,6 +353,55 @@ def test_last_event_id_header_takes_precedence_over_query_cursor() -> None:
     assert _parse_last_event_id(request, "13") == 21
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "-1",
+        " 7",
+        "7 ",
+        "１",
+        "not-a-cursor",
+        "9" * 5_000,
+        str(2**63),
+    ],
+)
+def test_invalid_last_event_id_header_is_rejected_without_query_fallback(value: str) -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/events/tasks/1",
+            "headers": [(b"last-event-id", value.encode())],
+        }
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        _parse_last_event_id(request, "13")
+
+    assert raised.value.status_code == 400
+
+
+@pytest.mark.parametrize("value", ["-1", " 7", "１", "bad", "9" * 5_000, str(2**63)])
+def test_invalid_query_cursor_is_rejected(value: str) -> None:
+    request = Request(
+        {"type": "http", "method": "GET", "path": "/api/events/tasks/1", "headers": []}
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        _parse_last_event_id(request, value)
+
+    assert raised.value.status_code == 400
+
+
+def test_cursor_accepts_signed_bigint_boundaries() -> None:
+    request = Request(
+        {"type": "http", "method": "GET", "path": "/api/events/tasks/1", "headers": []}
+    )
+
+    assert _parse_last_event_id(request, "0") == 0
+    assert _parse_last_event_id(request, str(2**63 - 1)) == 2**63 - 1
+
+
 def test_replay_cursor_does_not_repeat_delivered_events(db, user) -> None:
     task_id = 23
     _seed_events(db, user.id, task_id)
@@ -375,8 +434,9 @@ async def test_sse_stream_decrements_connection_metric_when_closed(db, user) -> 
     task_id = 29
     _seed_events(db, user.id, task_id)
     metrics = _FakeStreamMetrics()
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
     stream = _event_stream(
-        db=db,
+        session_factory=factory,
         user_id=user.id,
         task_id=task_id,
         cursor=0,
@@ -390,3 +450,119 @@ async def test_sse_stream_decrements_connection_metric_when_closed(db, user) -> 
     assert "id:" in first
     assert metrics.replay_counts == [3]
     assert metrics.connection_deltas == [1, -1]
+
+
+def _seed_stream_history(factory, *, count: int, task_id: int = 41, user_id: int = 7) -> None:
+    session = factory()
+    try:
+        session.add_all(
+            [
+                DomainEvent(
+                    user_id=user_id,
+                    aggregate_type="task",
+                    aggregate_id=task_id,
+                    event_type="run.node_progress",
+                    aggregate_version=index,
+                    payload={"node_id": "n1", "attempt": 1, "state": "RUNNING"},
+                )
+                for index in range(1, count + 1)
+            ]
+        )
+        session.commit()
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_releases_small_pool_connections_between_yields(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'sse-pool.db'}",
+        connect_args={"check_same_thread": False},
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.1,
+    )
+    Base.metadata.create_all(engine)
+    pool = cast(QueuePool, engine.pool)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    _seed_stream_history(factory, count=2)
+    query_threads: list[int] = []
+
+    @sqlalchemy_event.listens_for(engine, "before_cursor_execute")
+    def _record_query_thread(*_args) -> None:
+        query_threads.append(threading.get_ident())
+
+    metrics_a = _FakeStreamMetrics()
+    metrics_b = _FakeStreamMetrics()
+    stream_a = _event_stream(
+        session_factory=factory,
+        user_id=7,
+        task_id=41,
+        cursor=0,
+        metrics=metrics_a,
+        poll_interval=0,
+    )
+    stream_b = _event_stream(
+        session_factory=factory,
+        user_id=7,
+        task_id=41,
+        cursor=0,
+        metrics=metrics_b,
+        poll_interval=0,
+    )
+    event_loop_thread = threading.get_ident()
+
+    try:
+        assert "id:" in await asyncio.wait_for(anext(stream_a), timeout=1)
+        assert pool.checkedout() == 0
+        assert "id:" in await asyncio.wait_for(anext(stream_b), timeout=1)
+        assert pool.checkedout() == 0
+        assert query_threads and all(thread_id != event_loop_thread for thread_id in query_threads)
+    finally:
+        await stream_a.aclose()
+        await stream_b.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sse_large_replay_uses_multiple_bounded_ordered_pages(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'sse-pages.db'}",
+        connect_args={"check_same_thread": False},
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+    )
+    Base.metadata.create_all(engine)
+    pool = cast(QueuePool, engine.pool)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    _seed_stream_history(factory, count=205)
+    selects: list[str] = []
+
+    @sqlalchemy_event.listens_for(engine, "before_cursor_execute")
+    def _capture_select(_conn, _cursor, statement, *_args) -> None:
+        if "domain_events" in statement and statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement.upper())
+
+    metrics = _FakeStreamMetrics()
+    stream = _event_stream(
+        session_factory=factory,
+        user_id=7,
+        task_id=41,
+        cursor=0,
+        metrics=metrics,
+        poll_interval=0,
+    )
+    delivered: list[int] = []
+    try:
+        for _ in range(201):
+            chunk = await asyncio.wait_for(anext(stream), timeout=1)
+            delivered.append(int(chunk.splitlines()[0].removeprefix("id: ")))
+            assert pool.checkedout() == 0
+    finally:
+        await stream.aclose()
+
+    assert delivered == list(range(1, 202))
+    assert len(selects) >= 2
+    assert all("LIMIT" in statement for statement in selects)
+    assert max(metrics.replay_counts) < 205

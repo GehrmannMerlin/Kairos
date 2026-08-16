@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from app.domain.models import NodeAttempt, NodeRun, PlanVersion, Run
+from app.domain.models import DomainEvent, NodeAttempt, NodeRun, PlanVersion, Run, URLResource
 from app.domain.repository import TaskRepository
 from fastapi.testclient import TestClient
 
@@ -276,3 +276,188 @@ def test_node_detail_prefers_persisted_node_attempt_facts(client: dict) -> None:
     execution = resp.json()["execution"]
     assert execution["last_status"] == "SUCCEEDED"
     assert execution["attempt_count"] == 2
+
+
+def test_dag_and_node_detail_use_latest_run_frozen_plan_and_run_scoped_facts(
+    client: dict,
+) -> None:
+    c, factory = client["client"], client["factory"]
+    alice = _register(c, "frozen-dag@example.com")["user"]
+    session = factory()
+    try:
+        task = TaskRepository(session).create(
+            user_id=alice["id"], title="frozen dag", task_type="directed"
+        )
+        session.flush()
+        plan_v1 = PlanVersion(
+            user_id=alice["id"],
+            task_id=task.id,
+            spec_version=1,
+            version=1,
+            validation_status="VALID",
+            plan_fingerprint="v1",
+            payload={
+                "graph": {
+                    "nodes": [
+                        {
+                            "node_id": "shared",
+                            "node_type": "fetch",
+                            "definition_version": "1.0.0",
+                            "parameters": {"generation": "v1"},
+                            "depends_on": [],
+                        }
+                    ],
+                    "edges": [],
+                }
+            },
+        )
+        plan_v2 = PlanVersion(
+            user_id=alice["id"],
+            task_id=task.id,
+            spec_version=2,
+            version=2,
+            validation_status="VALID",
+            plan_fingerprint="v2",
+            payload={
+                "graph": {
+                    "nodes": [
+                        {
+                            "node_id": "shared",
+                            "node_type": "validate",
+                            "definition_version": "2.0.0",
+                            "parameters": {"generation": "v2"},
+                            "depends_on": [],
+                        },
+                        {
+                            "node_id": "new-only",
+                            "node_type": "extract",
+                            "definition_version": "2.0.0",
+                            "parameters": {},
+                            "depends_on": ["shared"],
+                        },
+                    ],
+                    "edges": [{"from_node_id": "shared", "to_node_id": "new-only"}],
+                }
+            },
+        )
+        session.add_all([plan_v1, plan_v2])
+        session.flush()
+        old_run = Run(
+            user_id=alice["id"],
+            task_id=task.id,
+            spec_version=1,
+            plan_version=1,
+            state="COMPLETED",
+        )
+        current_run = Run(
+            user_id=alice["id"],
+            task_id=task.id,
+            spec_version=1,
+            plan_version=1,
+            state="RUNNING",
+        )
+        session.add_all([old_run, current_run])
+        session.flush()
+        node = NodeRun(
+            user_id=alice["id"],
+            task_id=task.id,
+            run_id=current_run.id,
+            node_id="shared",
+            node_type="fetch",
+            state="SUCCEEDED",
+            position=1,
+        )
+        session.add(node)
+        session.flush()
+        session.add(
+            NodeAttempt(
+                user_id=alice["id"],
+                node_run_id=node.id,
+                attempt=2,
+                status="SUCCEEDED",
+            )
+        )
+        session.add_all(
+            [
+                DomainEvent(
+                    user_id=alice["id"],
+                    aggregate_type="task",
+                    aggregate_id=task.id,
+                    event_type="discovery.expanded",
+                    aggregate_version=1,
+                    payload={"added": 8},
+                    run_id=old_run.id,
+                ),
+                DomainEvent(
+                    user_id=alice["id"],
+                    aggregate_type="task",
+                    aggregate_id=task.id,
+                    event_type="fetch.failed",
+                    aggregate_version=2,
+                    payload={
+                        "node_id": "shared",
+                        "node_type": "fetch",
+                        "tool": "old-run-tool",
+                        "attempt": 9,
+                        "state": "FAILED",
+                    },
+                    run_id=old_run.id,
+                ),
+                DomainEvent(
+                    user_id=alice["id"],
+                    aggregate_type="task",
+                    aggregate_id=task.id,
+                    event_type="fetch.completed",
+                    aggregate_version=3,
+                    payload={
+                        "node_id": "shared",
+                        "node_type": "fetch",
+                        "tool": "current-run-tool",
+                        "url_hash": "old-dag-0",
+                        "attempt": 2,
+                        "state": "SUCCEEDED",
+                    },
+                    run_id=current_run.id,
+                ),
+            ]
+        )
+        for index in range(3):
+            session.add(
+                URLResource(
+                    user_id=alice["id"],
+                    task_id=task.id,
+                    run_id=old_run.id,
+                    spec_version=1,
+                    url=f"https://old.example/{index}",
+                    url_hash=f"old-dag-{index}",
+                    status="FETCHED",
+                )
+            )
+        session.commit()
+        task_id = task.id
+    finally:
+        session.close()
+
+    dag_response = c.get(f"/api/tasks/{task_id}/execution/dag")
+    detail_response = c.get(f"/api/tasks/{task_id}/execution/nodes/shared")
+    new_only_response = c.get(f"/api/tasks/{task_id}/execution/nodes/new-only")
+
+    assert dag_response.status_code == 200, dag_response.text
+    dag = dag_response.json()
+    assert dag["plan_version"] == 1
+    assert [node["node_id"] for node in dag["nodes"]] == ["shared"]
+    assert dag["nodes"][0]["node_type"] == "fetch"
+    assert dag["nodes"][0]["execution"]["event_count"] == 1
+    assert dag["nodes"][0]["execution"]["tool"] == "current-run-tool"
+    assert dag["nodes"][0]["execution"]["url_fetched_count"] == 1
+    assert dag["stage_status"]["source_discovery"] == "not_started"
+
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()
+    assert detail["plan_version"] == 1
+    assert detail["node_type"] == "fetch"
+    assert detail["parameters_summary"] == {"generation": "v1"}
+    assert detail["execution"]["event_count"] == 1
+    assert detail["execution"]["tool"] == "current-run-tool"
+    assert detail["execution"]["url_fetched_count"] == 1
+    assert new_only_response.status_code == 404

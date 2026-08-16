@@ -182,15 +182,12 @@ class ExecutionService:
         )
         urls = self._repo.url_stats(user_id=user_id, task_id=task_id)
         records = self._repo.record_counts(user_id=user_id, task_id=task_id)
-        record_total = sum(records.values())
-        validated_record_count = self._repo.validated_record_count(
-            user_id=user_id,
-            task_id=task_id,
+        run_record_total = self._run_record_count(user_id=user_id, task_id=task_id, run=run)
+        run_validated_record_count = self._run_validated_record_count(
+            user_id=user_id, task_id=task_id, run=run
         )
 
-        all_events = self._repo.events_after(
-            user_id=user_id, task_id=task_id, after_id=0, limit=100_000
-        )
+        all_events = self._all_events(user_id=user_id, task_id=task_id)
         node_facts = self._node_facts(
             user_id=user_id,
             task_id=task_id,
@@ -203,24 +200,28 @@ class ExecutionService:
         successful_fact = self._latest_node_fact(
             [fact for fact in node_facts if fact[0].state in _SUCCESSFUL_NODE_STATES]
         )
+        run_events = self._run_events(all_events, run_id=run.id if run is not None else None)
+        run_urls = self._run_url_stats(
+            user_id=user_id,
+            task_id=task_id,
+            run=run,
+            run_events=run_events,
+        )
         terminal_event = next(
-            (
-                event
-                for event in reversed(all_events)
-                if run is not None
-                and event.run_id == run.id
-                and event.event_type in _RUN_TERMINAL_TYPES
-            ),
+            (event for event in reversed(run_events) if event.event_type in _RUN_TERMINAL_TYPES),
             None,
         )
         waiting_reason_code = self._waiting_reason(
-            node_facts,
-            all_events,
+            current_fact,
+            run_events,
             run_id=run.id if run is not None else None,
         )
         outcome_code = self._outcome_code(terminal_event)
+        legacy_execution_facts = run is not None and not node_facts
+        stage_urls = urls if legacy_execution_facts else run_urls
+        stage_record_total = sum(records.values()) if legacy_execution_facts else run_record_total
         stage_events: dict[StageKey, list[Any]] = {k: [] for k in _STAGE_ORDER}
-        for ev in all_events:
+        for ev in run_events:
             stage_events[self._stage(ev)].append(ev)
 
         run_state = run.state if run else None
@@ -228,15 +229,17 @@ class ExecutionService:
         for key in _STAGE_ORDER:
             evs = stage_events[key]
             state = self._stage_state(
-                key=key, stage_events=evs, all_events=all_events, run_state=run_state
+                key=key, stage_events=evs, all_events=run_events, run_state=run_state
             )
             error_count = sum(1 for ev in evs if "error" in self._classify(ev))
             url_processed = (
-                urls["fetched"] + urls["failed"]
+                stage_urls["fetched"] + stage_urls["failed"]
                 if key == StageKey.FETCH
-                else (urls["discovered"] if key == StageKey.SOURCE_DISCOVERY else 0)
+                else (stage_urls["discovered"] if key == StageKey.SOURCE_DISCOVERY else 0)
             )
-            record_count = record_total if key in (StageKey.EXTRACTION, StageKey.VALIDATION) else 0
+            record_count = (
+                stage_record_total if key in (StageKey.EXTRACTION, StageKey.VALIDATION) else 0
+            )
             stages.append(
                 StageSummary(
                     key=key,
@@ -276,17 +279,112 @@ class ExecutionService:
             ),
             current_node=self._node_summary(current_fact, labels),
             last_successful_node=self._node_summary(successful_fact, labels),
-            last_activity_at=self._last_activity(node_facts, all_events),
-            last_event_id=self._repo.max_event_id(user_id=user_id, task_id=task_id),
+            last_activity_at=self._last_activity(node_facts, run_events),
+            last_event_id=all_events[-1].id if all_events else 0,
             counts=ExecutionCounts(
-                discovered_pages=urls.get("discovered", 0),
-                fetched_pages=urls.get("fetched", 0),
-                extracted_records=record_total,
-                validated_records=validated_record_count,
+                discovered_pages=run_urls.get("discovered", 0),
+                fetched_pages=run_urls.get("fetched", 0),
+                extracted_records=run_record_total,
+                validated_records=run_validated_record_count,
             ),
             waiting_reason_code=waiting_reason_code,
             outcome_code=outcome_code,
-            legacy_execution_facts=run is not None and not node_facts,
+            legacy_execution_facts=legacy_execution_facts,
+        )
+
+    def _all_events(self, *, user_id: int, task_id: int) -> list[Any]:
+        """Read an ID-bounded snapshot in ordered pages."""
+        events: list[Any] = []
+        cursor = 0
+        through_id = self._repo.max_event_id(user_id=user_id, task_id=task_id)
+        while cursor < through_id:
+            page = self._repo.events_after(
+                user_id=user_id,
+                task_id=task_id,
+                after_id=cursor,
+                limit=_BATCH_SIZE,
+                through_id=through_id,
+            )
+            if not page:
+                return events
+            next_cursor = page[-1].id
+            if next_cursor <= cursor:
+                raise RuntimeError("execution event page did not advance cursor")
+            events.extend(page)
+            cursor = next_cursor
+        return events
+
+    @staticmethod
+    def _run_events(all_events: list[Any], *, run_id: int | None) -> list[Any]:
+        if run_id is None:
+            return all_events
+        return [event for event in all_events if event.run_id == run_id]
+
+    def _run_url_stats(
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        run: Any | None,
+        run_events: list[Any],
+    ) -> dict[str, int]:
+        if run is None:
+            return {"discovered": 0, "fetched": 0, "failed": 0, "pending": 0}
+        stats = self._repo.run_url_stats(
+            user_id=user_id,
+            task_id=task_id,
+            run_id=run.id,
+            spec_version=run.spec_version,
+        )
+        discovered_refs = self._repo.run_url_hashes(
+            user_id=user_id,
+            task_id=task_id,
+            run_id=run.id,
+            spec_version=run.spec_version,
+        )
+        fetched_refs: set[str] = set()
+        failed_refs: set[str] = set()
+        for event in run_events:
+            payload = event.payload or {}
+            raw_url_hash = payload.get("url_hash")
+            ref = str(raw_url_hash or f"event:{event.id}")
+            if raw_url_hash:
+                discovered_refs.add(ref)
+            if event.event_type == "fetch.completed":
+                fetched_refs.add(ref)
+                discovered_refs.add(ref)
+            elif event.event_type == "fetch.failed":
+                failed_refs.add(ref)
+                discovered_refs.add(ref)
+        fetched_from_events = len(fetched_refs)
+        failed_from_events = len(failed_refs - fetched_refs)
+        stats["fetched"] = max(stats["fetched"], fetched_from_events)
+        stats["failed"] = max(stats["failed"], failed_from_events)
+        stats["discovered"] = max(
+            stats["discovered"],
+            len(discovered_refs),
+        )
+        stats["pending"] = max(0, stats["discovered"] - stats["fetched"] - stats["failed"])
+        return stats
+
+    def _run_record_count(self, *, user_id: int, task_id: int, run: Any | None) -> int:
+        if run is None:
+            return 0
+        return self._repo.run_record_count_total(
+            user_id=user_id,
+            task_id=task_id,
+            run_id=run.id,
+            spec_version=run.spec_version,
+        )
+
+    def _run_validated_record_count(self, *, user_id: int, task_id: int, run: Any | None) -> int:
+        if run is None:
+            return 0
+        return self._repo.run_validated_record_count(
+            user_id=user_id,
+            task_id=task_id,
+            run_id=run.id,
+            spec_version=run.spec_version,
         )
 
     def _node_facts(
@@ -384,14 +482,16 @@ class ExecutionService:
 
     @staticmethod
     def _waiting_reason(
-        node_facts: list[tuple[Any, Any | None]],
+        current_fact: tuple[Any, Any | None] | None,
         all_events: list[Any],
         *,
         run_id: int | None,
     ) -> str | None:
-        for node, attempt in reversed(node_facts):
+        if current_fact is not None:
+            node, attempt = current_fact
             if node.state in _CURRENT_NODE_STATES and attempt is not None and attempt.error_code:
                 return str(attempt.error_code)
+            return None
         for event in reversed(all_events):
             payload = event.payload or {}
             if event.run_id == run_id and event.event_type in {
@@ -413,7 +513,16 @@ class ExecutionService:
 
     # ---- plan DAG + node detail ----
     def assemble_dag(self, *, user_id: int, task_id: int) -> DagView:
-        plan = self._repo.latest_plan(user_id=user_id, task_id=task_id)
+        run = self._repo.latest_run(user_id=user_id, task_id=task_id)
+        plan = (
+            self._repo.plan_version(
+                user_id=user_id,
+                task_id=task_id,
+                version=run.plan_version,
+            )
+            if run is not None
+            else self._repo.latest_plan(user_id=user_id, task_id=task_id)
+        )
         if plan is None:
             return DagView(
                 task_id=task_id,
@@ -425,12 +534,15 @@ class ExecutionService:
         graph = (plan.payload or {}).get("graph") or {}
         raw_nodes = graph.get("nodes") or []
         raw_edges = graph.get("edges") or []
-        all_events = self._repo.events_after(
-            user_id=user_id, task_id=task_id, after_id=0, limit=100_000
+        all_events = self._all_events(user_id=user_id, task_id=task_id)
+        run_events = self._run_events(all_events, run_id=run.id if run is not None else None)
+        urls = self._run_url_stats(
+            user_id=user_id,
+            task_id=task_id,
+            run=run,
+            run_events=run_events,
         )
-        run = self._repo.latest_run(user_id=user_id, task_id=task_id)
-        urls = self._repo.url_stats(user_id=user_id, task_id=task_id)
-        record_total = self._repo.record_count_total(user_id=user_id, task_id=task_id)
+        record_total = self._run_record_count(user_id=user_id, task_id=task_id, run=run)
         node_facts = {
             node.node_id: (node, attempt)
             for node, attempt in self._node_facts(
@@ -440,7 +552,7 @@ class ExecutionService:
             )
         }
         run_state = run.state if run else None
-        stage_status = {k.value: v for k, v in self._stage_state_map(all_events, run_state).items()}
+        stage_status = {k.value: v for k, v in self._stage_state_map(run_events, run_state).items()}
 
         nodes: list[DagNodeDto] = []
         for n in raw_nodes:
@@ -460,7 +572,8 @@ class ExecutionService:
                     execution=self._node_execution(
                         node_id=node_id,
                         node_type=node_type,
-                        all_events=all_events,
+                        run_id=run.id if run is not None else None,
+                        all_events=run_events,
                         urls=urls,
                         record_total=record_total,
                         node_fact=node_facts.get(node_id),
@@ -485,7 +598,16 @@ class ExecutionService:
         )
 
     def node_detail(self, *, user_id: int, task_id: int, node_id: str) -> NodeDetailDto:
-        plan = self._repo.latest_plan(user_id=user_id, task_id=task_id)
+        run = self._repo.latest_run(user_id=user_id, task_id=task_id)
+        plan = (
+            self._repo.plan_version(
+                user_id=user_id,
+                task_id=task_id,
+                version=run.plan_version,
+            )
+            if run is not None
+            else self._repo.latest_plan(user_id=user_id, task_id=task_id)
+        )
         if plan is None:
             raise NotFoundError("资源不存在")
         graph = (plan.payload or {}).get("graph") or {}
@@ -494,12 +616,15 @@ class ExecutionService:
         if node is None:
             raise NotFoundError("资源不存在")
         node_type = str(node.get("node_type") or "")
-        all_events = self._repo.events_after(
-            user_id=user_id, task_id=task_id, after_id=0, limit=100_000
+        all_events = self._all_events(user_id=user_id, task_id=task_id)
+        run_events = self._run_events(all_events, run_id=run.id if run is not None else None)
+        urls = self._run_url_stats(
+            user_id=user_id,
+            task_id=task_id,
+            run=run,
+            run_events=run_events,
         )
-        run = self._repo.latest_run(user_id=user_id, task_id=task_id)
-        urls = self._repo.url_stats(user_id=user_id, task_id=task_id)
-        record_total = self._repo.record_count_total(user_id=user_id, task_id=task_id)
+        record_total = self._run_record_count(user_id=user_id, task_id=task_id, run=run)
         node_facts = {
             persisted_node.node_id: (persisted_node, attempt)
             for persisted_node, attempt in self._node_facts(
@@ -534,7 +659,8 @@ class ExecutionService:
             execution=self._node_execution(
                 node_id=node_id,
                 node_type=node_type,
-                all_events=all_events,
+                run_id=run.id if run is not None else None,
+                all_events=run_events,
                 urls=urls,
                 record_total=record_total,
                 node_fact=node_facts.get(node_id),
@@ -567,6 +693,7 @@ class ExecutionService:
         *,
         node_id: str,
         node_type: str,
+        run_id: int | None,
         all_events: list[Any],
         urls: dict[str, int],
         record_total: int,
@@ -576,7 +703,9 @@ class ExecutionService:
         node_events = [
             ev
             for ev in all_events
-            if ev.payload and str(ev.payload.get("node_id") or "") == node_id
+            if ev.run_id == run_id
+            and ev.payload
+            and str(ev.payload.get("node_id") or "") == node_id
         ]
         persisted_node, persisted_attempt = node_fact or (None, None)
         last_status = persisted_node.state if persisted_node is not None else None
