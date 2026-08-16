@@ -114,6 +114,8 @@ def test_commit_checkpoint_reuses_same_batch(db, user, task) -> None:
         committed_refs={"n": 1},
         content_hash=None,
     )
+    assert isinstance(first, Checkpoint)
+    assert isinstance(second, Checkpoint)
     assert second.id == first.id  # 复用，不重复提交
 
     rows = db.query(Checkpoint).filter_by(run_id=run.id).all()
