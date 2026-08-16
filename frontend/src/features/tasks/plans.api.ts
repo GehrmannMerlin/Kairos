@@ -33,6 +33,7 @@ export interface PreflightIssueSummary {
   safe_message: string
   node_id?: string | null
   field?: string | null
+  remediation?: string | null
 }
 
 /** Plan 摘要（D-025 / D-055：Chat 内简洁摘要，不新增 /plan 页面）。 */

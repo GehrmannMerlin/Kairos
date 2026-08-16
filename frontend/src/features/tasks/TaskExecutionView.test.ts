@@ -44,14 +44,50 @@ vi.mock('@/features/execution/useExecution', () => ({
 
 const VIEW: ExecutionView = {
   task_id: 9,
-  run: { run_id: 1, state: 'RUNNING', started_at: null, finished_at: null, plan_version: 1, spec_version: 1 },
+  run: {
+    run_id: 1,
+    state: 'RUNNING',
+    started_at: null,
+    finished_at: null,
+    plan_version: 1,
+    spec_version: 1,
+  },
   stages: [
-    { key: 'goal_plan', label: '目标与计划', state: 'completed', event_count: 2, url_processed: 0, record_count: 0, error_count: 0 },
-    { key: 'fetch', label: '网页抓取', state: 'in_progress', event_count: 5, url_processed: 12, record_count: 0, error_count: 1 },
+    {
+      key: 'goal_plan',
+      label: '目标与计划',
+      state: 'completed',
+      event_count: 2,
+      url_processed: 0,
+      record_count: 0,
+      error_count: 0,
+    },
+    {
+      key: 'fetch',
+      label: '网页抓取',
+      state: 'in_progress',
+      event_count: 5,
+      url_processed: 12,
+      record_count: 0,
+      error_count: 1,
+    },
   ],
   urls: { discovered: 15, fetched: 12, failed: 1, pending: 2 },
   records: { passed: 3, needs_review: 1 },
   plan: { plan_version: 1, node_count: 3, validation_status: 'VALID' },
+  current_node: null,
+  last_successful_node: null,
+  last_activity_at: null,
+  last_event_id: 0,
+  counts: {
+    discovered_pages: 15,
+    fetched_pages: 12,
+    extracted_records: 4,
+    validated_records: 3,
+  },
+  waiting_reason_code: null,
+  outcome_code: null,
+  legacy_execution_facts: true,
 }
 
 const TIMELINE: TimelineEvent[] = [

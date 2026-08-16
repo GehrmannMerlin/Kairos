@@ -6,6 +6,7 @@ import { mapApiError } from '@/app/error/apiErrorMapper'
 import { openDrawer } from '@/app/overlay/drawer.store'
 import { openModal } from '@/app/overlay/modal.store'
 import { parseTaskQuery } from '@/app/router/deepLinks'
+import ExecutionProgressPanel from '@/features/execution/ExecutionProgressPanel.vue'
 import ChatComposer from '@/features/tasks/ChatComposer.vue'
 import ChatMessageList from '@/features/tasks/ChatMessageList.vue'
 import { getCompletion } from '@/features/artifacts/artifacts.api'
@@ -573,7 +574,19 @@ onUnmounted(() => {
       />
       <p v-if="planning" class="muted">正在生成执行计划…</p>
       <PlanSummaryCard v-if="planSummary" :summary="planSummary" />
-      <p v-if="planSummary?.run_state" class="muted">运行状态：{{ planSummary.run_state }}</p>
+      <ExecutionProgressPanel
+        v-if="planSummary?.run_id || planSummary?.preflight_status === 'BLOCKED'"
+        :task-id="taskId"
+      />
+      <ul v-if="planSummary?.preflight_issues?.length" class="plan-issues">
+        <li
+          v-for="issue in planSummary.preflight_issues"
+          :key="`${issue.code}-${issue.node_id ?? ''}`"
+        >
+          {{ issue.safe_message }}
+          <span v-if="issue.remediation"> · {{ issue.remediation }}</span>
+        </li>
+      </ul>
       <ul v-if="planSummary?.validator_issues.length" class="plan-issues">
         <li v-for="(issue, index) in planSummary.validator_issues" :key="`${issue.code}-${index}`">
           {{ issue.code }}<span v-if="issue.node_id"> · {{ issue.node_id }}</span>

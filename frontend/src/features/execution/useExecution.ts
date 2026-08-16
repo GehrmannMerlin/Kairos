@@ -23,6 +23,8 @@ export interface UseExecution {
   loadMore: () => Promise<void>
   setFilter: (category: TimelineCategory | '') => void
   toggleDag: () => void
+  refreshSnapshot: () => Promise<void>
+  mergeTimelineEvent: (event: TimelineEvent) => void
 }
 
 export function useExecution(taskId: Ref<string | number>): UseExecution {
@@ -110,6 +112,15 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
     }
   }
 
+  async function refreshSnapshot(): Promise<void> {
+    await Promise.all([loadOverview(), loadTimeline(null)])
+  }
+
+  function mergeTimelineEvent(event: TimelineEvent): void {
+    if (timeline.value.some((item) => item.event_id === event.event_id)) return
+    timeline.value = [...timeline.value, event].sort((a, b) => a.event_id - b.event_id)
+  }
+
   watch(
     taskId,
     () => {
@@ -138,5 +149,7 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
     loadMore,
     setFilter,
     toggleDag,
+    refreshSnapshot,
+    mergeTimelineEvent,
   }
 }
