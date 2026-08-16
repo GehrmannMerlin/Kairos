@@ -1231,3 +1231,16 @@
 - 原因：Production 曾出现同一输入两个并行 /understand 各产生一次 DeepSeek 调用，
   既造成重复计费，也让页面同时显示“成功 goal_result”与“网络请求失败或超时”。
 - 关联：D-003、D-033、D-066；M-05、M-06、M-07。
+
+## D-077：执行就绪、真实节点事实与可恢复进度使用同一权威链路
+
+- 状态：已确认
+- 日期：2026-08-16
+- 来源契约：`SPECIFIED_SOURCE` 只允许字面 URL；命名来源且允许搜索冻结为受范围约束的 `HYBRID`；命名来源、禁止搜索且无 URL 返回 `SOURCE_RESOLUTION_REQUIRED`，不得启动 Workflow。
+- 启动门禁：Plan `VALID` 只说明图结构合法；只有持久化 Execution Preflight `READY` 才允许创建/启动 Run。Preflight 冻结配置版本、队列、存储和 Production executor manifest 能力。
+- 执行能力：`generate_artifact` 必须由真实 executor 生成并持久化 Artifact；运行时 executor 缺失或存储失败是 `FAILED`，不得 checkpoint、继续或伪装为 partial。
+- 完成语义：零候选/零页面和有页面但零记录分别使用 `NO_MATCHING_PAGES` / `NO_MATCHING_RECORDS` 正常空结果；partial 必须存在非空已完成子集和真实访问/运行时/用户停止条件。
+- 可观测事实：NodeRun、NodeAttempt、Checkpoint 与 `run.*` DomainEvent 是权威事实。Execution snapshot 先恢复历史，SSE 只作增量提醒和刷新触发；Task Chat 展示节点、事实计数、上次活动和 typed outcome，不展示百分比或 Chain of Thought。
+- 安全边界：所有查询与 replay 均受 owner/task/run 约束；事件 payload 和指标使用显式 allowlist，禁止密钥、令牌、请求头、URL 高基数标签、异常正文和推理过程。
+- 已知边界：当前 SSE cursor 使用持久化 DomainEvent 标量 ID。PostgreSQL sequence 分配顺序不等于提交顺序，因此在不引入提交序列化或新的 durable commit-ordered cursor 前，不能数学上保证并发事务晚提交的小 ID 永不遗漏。本事故修复不以有损重放或平行事件系统掩盖该限制。
+- 当前证据状态：本地代码与定向测试完成；PR/CI、Staging、Production、浏览器、Temporal/数据库一致性及回滚证据尚未执行，状态只能是 `CODE_COMPLETE`。
