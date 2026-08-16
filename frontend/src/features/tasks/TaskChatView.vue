@@ -221,6 +221,13 @@ async function runPlanGeneration(): Promise<void> {
       return
     }
 
+    if (mapped.kind === 'execution_preflight_blocked') {
+      await refreshTaskMeta()
+      errorMsg.value = mapped.message
+      planAction.value = null
+      return
+    }
+
     if (
       mapped.kind === 'provider_timeout' ||
       mapped.kind === 'plan_generation_timeout' ||
@@ -265,6 +272,12 @@ async function retryPlanStart(): Promise<void> {
   } catch (err) {
     const mapped = mapApiError(err)
     if (disposed || mapped.kind === 'request_aborted') return
+    if (mapped.kind === 'execution_preflight_blocked') {
+      await refreshTaskMeta()
+      errorMsg.value = mapped.message
+      planAction.value = null
+      return
+    }
     errorMsg.value =
       mapped.kind === 'network'
         ? '启动结果暂未确认；可安全重试启动，请勿重新生成计划。'
