@@ -54,7 +54,7 @@ echo "==> validating compose config on server"
   || fail "compose config validation failed on server"
 
 echo "==> bringing up kairos-staging"
-"${SSH[@]}" "cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
+"${SSH[@]}" "set -o pipefail; cd ${SERVER_COMPOSE_DIR} && KAIROS_WEB_IMAGE=${WEB_IMAGE} \
     KAIROS_API_IMAGE=${API_IMAGE} KAIROS_WORKER_IMAGE=${WORKER_IMAGE} \
     docker compose -p kairos-staging -f compose.base.yml -f compose.staging.yml \
     --env-file /srv/kairos/env/staging.env up -d --wait 2>&1 | tail -25" \

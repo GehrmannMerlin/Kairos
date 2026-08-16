@@ -250,7 +250,7 @@ def _count_terminal(session, user_id: int, task_id: int, run_id: int, spec_versi
                 URLResource.task_id == task_id,
                 URLResource.run_id == run_id,
                 URLResource.spec_version == spec_version,
-                URLResource.status.in_(["HANDED_OFF", "SKIPPED", "FETCH_FAILED"]),
+                URLResource.status.in_(["FETCHED", "HANDED_OFF", "SKIPPED", "FETCH_FAILED"]),
             )
         ).scalar()
         or 0
