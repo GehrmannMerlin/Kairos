@@ -292,24 +292,28 @@ class TaskWorkflow:
                         ),
                         start_to_close_timeout=timedelta(seconds=30),
                     )
-                    await workflow.sleep(
-                        timedelta(seconds=float(refs.get("wait_seconds", 5.0)))
-                    )
+                    await workflow.sleep(timedelta(seconds=float(refs.get("wait_seconds", 5.0))))
                     continue  # 不推进 index，重取同一单元
-                if exec_result.status == "NODE_EXECUTOR_UNAVAILABLE":
-                    # 生产运行时 M-09+ 尚未实现该 Node Activity：稳定错误，不冒充能力（四十七）。
+                if exec_result.status in {"NODE_EXECUTOR_UNAVAILABLE", "FAILED"}:
+                    # Runtime executor failures are terminal. They must not be
+                    # checkpointed, advanced, blocked as approvals, or classified
+                    # as partial completion.
+                    error_code = exec_result.error_code or (
+                        "NODE_EXECUTOR_UNAVAILABLE"
+                        if exec_result.status == "NODE_EXECUTOR_UNAVAILABLE"
+                        else "EXECUTION_FAILED"
+                    )
                     await workflow.execute_activity(
-                        block_high_risk_node,
-                        BlockHighRiskNodeInput(
+                        fail_run,
+                        FailRunInput(
                             task_id=inp.task_id,
                             user_id=inp.user_id,
                             run_id=inp.run_id,
-                            node_id=unit.node_id,
+                            error_code=error_code,
                         ),
                         start_to_close_timeout=timedelta(seconds=60),
                     )
-                    self._last_index = unit.index
-                    continue
+                    return TaskWorkflowResult(inp.task_id, inp.run_id, "FAILED")
                 if exec_result.status == "WAITING_APPROVAL":
                     # M-09 robots override JIT 审批：executor 已创建 Approval（复用 M-08
                     # ApprovalService + outbox → approval_resolution Signal）。此处等待同一

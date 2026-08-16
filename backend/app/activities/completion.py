@@ -61,6 +61,8 @@ async def resolve_completion(inp: ResolveCompletionInput) -> ResolveCompletionRe
             partition_counts=counts,
             eligible_url_count=_count_eligible(session, inp.user_id, inp.task_id),
             terminal_url_count=_count_terminal(session, inp.user_id, inp.task_id),
+            fetched_page_count=_count_fetched(session, inp.user_id, inp.task_id),
+            record_count=_count_records(session, inp.user_id, inp.task_id),
             batch_unique_counts=[],
             qualified_record_count=qualified,
             runtime_limit_reason=None,
@@ -119,6 +121,36 @@ def _count_terminal(session, user_id: int, task_id: int) -> int:
                 URLResource.task_id == task_id,
                 URLResource.status.in_(["HANDED_OFF", "SKIPPED", "FETCH_FAILED"]),
             )
+        ).scalar()
+        or 0
+    )
+
+
+def _count_fetched(session, user_id: int, task_id: int) -> int:
+    from sqlalchemy import func, select
+
+    from app.domain.models import URLResource
+
+    return int(
+        session.execute(
+            select(func.count()).where(
+                URLResource.user_id == user_id,
+                URLResource.task_id == task_id,
+                URLResource.status.in_(["FETCHED", "HANDED_OFF"]),
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def _count_records(session, user_id: int, task_id: int) -> int:
+    from sqlalchemy import func, select
+
+    from app.domain.models import Record
+
+    return int(
+        session.execute(
+            select(func.count()).where(Record.user_id == user_id, Record.task_id == task_id)
         ).scalar()
         or 0
     )
