@@ -462,6 +462,18 @@ class TaskWorkflow:
             ),
             start_to_close_timeout=timedelta(seconds=60),
         )
+        if completion.status == "FAILED":
+            await workflow.execute_activity(
+                fail_run,
+                FailRunInput(
+                    task_id=inp.task_id,
+                    user_id=inp.user_id,
+                    run_id=inp.run_id,
+                    error_code=completion.failure_code or "EXECUTION_FAILED",
+                ),
+                start_to_close_timeout=timedelta(seconds=60),
+            )
+            return TaskWorkflowResult(inp.task_id, inp.run_id, "FAILED")
         if completion.partial:
             await workflow.execute_activity(
                 mark_partial,

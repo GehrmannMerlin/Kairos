@@ -29,6 +29,7 @@ class ResolveCompletionResult:
     completion_type: str | None
     qualified_record_count: int
     completion_id: int | None = None
+    failure_code: str | None = None
 
 
 @activity.defn
@@ -37,17 +38,21 @@ async def resolve_completion(inp: ResolveCompletionInput) -> ResolveCompletionRe
     try:
         from app.domain.models import Run
         from app.domain.repository import SpecVersionRepository
-        from app.validation.completion import CompletionDecisionService
+        from app.validation.completion import (
+            CompletionDecisionService,
+            CompletionIncompleteError,
+        )
         from app.validation.policies import ValidationSettings
         from app.validation.repository import ValidationRepository
 
         run = session.get(Run, inp.run_id)
         if run is None:
             return ResolveCompletionResult(
-                partial=True,
-                status="PARTIALLY_COMPLETED",
-                completion_type="access_limited",
+                partial=False,
+                status="FAILED",
+                completion_type=None,
                 qualified_record_count=0,
+                failure_code="RUN_NOT_FOUND",
             )
         spec = SpecVersionRepository(session).get_version(
             inp.user_id, inp.task_id, inp.spec_version
@@ -55,20 +60,30 @@ async def resolve_completion(inp: ResolveCompletionInput) -> ResolveCompletionRe
         repo = ValidationRepository(session)
         counts = repo.count_by_partition(user_id=inp.user_id, task_id=inp.task_id)
         qualified = counts.get("passed", 0)
-        decision = CompletionDecisionService().decide(
-            run=run,
-            spec_payload=spec.payload or {},
-            partition_counts=counts,
-            eligible_url_count=_count_eligible(session, inp.user_id, inp.task_id),
-            terminal_url_count=_count_terminal(session, inp.user_id, inp.task_id),
-            fetched_page_count=_count_fetched(session, inp.user_id, inp.task_id),
-            record_count=_count_records(session, inp.user_id, inp.task_id),
-            batch_unique_counts=[],
-            qualified_record_count=qualified,
-            runtime_limit_reason=None,
-            user_stopped=False,
-            settings=ValidationSettings(),
-        )
+        try:
+            decision = CompletionDecisionService().decide(
+                run=run,
+                spec_payload=spec.payload or {},
+                partition_counts=counts,
+                eligible_url_count=_count_eligible(session, inp.user_id, inp.task_id),
+                terminal_url_count=_count_terminal(session, inp.user_id, inp.task_id),
+                fetched_page_count=_count_fetched(session, inp.user_id, inp.task_id),
+                record_count=_count_records(session, inp.user_id, inp.task_id),
+                batch_unique_counts=[],
+                qualified_record_count=qualified,
+                runtime_limit_reason=None,
+                user_stopped=False,
+                settings=ValidationSettings(),
+                access_limited_reason=_access_limited_reason(session, inp.user_id, inp.task_id),
+            )
+        except CompletionIncompleteError as exc:
+            return ResolveCompletionResult(
+                partial=False,
+                status="FAILED",
+                completion_type=None,
+                qualified_record_count=qualified,
+                failure_code=exc.code,
+            )
         row = repo.create_completion(
             user_id=inp.user_id,
             task_id=inp.task_id,
@@ -154,6 +169,21 @@ def _count_records(session, user_id: int, task_id: int) -> int:
         ).scalar()
         or 0
     )
+
+
+def _access_limited_reason(session, user_id: int, task_id: int) -> str | None:
+    from sqlalchemy import select
+
+    from app.domain.models import URLResource
+
+    blocked = session.scalar(
+        select(URLResource.id).where(
+            URLResource.user_id == user_id,
+            URLResource.task_id == task_id,
+            URLResource.status.in_(["SKIPPED", "FETCH_FAILED"]),
+        )
+    )
+    return "access_limited" if blocked is not None else None
 
 
 __all__ = [

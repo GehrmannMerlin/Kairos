@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from app.validation.completion import CompletionDecisionService, SaturationTracker
+import pytest
+from app.validation.completion import (
+    CompletionDecisionService,
+    CompletionIncompleteError,
+    SaturationTracker,
+)
 from app.validation.policies import ValidationSettings
 
 
@@ -45,6 +50,7 @@ def test_directional_scope_incomplete_is_partial():
         runtime_limit_reason=None,
         user_stopped=False,
         settings=ValidationSettings(),
+        access_limited_reason="access_limited",
     )
     assert d.status == "PARTIALLY_COMPLETED"
     assert d.is_partial is True
@@ -110,6 +116,70 @@ def test_runtime_limit_without_completed_work_is_not_partial():
     assert d.is_partial is False
 
 
+@pytest.mark.parametrize("task_type", ["SPECIFIED_SOURCE", "EXPLORATORY", "HYBRID"])
+def test_incomplete_scope_without_completed_work_is_not_partial(task_type: str):
+    with pytest.raises(CompletionIncompleteError, match="INCOMPLETE_WITHOUT_COMPLETED_WORK"):
+        CompletionDecisionService().decide(
+            run=None,
+            spec_payload=_spec(task_type),
+            partition_counts={"passed": 0},
+            eligible_url_count=5,
+            terminal_url_count=0,
+            fetched_page_count=0,
+            record_count=0,
+            batch_unique_counts=[],
+            qualified_record_count=0,
+            runtime_limit_reason=None,
+            user_stopped=False,
+            settings=ValidationSettings(),
+        )
+
+
+@pytest.mark.parametrize("task_type", ["SPECIFIED_SOURCE", "EXPLORATORY", "HYBRID"])
+def test_incomplete_scope_without_an_explicit_stop_is_not_partial(task_type: str):
+    with pytest.raises(CompletionIncompleteError, match="INCOMPLETE_WITHOUT_COMPLETED_WORK"):
+        CompletionDecisionService().decide(
+            run=None,
+            spec_payload=_spec(task_type),
+            partition_counts={"passed": 0},
+            eligible_url_count=5,
+            terminal_url_count=0,
+            fetched_page_count=1,
+            record_count=0,
+            batch_unique_counts=[],
+            qualified_record_count=0,
+            runtime_limit_reason=None,
+            user_stopped=False,
+            settings=ValidationSettings(),
+        )
+
+
+@pytest.mark.parametrize("task_type", ["EXPLORATORY", "HYBRID"])
+def test_exploratory_completion_metadata_persists_real_counts(task_type: str):
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec(task_type, min_records=1),
+        partition_counts={"passed": 2},
+        eligible_url_count=5,
+        terminal_url_count=5,
+        fetched_page_count=5,
+        record_count=2,
+        batch_unique_counts=[0, 0, 0],
+        qualified_record_count=2,
+        runtime_limit_reason=None,
+        user_stopped=False,
+        settings=ValidationSettings(),
+    )
+    assert d.completion_type == "exploratory_saturation"
+    assert d.scope_completion_metadata == {
+        "eligible_urls": 5,
+        "terminal_urls": 5,
+        "fetched_pages": 5,
+        "records": 2,
+        "scope_complete": True,
+    }
+
+
 def test_exploratory_min_records_and_saturation_is_normal():
     d = CompletionDecisionService().decide(
         run=None,
@@ -144,6 +214,7 @@ def test_exploratory_not_saturated_is_partial():
         runtime_limit_reason=None,
         user_stopped=False,
         settings=ValidationSettings(),
+        access_limited_reason="access_limited",
     )
     assert d.status == "PARTIALLY_COMPLETED"
 
