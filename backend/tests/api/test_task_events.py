@@ -54,6 +54,87 @@ def test_sse_mapping() -> None:
     assert sse.payload["command"] == "mark_paused"
 
 
+@pytest.mark.parametrize(
+    ("domain_type", "sse_type"),
+    [
+        ("task.execution_preflight_blocked", "EXECUTION_PREFLIGHT_BLOCKED"),
+        ("discovery.candidates_found", "SOURCE_CANDIDATES_FOUND"),
+        ("discovery.expanded", "LINKS_DISCOVERED"),
+        ("run.started", "RUN_STARTED"),
+        ("run.node_started", "NODE_STARTED"),
+        ("run.node_progress", "NODE_PROGRESS"),
+        ("run.checkpoint_committed", "CHECKPOINT_COMMITTED"),
+        ("run.node_completed", "NODE_COMPLETED"),
+        ("run.node_blocked", "NODE_BLOCKED"),
+        ("run.node_failed", "NODE_FAILED"),
+        ("run.completed", "RUN_COMPLETED"),
+        ("run.partially_completed", "RUN_PARTIALLY_COMPLETED"),
+        ("run.failed", "RUN_FAILED"),
+        ("run.cancelled", "RUN_CANCELLED"),
+    ],
+)
+def test_all_canonical_execution_events_have_exact_sse_names(
+    domain_type: str, sse_type: str
+) -> None:
+    event = DomainEvent(
+        id=6,
+        user_id=1,
+        aggregate_type="task",
+        aggregate_id=9,
+        event_type=domain_type,
+        aggregate_version=1,
+        payload={},
+        actor_type="system",
+    )
+
+    assert map_domain_event_to_sse(event).event_type == sse_type
+
+
+@pytest.mark.parametrize(
+    ("domain_type", "sse_type"),
+    [
+        ("fetch.started", "FETCH_STARTED"),
+        ("fetch.strategy_selected", "FETCH_STRATEGY_SELECTED"),
+        ("fetch.escalated", "BROWSER_ESCALATION"),
+        ("fetch.credential_required", "CREDENTIAL_REQUIRED"),
+        ("fetch.completed", "FETCH_COMPLETED"),
+        ("fetch.failed", "FETCH_FAILED"),
+        ("extraction.started", "EXTRACTION_STARTED"),
+        ("extraction.progress", "EXTRACTION_PROGRESS"),
+        ("extraction.llm_fallback_used", "LLM_FALLBACK_USED"),
+        ("extraction.rule_promoted", "RULE_PROMOTED"),
+        ("extraction.completed", "EXTRACTION_COMPLETED"),
+        ("extraction.failed", "EXTRACTION_FAILED"),
+        ("normalize.completed", "NORMALIZE_COMPLETED"),
+        ("validation.started", "VALIDATION_STARTED"),
+        ("validation.progress", "VALIDATION_PROGRESS"),
+        ("validation.dedupe_completed", "DEDUPE_COMPLETED"),
+        ("validation.completed", "VALIDATION_COMPLETED"),
+        ("record.approved", "RECORD_APPROVED"),
+        ("record.rejected", "RECORD_REJECTED"),
+        ("record.edited", "RECORD_EDITED"),
+        ("record.reevaluate_requested", "RECORD_REEVALUATE_REQUESTED"),
+        ("record.approved_batch", "RECORD_APPROVED_BATCH"),
+        ("record.rejected_batch", "RECORD_REJECTED_BATCH"),
+    ],
+)
+def test_existing_execution_event_sse_names_remain_compatible(
+    domain_type: str, sse_type: str
+) -> None:
+    event = DomainEvent(
+        id=7,
+        user_id=1,
+        aggregate_type="task",
+        aggregate_id=9,
+        event_type=domain_type,
+        aggregate_version=1,
+        payload={},
+        actor_type="system",
+    )
+
+    assert map_domain_event_to_sse(event).event_type == sse_type
+
+
 def test_cross_user_isolation(db, user, user2) -> None:
     task_id = 11
     _seed_events(db, user.id, task_id)
@@ -137,6 +218,116 @@ def test_sse_payload_is_projected_from_explicit_allowlist() -> None:
         "reason_code": "NETWORK_TIMEOUT",
         "safe_message": "network request timed out",
     }
+
+
+def test_sse_payload_recursively_projects_structured_fields() -> None:
+    event = DomainEvent(
+        id=19,
+        user_id=1,
+        aggregate_type="task",
+        aggregate_id=9,
+        event_type="discovery.candidates_found",
+        aggregate_version=1,
+        payload={
+            "candidate_sites": 2,
+            "candidates": [
+                {
+                    "candidate_id": 31,
+                    "rank": 1,
+                    "score": 0.98,
+                    "counts": {"discovered": 4, "token": "nested-secret"},
+                    "evidence_refs": [71, "72", {"id": 73, "url": "https://secret"}],
+                    "url": "https://private.example/path",
+                    "authorization": {"Bearer": "secret-token"},
+                    "chain_of_thought": ["hidden reasoning"],
+                },
+                [
+                    {"candidate_id": 99, "credential": "deep-secret"},
+                    {"header": "Authorization: secret"},
+                ],
+            ],
+            "evidence_refs": [7, "8", {"id": 9, "secret": "must-not-escape"}],
+        },
+        actor_type="system",
+    )
+
+    mapped = map_domain_event_to_sse(event)
+
+    assert mapped.payload == {
+        "candidate_sites": 2,
+        "candidates": [
+            {
+                "candidate_id": 31,
+                "rank": 1,
+                "score": 0.98,
+                "counts": {"discovered": 4},
+                "evidence_refs": [71, 72, 73],
+            }
+        ],
+        "evidence_refs": [7, 8, 9],
+    }
+    serialized = mapped.model_dump_json()
+    for forbidden in (
+        "private.example",
+        "secret-token",
+        "deep-secret",
+        "Authorization",
+        "hidden reasoning",
+    ):
+        assert forbidden not in serialized
+
+
+def test_discovery_expanded_preserves_typed_numeric_producer_facts() -> None:
+    event = DomainEvent(
+        id=20,
+        user_id=1,
+        aggregate_type="task",
+        aggregate_id=9,
+        event_type="discovery.expanded",
+        aggregate_version=1,
+        payload={
+            "seeds": 3,
+            "added": 19,
+            "blocked": 4,
+            "cross_domain_hints": 2,
+            "query": "must-not-be-added-by-accident",
+        },
+        actor_type="system",
+    )
+
+    mapped = map_domain_event_to_sse(event)
+
+    assert mapped.event_type == "LINKS_DISCOVERED"
+    assert mapped.payload == {
+        "seeds": 3,
+        "added": 19,
+        "blocked": 4,
+        "cross_domain_hints": 2,
+    }
+
+
+def test_sse_projection_drops_oversized_or_malformed_nested_ids() -> None:
+    event = DomainEvent(
+        id=21,
+        user_id=1,
+        aggregate_type="task",
+        aggregate_id=9,
+        event_type="run.node_completed",
+        aggregate_version=1,
+        payload={
+            "evidence_refs": [
+                7,
+                "9" * 10_000,
+                "not-an-id",
+                {"id": "8", "token": "nested-secret"},
+            ]
+        },
+        actor_type="system",
+    )
+
+    mapped = map_domain_event_to_sse(event)
+
+    assert mapped.payload == {"evidence_refs": [7, 8]}
 
 
 def test_last_event_id_header_takes_precedence_over_query_cursor() -> None:
