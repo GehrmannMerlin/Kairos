@@ -13,6 +13,7 @@ Candidate Sites（保留 query/provider/rank/result URL 证据）并写入 Front
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from sqlalchemy import select
 
@@ -40,6 +41,12 @@ class SourceSearchError(DiscoveryError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True)
+class NamedSourceResolution:
+    is_named_source_only: bool
+    source_hint: str | None
 
 
 def merge_into_candidate_sites(results: list[SearchResult]) -> list[CandidateSite]:
@@ -171,7 +178,7 @@ class SearchService:
         except NotFoundError as exc:
             raise SourceSearchError(FROZEN_CONFIG_UNAVAILABLE, "冻结的搜索服务配置不可用") from exc
 
-    def _named_source_hint(self, run) -> str | None:
+    def _named_source_resolution(self, run) -> NamedSourceResolution:
         from app.domain.repository import SpecVersionRepository
 
         spec = SpecVersionRepository(self._db).get_version(
@@ -179,10 +186,11 @@ class SearchService:
         )
         source_scope = (spec.payload or {}).get("source_scope") or {}
         if source_scope.get("resolution_scope") != "NAMED_SOURCE_ONLY":
-            return None
-        return next(
+            return NamedSourceResolution(is_named_source_only=False, source_hint=None)
+        source_hint = next(
             (hint for hint in source_scope.get("source_hints", []) if str(hint).strip()), None
         )
+        return NamedSourceResolution(is_named_source_only=True, source_hint=source_hint)
 
     def _build_provider(self, provider_type: str):
         if self._provider_builder is not None:
@@ -249,7 +257,9 @@ class SearchService:
             error_class_fn=classify_provider_error,
             base_delay_seconds=self._retry_base_delay,
         )
-        results = filter_named_source_results(results, self._named_source_hint(run))
+        source_resolution = self._named_source_resolution(run)
+        if source_resolution.is_named_source_only:
+            results = filter_named_source_results(results, source_resolution.source_hint or "")
         sites = merge_into_candidate_sites(results)
         frontier = UrlFrontierRepository(self._db)
         hashes: list[str] = []

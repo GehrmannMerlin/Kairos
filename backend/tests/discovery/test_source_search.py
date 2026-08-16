@@ -70,7 +70,10 @@ class _SearchVault:
 
 
 def _frozen_search_case(
-    tmp_path, *, source_hint: str = "山东省人民政府官网"
+    tmp_path,
+    *,
+    source_hint: str = "山东省人民政府官网",
+    source_hints: list[str] | None = None,
 ) -> tuple[Session, User, Run, SearchConfig, SearchConfig]:
     engine = create_engine(
         f"sqlite:///{tmp_path / 'source-search.db'}", connect_args={"check_same_thread": False}
@@ -91,7 +94,7 @@ def _frozen_search_case(
                 "source_scope": {
                     "mode": TaskType.HYBRID.value,
                     "seed_urls": [],
-                    "source_hints": [source_hint],
+                    "source_hints": [source_hint] if source_hints is None else source_hints,
                     "resolution_scope": "NAMED_SOURCE_ONLY",
                 },
             },
@@ -323,6 +326,43 @@ async def test_named_source_search_with_empty_normalized_hint_admits_no_candidat
 ) -> None:
     """Would fail if an empty approved hint admitted every search result."""
     db, _, run, _, _ = _frozen_search_case(tmp_path, source_hint=source_hint)
+    provider = _SearchProvider(
+        [
+            SearchResult(
+                url="https://commercial.example.test/ad",
+                title="商业推广",
+                snippet="无关结果",
+                provider="frozen-provider",
+                rank=1,
+                query="山东政府",
+            )
+        ]
+    )
+    service = SearchService(db, vault=_SearchVault(), provider_builder=lambda _: provider)
+
+    result = await service.execute(
+        ExecutionUnit(
+            run_id=run.id,
+            index=1,
+            unit_type="node",
+            input_fingerprint="search-test",
+            node_id="search-1",
+            node_type="source_search",
+            parameters={"query": "山东政府"},
+        )
+    )
+
+    assert result.committed_refs["candidate_sites"] == 0
+    assert list(select_urls(db, run.task_id)) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_hints", [[], [" ", "\t"]])
+async def test_named_source_search_without_usable_hint_admits_no_candidates(
+    tmp_path, source_hints: list[str]
+) -> None:
+    """Would fail if malformed named-source scope were treated as EXPLORATORY."""
+    db, _, run, _, _ = _frozen_search_case(tmp_path, source_hints=source_hints)
     provider = _SearchProvider(
         [
             SearchResult(
