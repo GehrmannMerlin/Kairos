@@ -6,8 +6,9 @@ from collections.abc import Sequence
 from enum import StrEnum
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import SessionTransaction
 
 from app.auth.errors import NotFoundError
 from app.config import Settings
@@ -25,6 +26,9 @@ from app.plan.nodes import NodeType
 from app.plan.preflight_repository import ExecutionPreflightRepository
 from app.providers.repository import SearchConfigRepository
 from app.reliability.pools import WorkerRole, parse_worker_roles
+
+_PENDING_METRICS_KEY = "execution_preflight_pending_metrics"
+_METRIC_LISTENERS_KEY = "execution_preflight_metric_listeners"
 
 
 class ExecutionPreflightStatus(StrEnum):
@@ -154,10 +158,8 @@ class ExecutionPreflightService:
         )
         row, created = self._repository.get_or_create(outcome)
         persisted = self._outcome_from_persisted_result(row, created=created)
-        get_execution_metrics().record_preflight(
-            status=persisted.status.value,
-            issue_codes=persisted.issue_codes,
-        )
+        if created:
+            _record_preflight_after_commit(self._db, persisted)
         return persisted
 
     @staticmethod
@@ -330,3 +332,58 @@ class ExecutionPreflightService:
             node_id=node_id,
             field=field,
         )
+
+
+def _record_preflight_after_commit(db: DbSession, outcome: ExecutionPreflightOutcome) -> None:
+    """Defer the metric until the caller's owning transaction is durable."""
+    if not db.info.get(_METRIC_LISTENERS_KEY):
+        event.listen(db, "after_commit", _flush_committed_preflight_metrics)
+        event.listen(db, "after_rollback", _discard_rolled_back_preflight_metrics)
+        event.listen(db, "after_soft_rollback", _discard_soft_rolled_back_preflight_metrics)
+        event.listen(db, "after_transaction_end", _discard_closed_transaction_metrics)
+        db.info[_METRIC_LISTENERS_KEY] = True
+    owner = db.get_nested_transaction() or db.get_transaction()
+    if owner is None:
+        raise RuntimeError("preflight metric scheduled without an owning transaction")
+    pending = db.info.setdefault(_PENDING_METRICS_KEY, [])
+    pending.append((owner, outcome.status.value, tuple(outcome.issue_codes)))
+
+
+def _flush_committed_preflight_metrics(db: DbSession) -> None:
+    # A repository savepoint also emits after_commit; only the outer transaction
+    # makes the preflight fact durable.
+    if db.in_nested_transaction():
+        return
+    pending = db.info.pop(_PENDING_METRICS_KEY, [])
+    metrics = get_execution_metrics()
+    for _owner, status, issue_codes in pending:
+        metrics.record_preflight(status=status, issue_codes=issue_codes)
+
+
+def _discard_rolled_back_preflight_metrics(db: DbSession) -> None:
+    if not db.in_nested_transaction():
+        db.info.pop(_PENDING_METRICS_KEY, None)
+
+
+def _discard_soft_rolled_back_preflight_metrics(
+    db: DbSession, transaction: SessionTransaction
+) -> None:
+    pending = db.info.get(_PENDING_METRICS_KEY, [])
+    db.info[_PENDING_METRICS_KEY] = [
+        entry for entry in pending if not _transaction_descends_from(entry[0], transaction)
+    ]
+
+
+def _discard_closed_transaction_metrics(db: DbSession, transaction: SessionTransaction) -> None:
+    # Session.close() ends an outer transaction without after_rollback.
+    if transaction.parent is None:
+        db.info.pop(_PENDING_METRICS_KEY, None)
+
+
+def _transaction_descends_from(owner: SessionTransaction, ancestor: SessionTransaction) -> bool:
+    current: SessionTransaction | None = owner
+    while current is not None:
+        if current is ancestor:
+            return True
+        current = current.parent
+    return False

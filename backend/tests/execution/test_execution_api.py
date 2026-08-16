@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from app.auth.repository import UserRepository
 from app.domain.models import DomainEvent, NodeAttempt, NodeRun, PlanVersion, Record, URLResource
 from app.domain.repository import TaskRepository
 from fastapi.testclient import TestClient
@@ -283,8 +284,10 @@ def test_execution_snapshot_uses_node_facts(client: dict) -> None:
             payload={
                 "graph": {
                     "nodes": [
+                        {"node_id": "n1", "node_type": "source_search", "label": "Search"},
                         {"node_id": "n2", "node_type": "extract", "label": "Extract"},
                         {"node_id": "n3", "node_type": "fetch", "label": "Fetch"},
+                        {"node_id": "n4", "node_type": "validate", "label": "Validate"},
                     ]
                 }
             },
@@ -318,20 +321,49 @@ def test_execution_snapshot_uses_node_facts(client: dict) -> None:
             started_at=started_at - timedelta(minutes=2),
             finished_at=started_at - timedelta(minutes=1),
         )
+        older_current = NodeRun(
+            user_id=alice["id"],
+            task_id=task_id,
+            run_id=run_id,
+            node_id="n1",
+            node_type="source_search",
+            state="RUNNING",
+            position=1,
+            started_at=started_at - timedelta(minutes=5),
+        )
         current = NodeRun(
             user_id=alice["id"],
             task_id=task_id,
             run_id=run_id,
             node_id="n3",
             node_type="fetch",
-            state="RUNNING",
+            state="BLOCKED",
             position=3,
             started_at=started_at,
         )
-        session.add_all([completed, current])
+        latest_completed = NodeRun(
+            user_id=alice["id"],
+            task_id=task_id,
+            run_id=run_id,
+            node_id="n4",
+            node_type="validate",
+            state="SUCCEEDED",
+            position=4,
+            started_at=started_at - timedelta(seconds=50),
+            finished_at=started_at - timedelta(seconds=10),
+        )
+        session.add_all([older_current, completed, current, latest_completed])
         session.flush()
+        decoy_owner = UserRepository(session).create("snapshot-decoy@example.com", "hash", None)
         session.add_all(
             [
+                NodeAttempt(
+                    user_id=alice["id"],
+                    node_run_id=older_current.id,
+                    attempt=1,
+                    status="RUNNING",
+                    started_at=older_current.started_at,
+                ),
                 NodeAttempt(
                     user_id=alice["id"],
                     node_run_id=completed.id,
@@ -343,9 +375,46 @@ def test_execution_snapshot_uses_node_facts(client: dict) -> None:
                 NodeAttempt(
                     user_id=alice["id"],
                     node_run_id=current.id,
+                    attempt=1,
+                    status="FAILED",
+                    error_code="OLDER_FAILURE",
+                    started_at=started_at - timedelta(seconds=30),
+                    finished_at=started_at - timedelta(seconds=20),
+                ),
+                NodeAttempt(
+                    user_id=alice["id"],
+                    node_run_id=current.id,
                     attempt=2,
-                    status="RUNNING",
+                    status="BLOCKED",
+                    error_code="RESOURCE_UNAVAILABLE",
+                    error_summary="resource capacity is unavailable",
                     started_at=started_at,
+                ),
+                NodeAttempt(
+                    user_id=decoy_owner.id,
+                    node_run_id=current.id,
+                    attempt=99,
+                    status="FAILED",
+                    error_code="CROSS_OWNER_SECRET",
+                    error_summary="must not select cross-owner attempt",
+                    started_at=started_at + timedelta(days=1),
+                    finished_at=started_at + timedelta(days=1, seconds=1),
+                ),
+                NodeAttempt(
+                    user_id=alice["id"],
+                    node_run_id=latest_completed.id,
+                    attempt=1,
+                    status="FAILED",
+                    started_at=started_at - timedelta(seconds=50),
+                    finished_at=started_at - timedelta(seconds=40),
+                ),
+                NodeAttempt(
+                    user_id=alice["id"],
+                    node_run_id=latest_completed.id,
+                    attempt=2,
+                    status="SUCCEEDED",
+                    started_at=started_at - timedelta(seconds=30),
+                    finished_at=latest_completed.finished_at,
                 ),
             ]
         )
@@ -407,6 +476,18 @@ def test_execution_snapshot_uses_node_facts(client: dict) -> None:
                 occurred_at=started_at - timedelta(seconds=1),
             )
         )
+        session.add(
+            DomainEvent(
+                user_id=alice["id"],
+                aggregate_type="task",
+                aggregate_id=task_id,
+                event_type="run.failed",
+                aggregate_version=2,
+                payload={"outcome_code": "CURRENT_RUN_LIMIT"},
+                run_id=run_id,
+                occurred_at=started_at - timedelta(milliseconds=500),
+            )
+        )
         session.commit()
         last_event_id = session.query(DomainEvent.id).order_by(DomainEvent.id.desc()).first()[0]
     finally:
@@ -420,11 +501,18 @@ def test_execution_snapshot_uses_node_facts(client: dict) -> None:
         "node_id": "n3",
         "node_type": "fetch",
         "label": "Fetch",
-        "state": "RUNNING",
+        "state": "BLOCKED",
+        "attempt": 2,
+        "safe_message": "resource capacity is unavailable",
+    }
+    assert body["last_successful_node"] == {
+        "node_id": "n4",
+        "node_type": "validate",
+        "label": "Validate",
+        "state": "SUCCEEDED",
         "attempt": 2,
         "safe_message": None,
     }
-    assert body["last_successful_node"]["node_id"] == "n2"
     assert body["last_event_id"] == last_event_id
     response_activity_at = datetime.fromisoformat(body["last_activity_at"])
     if response_activity_at.tzinfo is None:
@@ -434,7 +522,8 @@ def test_execution_snapshot_uses_node_facts(client: dict) -> None:
     assert body["counts"]["fetched_pages"] == 4
     assert body["counts"]["extracted_records"] == 2
     assert body["counts"]["validated_records"] == 1
-    assert body["outcome_code"] is None
+    assert body["waiting_reason_code"] == "RESOURCE_UNAVAILABLE"
+    assert body["outcome_code"] == "CURRENT_RUN_LIMIT"
     assert body["legacy_execution_facts"] is False
 
 

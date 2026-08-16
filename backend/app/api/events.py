@@ -7,7 +7,7 @@ SSE 不是业务状态源；只推送用户重要事件（D-039）。cursor = do
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeGuard
 
 from pydantic import BaseModel
 from sqlalchemy import and_, or_, select
@@ -104,6 +104,10 @@ _PAYLOAD_FIELDS = frozenset(
         "timestamps",
         "candidate_sites",
         "candidates",
+        "seeds",
+        "added",
+        "blocked",
+        "cross_domain_hints",
         "discovered_count",
         "expanded_count",
         "provider",
@@ -154,6 +158,49 @@ _COUNT_FIELDS = frozenset(
         "rejected",
     }
 )
+_INTEGER_FIELDS = frozenset(
+    {
+        "schema_version",
+        "task_id",
+        "run_id",
+        "spec_version",
+        "plan_version",
+        "attempt",
+        "checkpoint_id",
+        "seed_count",
+        "candidate_sites",
+        "seeds",
+        "added",
+        "blocked",
+        "cross_domain_hints",
+        "discovered_count",
+        "expanded_count",
+        "retry_count",
+        "tokens_in",
+        "tokens_out",
+        "duration_ms",
+        "data_version",
+        "record_id",
+        "success_count",
+        "failure_count",
+        "approval_id",
+        "snapshot_id",
+    }
+)
+_STRING_FIELDS = _PAYLOAD_FIELDS.difference(
+    _INTEGER_FIELDS
+    | {
+        "counts",
+        "timestamps",
+        "candidates",
+        "record_ids",
+        "evidence_refs",
+    }
+)
+_CANDIDATE_ID_FIELDS = frozenset({"candidate_id", "site_id"})
+_CANDIDATE_INTEGER_FIELDS = frozenset({"rank"})
+_CANDIDATE_NUMBER_FIELDS = frozenset({"score"})
+_MAX_DATABASE_ID = 2**63 - 1
 
 
 class SSETaskEvent(BaseModel):
@@ -217,11 +264,102 @@ def _project_payload(payload: Any) -> dict[str, Any]:
         value = payload[key]
         if key == "timestamps":
             if isinstance(value, dict):
-                projected[key] = {k: value[k] for k in _TIMESTAMP_FIELDS if k in value}
+                timestamps = {
+                    name: value[name]
+                    for name in _TIMESTAMP_FIELDS
+                    if isinstance(value.get(name), str)
+                }
+                if timestamps:
+                    projected[key] = timestamps
             continue
         if key == "counts":
-            if isinstance(value, dict):
-                projected[key] = {k: value[k] for k in _COUNT_FIELDS if k in value}
+            counts = _project_counts(value)
+            if counts:
+                projected[key] = counts
             continue
-        projected[key] = value
+        if key == "candidates":
+            candidates = _project_candidates(value)
+            if candidates is not None:
+                projected[key] = candidates
+            continue
+        if key in {"record_ids", "evidence_refs"}:
+            ids = _project_ids(value, allow_objects=key == "evidence_refs")
+            if ids:
+                projected[key] = ids
+            continue
+        if key in _INTEGER_FIELDS and _is_int(value):
+            projected[key] = value
+            continue
+        if key in _STRING_FIELDS and isinstance(value, str):
+            projected[key] = value
+    return projected
+
+
+def _is_int(value: Any) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _project_counts(value: Any) -> dict[str, int | float]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        name: value[name] for name in _COUNT_FIELDS if name in value and _is_number(value[name])
+    }
+
+
+def _project_ids(value: Any, *, allow_objects: bool) -> list[int]:
+    if not isinstance(value, list):
+        value = [value]
+    projected: list[int] = []
+    for item in value:
+        candidate = item.get("id") if allow_objects and isinstance(item, dict) else item
+        projected_id = _project_id(candidate)
+        if projected_id is not None:
+            projected.append(projected_id)
+    return projected
+
+
+def _project_id(value: Any) -> int | None:
+    if _is_int(value):
+        return value if 0 <= value <= _MAX_DATABASE_ID else None
+    if isinstance(value, str) and value.isascii() and 0 < len(value) <= 19 and value.isdecimal():
+        candidate = int(value)
+        return candidate if candidate <= _MAX_DATABASE_ID else None
+    return None
+
+
+def _project_candidates(value: Any) -> int | list[dict[str, Any]] | None:
+    # Existing discovery events store an aggregate integer. Structured future
+    # payloads expose only numeric discovery facts and typed evidence identities.
+    if _is_int(value):
+        return value
+    if not isinstance(value, list):
+        return None
+    projected: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        candidate: dict[str, Any] = {}
+        for name in _CANDIDATE_ID_FIELDS:
+            candidate_id = _project_id(item.get(name))
+            if candidate_id is not None:
+                candidate[name] = candidate_id
+        for name in _CANDIDATE_INTEGER_FIELDS:
+            if _is_int(item.get(name)):
+                candidate[name] = item[name]
+        for name in _CANDIDATE_NUMBER_FIELDS:
+            if _is_number(item.get(name)):
+                candidate[name] = item[name]
+        counts = _project_counts(item.get("counts"))
+        if counts:
+            candidate["counts"] = counts
+        evidence_refs = _project_ids(item.get("evidence_refs"), allow_objects=True)
+        if evidence_refs:
+            candidate["evidence_refs"] = evidence_refs
+        if candidate:
+            projected.append(candidate)
     return projected
