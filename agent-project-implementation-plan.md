@@ -1368,3 +1368,14 @@ worker-* 通过内网访问 PostgreSQL/Temporal/Object Storage
 - 微服务思想通过部署角色和领域边界体现，但保持 Monorepo、统一领域模型和有限服务数量。
 - 第一次服务器 Staging 在 M-04 后开始，之后每 3～4 个模块强制重新部署和验收。
 - 只有 M-18 Production Release 完成并通过 Smoke Test、回滚与备份门禁，项目第一版才视为真正完成。
+
+## 2026-08-16 Execution Readiness Incident 实施证据
+
+- M-06/M-08：来源契约、Plan source invariant 与 `VALID` / Preflight `READY` 双门禁已实现并有定向测试。
+- M-07/M-16：Workflow 启动统一经过持久化 preflight；NodeRun、NodeAttempt、Checkpoint、DomainEvent 与终态 CAS 已实现。
+- M-09/M-10/M-11/M-12：冻结搜索配置、命名来源约束、真实 Artifact executor、失败优先与互斥完成语义已实现。
+- M-14：owner-scoped Execution snapshot、timeline、规范 SSE、安全 payload 和 Task Chat 进度面板已实现；前端以 snapshot 为事实源，SSE 负责增量刷新与重连 reconcile。
+- M-15：Artifact executor 真实写入对象存储，并把存储失败映射为 typed runtime failure。
+- M-17：低基数执行指标与关键 invariant 记录已接入；完整 Staging 可观测性验收仍待发布门禁。
+- M-18：**未完成**。当前状态为 `CODE_COMPLETE`，不得标记 Staging/Production 已验证。PR、CI、不可变 GHCR digest、release manifest、备份、迁移、浏览器、Temporal/数据库一致性和回滚证据必须在实际发布时补齐。
+- 用户于 2026-08-16 指示简化后续门禁：停止反复扩展边界审查，只保留事故主链定向测试、类型/静态检查与一次核心烟雾验收；不得因此降低发布证据的真实性要求。
