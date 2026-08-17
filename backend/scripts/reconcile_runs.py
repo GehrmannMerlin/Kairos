@@ -29,15 +29,17 @@ from app.reconciliation.service import (  # noqa: E402
 
 
 async def _workflow_status_fn(client):
-    from temporalio.client import WorkflowNotFoundError
+    from temporalio.service import RPCError, RPCStatusCode
 
     async def get_status(workflow_id: str) -> str | None:
         try:
             handle = client.get_workflow_handle(workflow_id)
             description = await handle.describe()
             return description.status.name
-        except WorkflowNotFoundError:
-            return None
+        except RPCError as exc:
+            if exc.status == RPCStatusCode.NOT_FOUND:
+                return None
+            raise
 
     return get_status
 
