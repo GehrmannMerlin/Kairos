@@ -42,6 +42,7 @@ class ExtractNodeExecutor:
         self._pipeline = pipeline
         self._model_resolver = model_resolver
         self._max_batch = max_batch
+        self._resolved_model_audit: dict = {}
 
     async def execute(self, unit) -> ExecuteUnitResult:
         run = self._db.get(Run, unit.run_id)
@@ -71,9 +72,12 @@ class ExtractNodeExecutor:
                 },
             )
 
-        pipeline = self._pipeline or self._build_pipeline(run)
+        resolved, api_key, audit = self._resolve_model(run)
+        self._resolved_model_audit = audit
+        pipeline = self._pipeline or self._build_pipeline(run, resolved, api_key, audit)
         emit_event(self._db, run, "extraction.started", {"snapshots": len(pending)})
         extracted = 0
+        llm_invocations = 0
         for snapshot in pending:
             try:
                 result = await pipeline.run(snapshot, spec.payload, user_id=run.user_id)
@@ -85,6 +89,7 @@ class ExtractNodeExecutor:
                     {"snapshot_id": snapshot.id, "error": str(exc)[:200]},
                 )
                 continue
+            llm_invocations += int((result.technical_metadata or {}).get("llm_invocations", 0))
             if not result.candidates:
                 continue
             record = self._persist(run, snapshot, result)
@@ -94,6 +99,17 @@ class ExtractNodeExecutor:
                 run,
                 "extraction.completed",
                 {"snapshot_id": snapshot.id, "record_id": record.id},
+            )
+        if llm_invocations > 0:
+            # 让用户看到真实模型调用（安全摘要：仅 provider/model，绝无 secret/prompt）。
+            emit_event(
+                self._db,
+                run,
+                "extraction.llm_fallback_used",
+                {
+                    "provider": self._resolved_model_audit.get("provider"),
+                    "model": self._resolved_model_audit.get("model"),
+                },
             )
         self._db.commit()
         return ExecuteUnitResult(
@@ -108,15 +124,24 @@ class ExtractNodeExecutor:
             },
         )
 
-    def _build_pipeline(self, run: Run) -> ExtractionPipeline:
+    def _resolve_model(self, run: Run) -> tuple[Any, Any, dict]:
+        """Resolve the run's frozen model for the live-activity audit (never a secret)."""
+        if self._model_resolver is None:
+            return None, None, {}
+        try:
+            resolved, api_key, audit = self._model_resolver.resolve_for_run(run)
+        except Exception:
+            return None, None, {}
+        return resolved, api_key, audit or {}
+
+    def _build_pipeline(
+        self, run: Run, resolved: Any, api_key: Any, audit: dict
+    ) -> ExtractionPipeline:
         from app.extraction.llm import SemanticExtractionAgent
 
         agent = SemanticExtractionAgent(settings=self._settings)
-        audit: dict = {}
-        if self._model_resolver is not None:
-            resolved, api_key, audit = self._model_resolver.resolve_for_run(run)
-            if resolved is not None:
-                agent.bind_model(resolved, api_key)
+        if resolved is not None:
+            agent.bind_model(resolved, api_key)
         return ExtractionPipeline(
             self._db, self._storage, llm_agent=agent, settings=self._settings, model_audit=audit
         )
