@@ -85,6 +85,17 @@ def decide_retry(
     """
     remaining = attempt < max_attempts - 1
 
+    if error_class is ErrorClass.CANCELLED:
+        return RetryDecision(
+            error_class=error_class,
+            should_retry=False,
+            strategy=RetryStrategy.NONE,
+            delay_seconds=0.0,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            reason="cancellation propagates and is never retried",
+        )
+
     if error_class is ErrorClass.CONNECT_TIMEOUT:
         connect_retry_remaining = attempt < min(max_attempts, 2) - 1
         return RetryDecision(
