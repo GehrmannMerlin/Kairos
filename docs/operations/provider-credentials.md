@@ -71,6 +71,7 @@ OpenAI-compatible 族复用共享核心 Adapter，通过 `ProviderDefinition` �
 | provider_type | 需要 Key | 需要 base_url | base_url 模式 | 说明 |
 |---|---|---|---|---|
 | `tavily` | ✅ | — | managed | 官方 API：`POST https://api.tavily.com/search`（Registry 管 endpoint，用户无需填写 Base URL） |
+| `bocha` | ✅ | — | managed | 官方 API：`POST https://api.bochaai.com/v1/web-search`，返回 `data.webPages.value[]`（`url`/`name`/`snippet` 归一化为 `url`/`title`/`snippet`） |
 | `custom_compatible_search` | ✅ | ✅ | required | 兼容 HTTP 契约：`GET {base_url}/search?q=&limit=` + `Authorization: Bearer`，返回 `{"results": [{url,title,snippet}]}` |
 
 字段需求（`requires_api_key` / `requires_base_url` / `base_url_mode`）唯一事实来源为 Backend Provider Registry；前端 `GET /api/providers/definitions` 动态渲染表单与校验，不在 Vue 硬编码 URL 表或 per-provider if/else。
