@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.discovery.url import canonical_url
-from app.plan.nodes import NodeRegistry, NodeType, RiskLevel
+from app.plan.nodes import NodeRegistry, NodeType, ResourceKind, RiskLevel
 from app.plan.schemas import (
     PlanGraphDraft,
     PlanValidationIssue,
@@ -319,10 +319,18 @@ def validate_plan(
         dst_def = registry.get(dst.node_type)
         if src_def and dst_def:
             for ref in edge.resource_refs:
+                src_ok = ref.kind in src_def.output_contract
+                dst_ok = ref.kind in dst_def.input_contract
+                # M-09 source_search executor 把搜索结果 URL 物化为 URL Frontier 资源
+                # （D-068 典型路径 SourceSearch → AccessRulesCheck → LinkDiscovery →
+                # Fetch）。因此 source_search 产出的 candidate 可被消费 url 的发现节点
+                # 接收，等价于候选站点已作为 url 资源进入 Frontier。
                 if (
-                    ref.kind not in src_def.output_contract
-                    or ref.kind not in dst_def.input_contract
+                    ref.kind == ResourceKind.CANDIDATE
+                    and ResourceKind.URL in dst_def.input_contract
                 ):
+                    dst_ok = True
+                if not src_ok or not dst_ok:
                     issues.append(
                         PlanValidationIssue(
                             code="RESOURCE_EDGE_INCOMPATIBLE",
