@@ -25,7 +25,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.domain.models import CompletionDecision, Run
+from app.domain.models import CompletionDecision, Run, Task
 from app.infra.deps import get_session_factory
 
 # Temporal WorkflowExecutionStatus names that prove the execution is over.
@@ -45,26 +45,36 @@ class StaleRun:
     run_id: int
     task_id: int
     user_id: int
+    task_state: str
     is_partial: bool | None  # None when no CompletionDecision was ever persisted
 
 
-def resolve_terminal_command(*, temporal_status: str | None, is_partial: bool | None) -> str:
-    """Map a terminal Temporal status (+ persisted completion fact) to one terminal command.
+def resolve_terminal_command(
+    *, task_state: str, temporal_status: str | None, is_partial: bool | None
+) -> str | None:
+    """Map the current task state + terminal Temporal status to one terminal command.
 
-    - ``CANCELED`` → ``mark_cancelled`` (user/collaborative cancel).
-    - ``COMPLETED`` → ``complete`` or ``mark_partial`` per the persisted CompletionDecision;
-      if no decision was persisted the workflow completed without resolving completion, so we
-      fail closed rather than guess a data outcome.
-    - anything else (``FAILED``/``TERMINATED``/``TIMED_OUT``/absent) → ``fail``.
+    - ``CANCELLING`` → ``mark_cancelled`` (the cancellation path only needs to finish).
+    - ``RUNNING`` → ``complete``/``mark_partial``/``fail`` per the persisted
+      CompletionDecision and Temporal status; a non-COMPLETED workflow (``FAILED``/
+      ``TERMINATED``/``TIMED_OUT``/absent/``CANCELED``) fails closed rather than guess a
+      data outcome, and a COMPLETED workflow without a persisted decision also fails.
+    - any other task state (``WAITING_APPROVAL`` / ``PAUSING`` / ``PAUSED`` /
+      ``WAITING_RESOURCE`` / ``QUEUED`` / ...) has no single-step terminal transition,
+      so return ``None`` and let the caller skip + report rather than crash on an
+      illegal transition.
     """
+    state = (task_state or "").upper()
     status = (temporal_status or "").upper()
-    if status == "CANCELED":
+    if state == "CANCELLING":
         return "mark_cancelled"
-    if status == "COMPLETED":
-        if is_partial is None:
-            return "fail"
-        return "mark_partial" if is_partial else "complete"
-    return "fail"
+    if state == "RUNNING":
+        if status == "COMPLETED":
+            if is_partial is None:
+                return "fail"
+            return "mark_partial" if is_partial else "complete"
+        return "fail"
+    return None
 
 
 def query_stale_runs(session: Any, *, stale_after_seconds: int) -> list[StaleRun]:
@@ -83,11 +93,13 @@ def query_stale_runs(session: Any, *, stale_after_seconds: int) -> list[StaleRun
             .order_by(CompletionDecision.id.desc())
             .limit(1)
         )
+        task = session.get(Task, run.task_id)
         out.append(
             StaleRun(
                 run_id=run.id,
                 task_id=run.task_id,
                 user_id=run.user_id,
+                task_state=task.state if task is not None else "UNKNOWN",
                 is_partial=decision.is_partial if decision is not None else None,
             )
         )
@@ -157,7 +169,20 @@ async def reconcile_stale_runs(
         if status is not None and status.upper() not in _TERMINAL_TEMPORAL_STATUSES:
             results.append({"run_id": run.run_id, "action": "skip", "temporal_status": status})
             continue
-        command = resolve_terminal_command(temporal_status=status, is_partial=run.is_partial)
+        command = resolve_terminal_command(
+            task_state=run.task_state, temporal_status=status, is_partial=run.is_partial
+        )
+        if command is None:
+            results.append(
+                {
+                    "run_id": run.run_id,
+                    "task_id": run.task_id,
+                    "action": "skip",
+                    "reason": f"task_state={run.task_state}",
+                    "temporal_status": status,
+                }
+            )
+            continue
         results.append(
             {
                 "run_id": run.run_id,
