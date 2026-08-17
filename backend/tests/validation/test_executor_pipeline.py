@@ -182,3 +182,58 @@ def test_validate_executor_partitions_by_evidence_gate(vctx):
     )
     assert counts.get("passed", 0) == 0
     assert counts.get("needs_review", 0) == 1  # EVIDENCE_MISSING → NEEDS_REVIEW
+
+
+def test_dedupe_executor_bounds_long_business_key(vctx):
+    """长业务键（>500 chars）不再触发 StringDataRightTruncation；identity 仍由 fingerprint 承担。"""
+    from app.domain.models import DedupeCluster
+    from app.domain.spec import FieldSpec
+    from app.validation.dedupe import (
+        BusinessKeyPolicy,
+        bounded_business_key,
+        business_key_fingerprint,
+        compute_business_key,
+    )
+    from app.validation.executor import DeduplicateNodeExecutor
+
+    fields = [
+        FieldSpec(name="公司名", type="text", required=True),
+        FieldSpec(name="官网", type="url", required=True),
+    ]
+    db = vctx["db"]
+    long_name = "长" * 600
+    ExtractionRepository(db).create_record(
+        user_id=vctx["user"].id,
+        task_id=vctx["task"].id,
+        run_id=vctx["run"].id,
+        spec_version=1,
+        url_resource_id=None,
+        payload={
+            "values": {"公司名": long_name, "官网": "https://acme.com"},
+            "snapshot_id": 1,
+            "url": "http://fixture.test/",
+            "unresolved_fields": [],
+            "issues": [],
+        },
+    )
+    db.commit()
+    unit = ExecutionUnit(
+        run_id=vctx["run"].id,
+        index=1,
+        unit_type="deduplicate",
+        input_fingerprint="fp",
+        node_type="deduplicate",
+    )
+    result = asyncio.run(DeduplicateNodeExecutor(db).execute(unit))
+    assert result.status == "OK"
+    db.expire_all()
+    cluster = db.query(DedupeCluster).one()
+    assert len(cluster.business_key) <= 500
+    # 完整 canonical key 的 fingerprint 仍是 identity（未被截断污染）
+    full_key = compute_business_key(
+        {"公司名": long_name, "官网": "https://acme.com"},
+        BusinessKeyPolicy(key_fields=["公司名", "官网"]),
+        fields,
+    )
+    assert cluster.business_key == bounded_business_key(full_key or "")
+    assert cluster.business_key_fingerprint == business_key_fingerprint(full_key or "")

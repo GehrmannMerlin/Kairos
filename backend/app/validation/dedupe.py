@@ -78,6 +78,25 @@ def business_key_fingerprint(*key_parts: str) -> str:
     return stable_fingerprint("bizkey", *key_parts)
 
 
+_BUSINESS_KEY_COLUMN_CHARS = 500
+
+
+def bounded_business_key(text: str | None, *, limit: int = _BUSINESS_KEY_COLUMN_CHARS) -> str:
+    """Bound the stored display preview to the column width.
+
+    ``business_key_fingerprint`` is the stable identity (and is always computed from the
+    full canonical key); the raw ``business_key`` column is only a human-readable preview,
+    so it must never overflow ``VARCHAR(500)`` and trigger ``StringDataRightTruncation``.
+    Truncation is trailing-only and deterministic; two distinct long keys may share a
+    preview, which is harmless because identity is carried by the fingerprint.
+    """
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
 def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
@@ -153,6 +172,7 @@ __all__ = [
     "BusinessKeyPolicy",
     "BusinessUniqueKeyStrategy",
     "DedupeEngine",
+    "bounded_business_key",
     "business_key_fingerprint",
     "compute_business_key",
 ]

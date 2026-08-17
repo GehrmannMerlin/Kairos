@@ -8,6 +8,7 @@ from app.validation.dedupe import (
     BusinessKeyPolicy,
     BusinessUniqueKeyStrategy,
     DedupeEngine,
+    bounded_business_key,
     business_key_fingerprint,
     compute_business_key,
 )
@@ -94,3 +95,30 @@ def test_retry_same_batch_stable_group_identity():
     g1, _ = engine.group(recs, policy, FIELDS)
     g2, _ = engine.group(recs, policy, FIELDS)
     assert g1[0]["business_key_fingerprint"] == g2[0]["business_key_fingerprint"]
+
+
+def test_bounded_business_key_short_unchanged():
+    assert bounded_business_key("Acme | https://acme.com") == "Acme | https://acme.com"
+    assert bounded_business_key("") == ""
+    assert bounded_business_key(None) == ""
+
+
+def test_bounded_business_key_truncates_long_key_to_column_width():
+    long_key = " | ".join(["长" * 300, "https://example.com/" + "x" * 300])
+    assert len(long_key) > 500
+    assert bounded_business_key(long_key) == long_key[:499] + "…"
+    assert len(bounded_business_key(long_key)) == 500
+
+
+def test_bounded_business_key_preserves_fingerprint_identity():
+    # identity 由 fingerprint 承载：截断只影响 preview，不影响稳定 identity
+    full = " | ".join(["公司甲" * 200, "https://a.example/" + "y" * 300])
+    fp = business_key_fingerprint(full)
+    assert len(bounded_business_key(full)) <= 500
+    assert business_key_fingerprint(full) == fp  # fingerprint 恒用完整 key 计算
+
+
+def test_bounded_business_key_distinct_long_keys_not_falsely_identical():
+    a = "公司甲" * 400
+    b = "公司乙" * 400
+    assert bounded_business_key(a) != bounded_business_key(b)
