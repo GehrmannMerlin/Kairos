@@ -6,6 +6,7 @@ import pytest
 from app.validation.completion import (
     CompletionDecisionService,
     CompletionIncompleteError,
+    CompletionOutcome,
     SaturationTracker,
 )
 from app.validation.policies import ValidationSettings
@@ -135,12 +136,11 @@ def test_incomplete_scope_without_completed_work_is_not_partial(task_type: str):
         )
 
 
-@pytest.mark.parametrize("task_type", ["SPECIFIED_SOURCE", "EXPLORATORY", "HYBRID"])
-def test_incomplete_scope_without_an_explicit_stop_is_not_partial(task_type: str):
+def test_specified_source_incomplete_scope_without_an_explicit_stop_is_not_partial():
     with pytest.raises(CompletionIncompleteError, match="INCOMPLETE_WITHOUT_COMPLETED_WORK"):
         CompletionDecisionService().decide(
             run=None,
-            spec_payload=_spec(task_type),
+            spec_payload=_spec("SPECIFIED_SOURCE"),
             partition_counts={"passed": 0},
             eligible_url_count=5,
             terminal_url_count=0,
@@ -155,10 +155,28 @@ def test_incomplete_scope_without_an_explicit_stop_is_not_partial(task_type: str
 
 
 @pytest.mark.parametrize("task_type", ["EXPLORATORY", "HYBRID"])
-def test_exploratory_completion_metadata_persists_real_counts(task_type: str):
+def test_discovery_task_incomplete_scope_with_remaining_capacity_continues(task_type: str):
     d = CompletionDecisionService().decide(
         run=None,
-        spec_payload=_spec(task_type, min_records=1),
+        spec_payload=_spec(task_type),
+        partition_counts={"passed": 0},
+        eligible_url_count=5,
+        terminal_url_count=0,
+        fetched_page_count=1,
+        record_count=0,
+        batch_unique_counts=[],
+        qualified_record_count=0,
+        runtime_limit_reason=None,
+        user_stopped=False,
+        settings=ValidationSettings(),
+    )
+    assert d.outcome == CompletionOutcome.CONTINUE
+
+
+def test_exploratory_completion_metadata_persists_real_counts():
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec("EXPLORATORY", min_records=1),
         partition_counts={"passed": 2},
         eligible_url_count=5,
         terminal_url_count=5,
@@ -200,7 +218,7 @@ def test_exploratory_min_records_and_saturation_is_normal():
     assert d.saturation_evidence["saturated"] is True
 
 
-def test_exploratory_not_saturated_is_partial():
+def test_exploratory_not_saturated_with_remaining_capacity_continues():
     d = CompletionDecisionService().decide(
         run=None,
         spec_payload=_spec("EXPLORATORY", min_records=1),
@@ -216,7 +234,9 @@ def test_exploratory_not_saturated_is_partial():
         settings=ValidationSettings(),
         access_limited_reason="access_limited",
     )
-    assert d.status == "PARTIALLY_COMPLETED"
+    assert d.outcome == CompletionOutcome.CONTINUE
+    assert d.completion_type == "search_more_required"
+    assert d.continue_hints["reason"] == "SEARCH_MORE_REQUIRED"
 
 
 def test_runtime_limit_is_partial():
@@ -266,11 +286,118 @@ def test_saturation_tracker_deterministic():
     assert t.is_saturated([1, 1]) is False  # 不足 window
 
 
+def test_hybrid_target_met_and_scope_done_is_completed():
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec("HYBRID", min_records=3),
+        partition_counts={"passed": 3},
+        eligible_url_count=4,
+        terminal_url_count=4,
+        fetched_page_count=4,
+        record_count=3,
+        batch_unique_counts=[],
+        qualified_record_count=3,
+        runtime_limit_reason=None,
+        user_stopped=False,
+        settings=ValidationSettings(),
+    )
+    assert d.outcome == CompletionOutcome.COMPLETED
+    assert d.completion_type == "hybrid_target_met"
+    assert d.is_partial is False
+
+
+def test_hybrid_first_round_insufficient_with_remaining_capacity_continues():
+    # Task 104 语义：1 PASSED + 2 NEEDS_REVIEW，min 未达，仍有搜索轮次 → CONTINUE（不能 FAILED）。
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec("HYBRID", min_records=5),
+        partition_counts={"passed": 1, "needs_review": 2},
+        eligible_url_count=4,
+        terminal_url_count=4,
+        fetched_page_count=4,
+        record_count=3,
+        batch_unique_counts=[],
+        qualified_record_count=1,
+        runtime_limit_reason=None,
+        user_stopped=False,
+        settings=ValidationSettings(),
+        search_round_count=1,
+        max_search_rounds=3,
+    )
+    assert d.outcome == CompletionOutcome.CONTINUE
+    assert d.completion_type == "search_more_required"
+    assert d.continue_hints["remaining_search_rounds"] == 2
+
+
+def test_hybrid_exhausted_search_rounds_with_results_is_partial():
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec("HYBRID", min_records=5),
+        partition_counts={"passed": 1, "needs_review": 2},
+        eligible_url_count=4,
+        terminal_url_count=4,
+        fetched_page_count=4,
+        record_count=3,
+        batch_unique_counts=[],
+        qualified_record_count=1,
+        runtime_limit_reason=None,
+        user_stopped=False,
+        settings=ValidationSettings(),
+        search_round_count=3,
+        max_search_rounds=3,
+    )
+    assert d.outcome == CompletionOutcome.PARTIALLY_COMPLETED
+    assert d.completion_type == "resource_limit_reached_with_results"
+    assert d.qualified_record_count == 1
+
+
+def test_hybrid_no_completed_work_is_failed():
+    with pytest.raises(CompletionIncompleteError, match="INCOMPLETE_WITHOUT_COMPLETED_WORK"):
+        CompletionDecisionService().decide(
+            run=None,
+            spec_payload=_spec("HYBRID", min_records=5),
+            partition_counts={"passed": 0},
+            eligible_url_count=4,
+            terminal_url_count=0,
+            fetched_page_count=0,
+            record_count=0,
+            batch_unique_counts=[],
+            qualified_record_count=0,
+            runtime_limit_reason=None,
+            user_stopped=False,
+            settings=ValidationSettings(),
+            search_round_count=3,
+            max_search_rounds=3,
+        )
+
+
+def test_exploratory_exhausted_search_rounds_with_results_is_partial():
+    d = CompletionDecisionService().decide(
+        run=None,
+        spec_payload=_spec("EXPLORATORY", min_records=5),
+        partition_counts={"passed": 2},
+        eligible_url_count=4,
+        terminal_url_count=4,
+        fetched_page_count=4,
+        record_count=2,
+        batch_unique_counts=[],
+        qualified_record_count=2,
+        runtime_limit_reason=None,
+        user_stopped=False,
+        settings=ValidationSettings(),
+        search_round_count=3,
+        max_search_rounds=3,
+    )
+    assert d.outcome == CompletionOutcome.PARTIALLY_COMPLETED
+    assert d.completion_type == "resource_limit_reached_with_results"
+
+
 def test_completion_view_has_no_money_fields():
     """模块需求 51 / D-036：CompletionDecision 禁止任何金额预算字段。"""
     from app.validation.completion import CompletionDecisionView
 
     allowed = {
+        "outcome",
         "status",
         "reason",
         "is_partial",
@@ -279,5 +406,6 @@ def test_completion_view_has_no_money_fields():
         "saturation_evidence",
         "runtime_limit_reason",
         "scope_completion_metadata",
+        "continue_hints",
     }
     assert set(CompletionDecisionView.model_fields.keys()) == allowed

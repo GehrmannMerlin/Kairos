@@ -71,6 +71,7 @@ def _lifecycle_activities() -> list[Any]:
     from app.activities.discovery_approval import resolve_robots_override
     from app.activities.plan_execution import execute_safe_unit, fetch_next_execution_unit
     from app.activities.reliability import heartbeat_task_slot, record_resource_wait
+    from app.activities.replan import replan_for_continuation
     from app.activities.task_execution import (
         commit_checkpoint,
         complete_run,
@@ -97,6 +98,7 @@ def _lifecycle_activities() -> list[Any]:
         resolve_credential_access,
         resolve_robots_override,
         resolve_completion,
+        replan_for_continuation,
         record_resource_wait,
         heartbeat_task_slot,
     ]

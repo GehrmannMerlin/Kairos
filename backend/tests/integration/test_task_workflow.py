@@ -106,6 +106,8 @@ async def test_incomplete_completion_fails_instead_of_marking_partial(monkeypatc
                 status="FAILED",
                 partial=False,
                 failure_code="INCOMPLETE_WITHOUT_COMPLETED_WORK",
+                outcome="FAILED",
+                continue_hints={},
             )
         if name == "fail_run":
             return None
@@ -122,6 +124,87 @@ async def test_incomplete_completion_fails_instead_of_marking_partial(monkeypatc
     assert [name for name, _ in calls].count("mark_partial") == 0
     fail_input = next(value for name, value in calls if name == "fail_run")
     assert fail_input.error_code == "INCOMPLETE_WITHOUT_COMPLETED_WORK"
+
+
+@pytest.mark.asyncio
+async def test_continue_replans_and_executes_next_round(monkeypatch) -> None:
+    """CONTINUE → replan_for_continuation → 复位 index → 第二轮执行 → 终态 COMPLETED。"""
+    calls: list[tuple[str, object]] = []
+    state = {"round": 0, "fetched_units": 0}
+
+    def _unit(index: int) -> ExecutionUnit:
+        return ExecutionUnit(
+            run_id=3,
+            index=index,
+            unit_type="fetch",
+            input_fingerprint=f"fp-3-{index}",
+            node_id=f"fetch-{index}",
+            resource_class="core",
+        )
+
+    async def execute_activity(activity_fn, activity_input, **_kwargs):
+        name = activity_fn.__name__
+        calls.append((name, activity_input))
+        if name == "ensure_run_started":
+            return SimpleNamespace(started=True)
+        if name == "heartbeat_task_slot":
+            return None
+        if name == "fetch_next_execution_unit":
+            # 第一轮：无单元 → completion CONTINUE；第二轮：1 个单元后无更多单元。
+            if state["round"] == 1 and state["fetched_units"] == 0:
+                state["fetched_units"] += 1
+                return FetchUnitResult(unit=_unit(1))
+            return FetchUnitResult(unit=None)
+        if name == "execute_safe_unit":
+            return ExecuteUnitResult(
+                unit_index=activity_input.unit.index, committed_refs={}, status="OK"
+            )
+        if name == "commit_checkpoint":
+            return SimpleNamespace(checkpoint_id=1, reused=False)
+        if name == "resolve_completion":
+            if activity_input.search_round_count == 1:
+                state["round"] = 1
+                return SimpleNamespace(
+                    status="CONTINUE",
+                    partial=False,
+                    outcome="CONTINUE",
+                    failure_code=None,
+                    continue_hints={
+                        "reason": "SEARCH_MORE_REQUIRED",
+                        "remaining_search_rounds": 2,
+                        "max_search_rounds": 3,
+                    },
+                )
+            return SimpleNamespace(
+                status="NORMAL_COMPLETED",
+                partial=False,
+                outcome="COMPLETED",
+                failure_code=None,
+                continue_hints={},
+            )
+        if name == "replan_for_continuation":
+            return SimpleNamespace(status="OK", new_plan_version=2, failure_code=None)
+        if name == "complete_run":
+            return None
+        raise AssertionError(f"unexpected activity: {name}")
+
+    monkeypatch.setattr(task_workflow.workflow, "execute_activity", execute_activity)
+    monkeypatch.setattr(task_workflow, "workflow_queue_override", lambda _resource_class: None)
+
+    result = await TaskWorkflow().run(
+        TaskWorkflowInput(task_id=1, user_id=2, run_id=3, spec_version=1, plan_version=1)
+    )
+
+    assert result.final_state == "COMPLETED"
+    assert [name for name, _ in calls].count("replan_for_continuation") == 1
+    assert [name for name, _ in calls].count("resolve_completion") == 2
+    replan_input = next(value for name, value in calls if name == "replan_for_continuation")
+    assert replan_input.current_plan_version == 1
+    assert replan_input.search_round_count == 1
+    # 第二轮 resolve_completion 携带推进后的 plan_version 与 search_round_count。
+    completion_inputs = [value for name, value in calls if name == "resolve_completion"]
+    assert completion_inputs[1].plan_version == 2
+    assert completion_inputs[1].search_round_count == 2
 
 
 def _wait_task_state(task_id: int, want: str, timeout: float = 30.0) -> None:
