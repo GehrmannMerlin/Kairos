@@ -64,7 +64,15 @@ async def run() -> None:
         f"queues={[w.task_queue for w in workers]} "
         f"({settings.temporal_address}, smoke={settings.temporal_smoke_task_queue})"
     )
-    await asyncio.gather(smoke_worker.run(), *(w.run() for w in workers))
+    # M-16：资源 lease reaper 真正接入 Worker 生命周期（D-071 §worker crash slot 回收）。
+    # 与 worker 并行运行，关闭时优雅取消；单次 tick 失败不拖垮 worker（§15）。
+    from app.reliability.reaper import start_lease_reaper, stop_lease_reaper
+
+    reaper_task = start_lease_reaper(settings)
+    try:
+        await asyncio.gather(smoke_worker.run(), *(w.run() for w in workers))
+    finally:
+        await stop_lease_reaper(reaper_task)
 
 
 def main() -> None:
