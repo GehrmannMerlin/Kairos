@@ -16,7 +16,11 @@ from app.domain.repository import SpecVersionRepository
 from app.domain.spec import FieldSpec
 from app.extraction.executor_helpers import emit_event
 from app.extraction.repository import ExtractionRepository
-from app.validation.dedupe import BusinessUniqueKeyStrategy, DedupeEngine
+from app.validation.dedupe import (
+    BusinessUniqueKeyStrategy,
+    DedupeEngine,
+    bounded_business_key,
+)
 from app.validation.pipeline import ValidationPipeline
 from app.validation.policies import ValidationSettings
 from app.validation.repository import ValidationRepository
@@ -63,7 +67,7 @@ class DeduplicateNodeExecutor:
                 task_id=run.task_id,
                 run_id=run.id,
                 spec_version=run.spec_version,
-                business_key=g["business_key"],
+                business_key=bounded_business_key(g["business_key"]),
                 business_key_fingerprint=fp,
                 dedupe_policy_version=self._settings.validation_version,
                 approximate=g["approximate"],
@@ -74,7 +78,7 @@ class DeduplicateNodeExecutor:
             for rid in g["record_ids"]:
                 rec = self._db.get(Record, rid)
                 if rec is not None and rec.business_key is None:
-                    rec.business_key = g["business_key"]
+                    rec.business_key = bounded_business_key(g["business_key"])
                     self._db.add(rec)
         emit_event(
             self._db,
