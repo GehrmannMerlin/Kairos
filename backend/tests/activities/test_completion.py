@@ -36,7 +36,7 @@ from app.domain.repository import (
     TaskRepository,
 )
 from app.infra.db import Base
-from app.validation.completion import CompletionDecisionView
+from app.validation.completion import CompletionDecisionView, CompletionOutcome
 from sqlalchemy import create_engine, select
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.orm import sessionmaker
@@ -421,7 +421,7 @@ async def test_completion_activity_scopes_counts_to_frozen_run_and_spec(
 
 
 @pytest.mark.asyncio
-async def test_completion_activity_fails_closed_without_persisted_stop_or_saturation(
+async def test_completion_activity_continues_without_persisted_stop_or_saturation(
     monkeypatch, tmp_path
 ) -> None:
     import app.activities.completion as completion
@@ -438,9 +438,15 @@ async def test_completion_activity_fails_closed_without_persisted_stop_or_satura
 
     result = await completion.resolve_completion(completion.ResolveCompletionInput(**values))
 
-    assert result.status == "FAILED"
-    assert result.failure_code == "INCOMPLETE_WITHOUT_COMPLETED_WORK"
-    assert result.completion_type is None
+    # 探索任务未饱和但仍有搜索轮次 → CONTINUE，不持久化终态（不再 fail closed 假 FAILED）。
+    assert result.status == "CONTINUE"
+    assert result.outcome == "CONTINUE"
+    assert result.continue_hints["reason"] == "SEARCH_MORE_REQUIRED"
+    session = factory()
+    try:
+        assert session.query(CompletionDecision).count() == 0
+    finally:
+        session.close()
 
 
 @pytest.mark.asyncio
@@ -489,6 +495,7 @@ async def test_completion_race_returns_the_winner_decision_to_both_callers(
 
     candidates = [
         CompletionDecisionView(
+            outcome=CompletionOutcome.COMPLETED,
             status="NORMAL_COMPLETED",
             reason="winner candidate a",
             is_partial=False,
@@ -496,6 +503,7 @@ async def test_completion_race_returns_the_winner_decision_to_both_callers(
             qualified_record_count=11,
         ),
         CompletionDecisionView(
+            outcome=CompletionOutcome.PARTIALLY_COMPLETED,
             status="PARTIALLY_COMPLETED",
             reason="winner candidate b",
             is_partial=True,

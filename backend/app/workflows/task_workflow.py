@@ -48,6 +48,10 @@ with workflow.unsafe.imports_passed_through():
         heartbeat_task_slot,
         record_resource_wait,
     )
+    from app.activities.replan import (
+        ReplanContinuationInput,
+        replan_for_continuation,
+    )
     from app.activities.task_execution import (
         CommitCheckpointInput,
         CompleteRunInput,
@@ -132,6 +136,10 @@ class TaskWorkflow:
 
     @workflow.run
     async def run(self, inp: TaskWorkflowInput) -> TaskWorkflowResult:
+        # 受控重规划循环状态（deterministic）：当前执行的 plan 版本与搜索轮次。
+        # replan_for_continuation 返回新版本后推进；不引入 Date.now/random。
+        self._current_plan_version = inp.plan_version
+        self._search_round_count = 1
         # M-16 task admission（Level 1+2，D-071）：无全局/单用户 slot → 记录等待事实并
         # sleep 重试。任务保持 QUEUED，绝不以失败表达资源等待（§38 WAITING 非 FAILED）。
         while True:
@@ -142,7 +150,7 @@ class TaskWorkflow:
                     user_id=inp.user_id,
                     run_id=inp.run_id,
                     spec_version=inp.spec_version,
-                    plan_version=inp.plan_version,
+                    plan_version=self._current_plan_version,
                 ),
                 start_to_close_timeout=timedelta(seconds=60),
             )
@@ -212,7 +220,92 @@ class TaskWorkflow:
                 )
                 unit: ExecutionUnit | None = fetch.unit
                 if unit is None:
-                    break
+                    # M-12 完成判定（D-006）：无更多单元时计算 CompletionDecision，区分
+                    # 正常/部分/继续/失败。CONTINUE → 受控 replan → 复位 index 后继续执行。
+                    completion: ResolveCompletionResult = await workflow.execute_activity(
+                        resolve_completion,
+                        ResolveCompletionInput(
+                            task_id=inp.task_id,
+                            user_id=inp.user_id,
+                            run_id=inp.run_id,
+                            spec_version=inp.spec_version,
+                            plan_version=self._current_plan_version,
+                            search_round_count=self._search_round_count,
+                        ),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    if completion.outcome == "CONTINUE":
+                        remaining = (completion.continue_hints or {}).get("remaining_search_rounds")
+                        if remaining is not None and int(remaining) <= 0:
+                            # 无剩余搜索轮次（decide 应已判 PARTIAL；此处为确定性兜底）。
+                            await workflow.execute_activity(
+                                mark_partial,
+                                MarkPartialInput(
+                                    task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id
+                                ),
+                                start_to_close_timeout=timedelta(seconds=60),
+                            )
+                            return TaskWorkflowResult(
+                                inp.task_id, inp.run_id, "PARTIALLY_COMPLETED"
+                            )
+                        replan = await workflow.execute_activity(
+                            replan_for_continuation,
+                            ReplanContinuationInput(
+                                task_id=inp.task_id,
+                                user_id=inp.user_id,
+                                run_id=inp.run_id,
+                                spec_version=inp.spec_version,
+                                current_plan_version=self._current_plan_version,
+                                search_round_count=self._search_round_count,
+                                continue_hints=completion.continue_hints or {},
+                            ),
+                            start_to_close_timeout=timedelta(seconds=180),
+                        )
+                        if replan.status != "OK" or replan.new_plan_version is None:
+                            # 重规划失败但有 committed work（CONTINUE 仅在有 work 时出现）。
+                            await workflow.execute_activity(
+                                mark_partial,
+                                MarkPartialInput(
+                                    task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id
+                                ),
+                                start_to_close_timeout=timedelta(seconds=60),
+                            )
+                            return TaskWorkflowResult(
+                                inp.task_id, inp.run_id, "PARTIALLY_COMPLETED"
+                            )
+                        self._current_plan_version = replan.new_plan_version
+                        self._search_round_count += 1
+                        self._last_index = 0
+                        continue
+                    if completion.status == "FAILED":
+                        await workflow.execute_activity(
+                            fail_run,
+                            FailRunInput(
+                                task_id=inp.task_id,
+                                user_id=inp.user_id,
+                                run_id=inp.run_id,
+                                error_code=completion.failure_code or "EXECUTION_FAILED",
+                            ),
+                            start_to_close_timeout=timedelta(seconds=60),
+                        )
+                        return TaskWorkflowResult(inp.task_id, inp.run_id, "FAILED")
+                    if completion.partial:
+                        await workflow.execute_activity(
+                            mark_partial,
+                            MarkPartialInput(
+                                task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id
+                            ),
+                            start_to_close_timeout=timedelta(seconds=60),
+                        )
+                        return TaskWorkflowResult(inp.task_id, inp.run_id, "PARTIALLY_COMPLETED")
+                    await workflow.execute_activity(
+                        complete_run,
+                        CompleteRunInput(
+                            task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id
+                        ),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    return TaskWorkflowResult(inp.task_id, inp.run_id, "COMPLETED")
 
                 if unit.requires_approval:
                     # JIT 审批（D-017 / 三十三）：Workflow 到达高风险 Node 才 request_approval，
@@ -224,7 +317,7 @@ class TaskWorkflow:
                             user_id=inp.user_id,
                             run_id=inp.run_id,
                             spec_version=inp.spec_version,
-                            plan_version=inp.plan_version,
+                            plan_version=self._current_plan_version,
                             unit=unit,
                         ),
                         start_to_close_timeout=timedelta(seconds=60),
@@ -357,7 +450,7 @@ class TaskWorkflow:
                                 user_id=inp.user_id,
                                 run_id=inp.run_id,
                                 spec_version=inp.spec_version,
-                                plan_version=inp.plan_version,
+                                plan_version=self._current_plan_version,
                                 batch_identity=f"unit-{unit.index}",
                                 node_run_id=None,
                                 input_fingerprint=unit.input_fingerprint,
@@ -411,7 +504,7 @@ class TaskWorkflow:
                             user_id=inp.user_id,
                             run_id=inp.run_id,
                             spec_version=inp.spec_version,
-                            plan_version=inp.plan_version,
+                            plan_version=self._current_plan_version,
                             batch_identity=f"unit-{unit.index}",
                             node_run_id=None,
                             input_fingerprint=unit.input_fingerprint,
@@ -428,7 +521,7 @@ class TaskWorkflow:
                         user_id=inp.user_id,
                         run_id=inp.run_id,
                         spec_version=inp.spec_version,
-                        plan_version=inp.plan_version,
+                        plan_version=self._current_plan_version,
                         batch_identity=f"unit-{unit.index}",
                         node_run_id=None,
                         input_fingerprint=unit.input_fingerprint,
@@ -448,42 +541,3 @@ class TaskWorkflow:
                     start_to_close_timeout=timedelta(seconds=60),
                 )
                 return TaskWorkflowResult(inp.task_id, inp.run_id, "FAILED")
-
-        # M-12 完成判定（D-006）：无更多单元时计算 CompletionDecision，区分正常/部分完成。
-        # 业务状态与数据可用性分开表达（模块需求 50/52）。
-        completion: ResolveCompletionResult = await workflow.execute_activity(
-            resolve_completion,
-            ResolveCompletionInput(
-                task_id=inp.task_id,
-                user_id=inp.user_id,
-                run_id=inp.run_id,
-                spec_version=inp.spec_version,
-                plan_version=inp.plan_version,
-            ),
-            start_to_close_timeout=timedelta(seconds=60),
-        )
-        if completion.status == "FAILED":
-            await workflow.execute_activity(
-                fail_run,
-                FailRunInput(
-                    task_id=inp.task_id,
-                    user_id=inp.user_id,
-                    run_id=inp.run_id,
-                    error_code=completion.failure_code or "EXECUTION_FAILED",
-                ),
-                start_to_close_timeout=timedelta(seconds=60),
-            )
-            return TaskWorkflowResult(inp.task_id, inp.run_id, "FAILED")
-        if completion.partial:
-            await workflow.execute_activity(
-                mark_partial,
-                MarkPartialInput(task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id),
-                start_to_close_timeout=timedelta(seconds=60),
-            )
-            return TaskWorkflowResult(inp.task_id, inp.run_id, "PARTIALLY_COMPLETED")
-        await workflow.execute_activity(
-            complete_run,
-            CompleteRunInput(task_id=inp.task_id, user_id=inp.user_id, run_id=inp.run_id),
-            start_to_close_timeout=timedelta(seconds=60),
-        )
-        return TaskWorkflowResult(inp.task_id, inp.run_id, "COMPLETED")

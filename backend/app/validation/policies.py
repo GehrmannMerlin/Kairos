@@ -21,5 +21,6 @@ class ValidationSettings(BaseModel):
     saturation_batch_window: int = 3  # 探索饱和：最近 N batch
     saturation_new_unique_threshold: float = 0.0  # 新增 unique 率低于此值即饱和
     min_qualified_records_for_saturation: int = 1
+    max_search_rounds: int = 3  # 探索/混合 CONTINUE 的受控重规划上限（D-013 有界重试）
     sample_size_per_stratum: int = 5
     max_batch: int = 50
