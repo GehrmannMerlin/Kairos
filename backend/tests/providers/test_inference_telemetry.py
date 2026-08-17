@@ -220,6 +220,8 @@ async def test_plan_validation_emits_issue_codes_without_graph(
 ) -> None:
     service = PlanGenerationService(registry=NodeRegistry(), agent=_StaticPlanAgent())
     inp = PlanInput(
+        task_id=1,
+        spec_version=1,
         spec_payload={},
         task_type=TaskType.SPECIFIED_SOURCE,
         registry_metadata=[],

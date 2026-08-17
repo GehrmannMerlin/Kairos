@@ -100,7 +100,7 @@ async def test_plan_service_carries_supplied_settings_through_factory() -> None:
         "fields": [],
         "source_scope": {"mode": "SPECIFIED_SOURCE", "seed_urls": [], "source_hints": []},
     }
-    inp = service.build_input(spec, TaskType.SPECIFIED_SOURCE)
+    inp = service.build_input(spec, TaskType.SPECIFIED_SOURCE, task_id=1, spec_version=1)
 
     await service._run_with_graph(
         spec,

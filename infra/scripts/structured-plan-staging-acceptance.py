@@ -280,7 +280,7 @@ async def run_controlled_repair_fixture() -> AcceptanceResult:
     service = PlanGenerationService(
         registry=registry, agent=cast(Any, _FixturePlanAgent([invalid, repaired]))
     )
-    inp = service.build_input(spec, TaskType.SPECIFIED_SOURCE)
+    inp = service.build_input(spec, TaskType.SPECIFIED_SOURCE, task_id=0, spec_version=1)
     outcome = await service._repair_loop(inp, None, max_repairs=1)
     if not outcome.repair_used:
         raise RuntimeError("controlled repair was not used")
