@@ -46,7 +46,13 @@ class ResourceLeaseRepository:
     def __init__(self, db: Session) -> None:
         self._db = db
 
-    def count_active(self, scope: str, scope_key: str) -> int:
+    def count_active(self, scope: str, scope_key: str, now: datetime) -> int:
+        """有效占用 = 尚未 release 且尚未过期（`expires_at > now`）。
+
+        已过 TTL 的 lease 即使 reaper 尚未回收，也不能继续占用有效容量（D-071 §38：
+        资源不足是等待不是失败，且资源必须能自动恢复）。这保证 reaper 短暂停止只会
+        累积 stale 行，不会永久耗尽整个 pool。
+        """
         return int(
             self._db.scalar(
                 select(func.count())
@@ -55,6 +61,7 @@ class ResourceLeaseRepository:
                     ResourceLease.scope == scope,
                     ResourceLease.scope_key == scope_key,
                     ResourceLease.state == "active",
+                    ResourceLease.expires_at > now,
                 )
             )
             or 0
@@ -84,7 +91,7 @@ class ResourceLeaseRepository:
         )
         if existing is not None:
             return True, False
-        if self.count_active(scope, scope_key) >= limit:
+        if self.count_active(scope, scope_key, now) >= limit:
             return False, False
         lease = ResourceLease(
             scope=scope,
@@ -132,10 +139,25 @@ class ResourceLeaseRepository:
         self._db.commit()
         return bool(getattr(res, "rowcount", 0))
 
-    def reap_expired(self, now: datetime) -> int:
+    def reap_expired(self, now: datetime, limit: int = 500) -> int:
+        """有界批次回收过期 lease（避免一次性大事务）。
+
+        PG 用 `SKIP LOCKED` 保证多个 reaper 并发时互不重复认领（SQLite 无行锁，静默
+        忽略）；UPDATE 再以 `state=="active"` 条件幂等兜底，重复执行/并发执行都不会
+        产生双副作用。
+        """
+        ids = self._db.scalars(
+            select(ResourceLease.id)
+            .where(ResourceLease.state == "active", ResourceLease.expires_at < now)
+            .order_by(ResourceLease.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+        if not ids:
+            return 0
         res = self._db.execute(
             update(ResourceLease)
-            .where(ResourceLease.state == "active", ResourceLease.expires_at < now)
+            .where(ResourceLease.id.in_(ids), ResourceLease.state == "active")
             .values(state="expired", released_at=now)
         )
         self._db.commit()
@@ -258,8 +280,22 @@ class ResourceAdmission:
             now=now,
         )
 
-    def reap(self) -> int:
-        return self._repo.reap_expired(self._now())
+    def reap(self, limit: int = 500) -> int:
+        return self._repo.reap_expired(self._now(), limit=limit)
+
+    def sweep(self, limit: int = 500, max_batches: int = 100) -> int:
+        """一个 sweep tick 内有界分批回收，直到无更多过期 lease 或达到批次上限。
+
+        用于清理历史累积（如 28682 条 stale rows），避免单个巨大事务；每次仍以
+        `limit` 为批大小 commit 后继续下一批。
+        """
+        total = 0
+        for _ in range(max_batches):
+            reaped = self.reap(limit=limit)
+            total += reaped
+            if reaped == 0:
+                break
+        return total
 
 
 class LeaseReaper:
@@ -273,5 +309,5 @@ class LeaseReaper:
     def interval_seconds(self) -> int:
         return self._interval
 
-    async def run_once(self) -> int:
-        return self._admission.reap()
+    async def run_once(self, limit: int = 500) -> int:
+        return self._admission.reap(limit=limit)
