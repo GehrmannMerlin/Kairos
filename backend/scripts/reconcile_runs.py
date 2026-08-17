@@ -53,11 +53,14 @@ async def run(args: argparse.Namespace) -> int:
         dry_run=not args.apply,
     )
     for row in results:
-        print(
+        detail = (
             f"run={row['run_id']} task={row.get('task_id')} "
-            f"temporal={row['temporal_status']} action={row['action']} "
-            f"applied={row['applied']}"
+            f"temporal={row.get('temporal_status')} action={row['action']}"
         )
+        if row.get("reason"):
+            detail += f" reason={row['reason']}"
+        detail += f" applied={row.get('applied')}"
+        print(detail)
     print(f"{'APPLIED' if args.apply else 'DRY-RUN'}: {len(results)} stale run(s) inspected")
     return 0
 
