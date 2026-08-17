@@ -20,18 +20,27 @@ RESOLVED = ResolvedModel("deepseek", "deepseek-chat", None, None)
 
 VALID_PLAN_JSON = (
     '{"schema_version":"m08.1","task_id":1,"spec_version":1,'
-    '"task_type":"EXPLORATORY",'
+    '"task_type":"SPECIFIED_SOURCE",'
     '"nodes":['
     '{"node_id":"n1","node_type":"fetch","definition_version":"1.0.0",'
     '"parameters":{"url_template":"https://example.com/item/{id}"},"depends_on":[],"optional":false,"fail_policy":"block"},'
     '{"node_id":"n2","node_type":"extract","definition_version":"1.0.0",'
     '"parameters":{"fields":["公司名"]},"depends_on":["n1"],"optional":false,"fail_policy":"block"},'
-    '{"node_id":"n3","node_type":"generate_artifact","definition_version":"1.0.0",'
-    '"parameters":{"format":"csv"},"depends_on":["n2"],"optional":false,"fail_policy":"block"}'
+    '{"node_id":"n3","node_type":"normalize","definition_version":"1.0.0",'
+    '"parameters":{},"depends_on":["n2"],"optional":false,"fail_policy":"block"},'
+    '{"node_id":"n4","node_type":"deduplicate","definition_version":"1.0.0",'
+    '"parameters":{},"depends_on":["n3"],"optional":false,"fail_policy":"block"},'
+    '{"node_id":"n5","node_type":"validate","definition_version":"1.0.0",'
+    '"parameters":{},"depends_on":["n4"],"optional":false,"fail_policy":"block"},'
+    '{"node_id":"n6","node_type":"generate_artifact","definition_version":"1.0.0",'
+    '"parameters":{"format":"csv"},"depends_on":["n5"],"optional":false,"fail_policy":"block"}'
     "],"
     '"edges":['
     '{"from_node_id":"n1","to_node_id":"n2","resource_refs":[{"kind":"snapshot","ref_key":"snap:1"}]},'
-    '{"from_node_id":"n2","to_node_id":"n3","resource_refs":[{"kind":"record","ref_key":"rec:1"}]}'
+    '{"from_node_id":"n2","to_node_id":"n3","resource_refs":[{"kind":"record","ref_key":"rec:1"}]},'
+    '{"from_node_id":"n3","to_node_id":"n4","resource_refs":[{"kind":"record","ref_key":"rec:2"}]},'
+    '{"from_node_id":"n4","to_node_id":"n5","resource_refs":[{"kind":"record","ref_key":"rec:3"}]},'
+    '{"from_node_id":"n5","to_node_id":"n6","resource_refs":[{"kind":"record","ref_key":"rec:4"}]}'
     "],"
     '"reasoning_summary":"对指定来源逐页抓取并抽取字段"}'
 )
@@ -76,7 +85,14 @@ async def test_generator_returns_typed_plan() -> None:
     graph = await agent.generate(_input(), RESOLVED, api_key=None)
     assert isinstance(graph, PlanGraphDraft)
     assert graph.task_type == TaskType.SPECIFIED_SOURCE
-    assert [n.node_type for n in graph.nodes] == ["fetch", "extract", "generate_artifact"]
+    assert [n.node_type for n in graph.nodes] == [
+        "fetch",
+        "extract",
+        "normalize",
+        "deduplicate",
+        "validate",
+        "generate_artifact",
+    ]
     assert graph.nodes[1].depends_on == ["n1"]
 
 
@@ -119,6 +135,7 @@ async def test_generator_prompt_teaches_pipeline_order() -> None:
     assert "EXPLORATORY 和 HYBRID 必须以 source_search 开始" in fake.system_seen
     assert "SPECIFIED_SOURCE 必须消费冻结的 seed_urls" in fake.system_seen
     assert "绝不从 source_hints 虚构 URL" in fake.system_seen
+    assert "deduplicate" in fake.system_seen
 
 
 @pytest.mark.asyncio

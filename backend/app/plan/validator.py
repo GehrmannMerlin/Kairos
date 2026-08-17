@@ -142,6 +142,37 @@ def _source_invariant_issues(
     return issues
 
 
+def _record_producing_invariant_issues(graph: PlanGraphDraft) -> list[PlanValidationIssue]:
+    """Record-producing 计划必须经过 Normalize → Deduplicate 才进入正式验证（D-014）。
+
+    只对产生正式 Record 并进入 VALIDATE/ARTIFACT 的计划强制能力链；纯来源发现、访问
+    规则检查、页面快照等不产生 Record 的计划不被无意义强制 Deduplicate。Validator 只判
+    合法性，不私自补节点（Repair/Planner 负责生成合法修复）。
+    """
+    node_types = {n.node_type for n in graph.nodes}
+    produces_records = NodeType.VALIDATE in node_types or NodeType.GENERATE_ARTIFACT in node_types
+    if not produces_records:
+        return []
+    issues: list[PlanValidationIssue] = []
+    if NodeType.NORMALIZE not in node_types:
+        issues.append(
+            PlanValidationIssue(
+                code="REQUIRED_CAPABILITY_MISSING",
+                message="产生正式记录的计划必须包含 normalize 节点",
+                path="nodes",
+            )
+        )
+    if NodeType.DEDUPLICATE not in node_types:
+        issues.append(
+            PlanValidationIssue(
+                code="REQUIRED_CAPABILITY_MISSING",
+                message="产生正式记录的计划必须包含 deduplicate 节点",
+                path="nodes",
+            )
+        )
+    return issues
+
+
 def _node_effective_risk(
     node_type: NodeType | str, definition_risk: RiskLevel, parameters: dict
 ) -> RiskLevel:
@@ -434,6 +465,9 @@ def validate_plan(
             issues=issues,
             node_risk_levels=node_risk_levels,
         )
+
+    # record-producing 能力链 invariant（D-014）：Normalize → Deduplicate 才进入正式验证
+    issues.extend(_record_producing_invariant_issues(graph))
 
     # 结构性问题 -> INVALID
     structural = [
