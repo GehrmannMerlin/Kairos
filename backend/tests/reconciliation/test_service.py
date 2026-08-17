@@ -189,3 +189,24 @@ async def test_reconcile_apply_lost_workflow_fails(factory):
         apply_fn=apply_fn,
     )
     assert applied == [("fail", seeded["run"].id)]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_default_factory_obtains_session(factory, monkeypatch):
+    # 生产默认 get_session_factory() 返回 sessionmaker，服务必须调用两次
+    # (get_session_factory()()) 才能拿到 Session；注入 sessionmaker 复现该契约，
+    # 若服务只调用一次就会拿到 sessionmaker 而报 AttributeError。
+    seeded = _seed_run(factory, age_seconds=7200)
+
+    import app.reconciliation.service as svc
+
+    monkeypatch.setattr(svc, "get_session_factory", lambda: factory)
+
+    async def status_fn(workflow_id: str) -> str | None:
+        return "RUNNING"
+
+    results = await svc.reconcile_stale_runs(
+        workflow_status_fn=status_fn, stale_after_seconds=3600, dry_run=True
+    )
+    assert results[0]["run_id"] == seeded["run"].id
+    assert results[0]["action"] == "skip"
