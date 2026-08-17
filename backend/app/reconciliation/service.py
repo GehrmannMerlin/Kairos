@@ -142,8 +142,10 @@ async def reconcile_stale_runs(
     ``apply_fn`` injects the mutation for tests; the production default calls the existing
     terminal activities. Returns one record per inspected run for audit/dry-run review.
     """
-    factory: SessionFactory = session_factory or get_session_factory
-    session = factory()
+    # get_session_factory() returns a ``sessionmaker`` (see app.infra.deps), so the default
+    # path must call it twice to obtain an actual Session; an injected ``session_factory``
+    # (as in tests) is already a callable that returns a Session.
+    session = session_factory() if session_factory is not None else get_session_factory()()
     try:
         stale = query_stale_runs(session, stale_after_seconds=stale_after_seconds)
     finally:
