@@ -7,6 +7,7 @@ schema validation，绝不直接写有效候选（三十二）。
 
 from __future__ import annotations
 
+import asyncio
 from time import perf_counter
 from typing import Any
 
@@ -28,6 +29,7 @@ from app.extraction.schema_validator import ExtractionSchemaValidator
 from app.extraction.site_rules import SiteRuleExtractor
 from app.extraction.structured import JsonLdExtractor, MetaExtractor, TableExtractor
 from app.infra.object_storage import ObjectStorage
+from app.providers.errors import ProviderTimeoutError
 
 
 class ExtractionPipeline:
@@ -70,6 +72,7 @@ class ExtractionPipeline:
         all_candidates: list[ExtractionCandidate] = []
         all_issues: list[ExtractionIssue] = []
         llm_invocations = 0
+        llm_retries = 0
 
         # 1) structured（JSON-LD / Meta / Table）
         for extractor in self._structured:
@@ -86,6 +89,8 @@ class ExtractionPipeline:
         # 3) LLM fallback（unresolved fields only，字段级，绝不页面级重发）
         if unresolved and self._settings.allow_llm_fallback:
             llm_invocations += 1
+            llm_retries = 0
+            llm_context = ctx.readable_text[: self._settings.llm_max_context_chars]
             inp = SemanticExtractionInput(
                 schema_version=self._settings.schema_version,
                 fields=[f.model_dump(mode="json") for f in ctx.fields if f.name in unresolved],
@@ -98,12 +103,26 @@ class ExtractionPipeline:
                     }
                     for c in all_candidates
                 ],
-                readable_text=ctx.readable_text,
+                readable_text=llm_context,
                 source_url=ctx.snapshot_ref.final_url or ctx.snapshot_ref.url,
                 snapshot_id=ctx.snapshot_ref.snapshot_id,
                 run_id=ctx.snapshot_ref.run_id,
             )
-            llm_result = await self._llm_agent.extract(inp)
+            try:
+                llm_result = await self._llm_agent.extract(inp)
+            except Exception as exc:
+                # D-013：只有超时才允许「缩小上下文」重试一次；其它失败直接向上抛，
+                # 由 ExtractNodeExecutor 按快照局部化，绝不页面级无限重发。
+                if not self._is_provider_timeout(exc):
+                    raise
+                llm_retries += 1
+                llm_invocations += 1
+                reduced_context = ctx.readable_text[
+                    : self._settings.llm_retry_reduced_context_chars
+                ]
+                llm_result = await self._llm_agent.extract(
+                    inp.model_copy(update={"readable_text": reduced_context})
+                )
             for cand in llm_result.fields:
                 field = fields_by_name.get(cand.field_name)
                 if field is None:
@@ -176,8 +195,28 @@ class ExtractionPipeline:
             unresolved_fields=unresolved,
             issues=all_issues,
             duration_ms=int((perf_counter() - started) * 1000),
-            technical_metadata={"llm_invocations": llm_invocations, "user_id": user_id},
+            technical_metadata={
+                "llm_invocations": llm_invocations,
+                "llm_retries": llm_retries,
+                "user_id": user_id,
+            },
         )
+
+    @staticmethod
+    def _is_provider_timeout(exc: BaseException) -> bool:
+        """True when the failure is a provider/model timeout, including wrapped causes.
+
+        pydantic-ai may re-raise the FunctionModel's ``ProviderTimeoutError`` inside its own
+        wrapper, so walk the cause/context chain rather than matching only the top type.
+        """
+        seen: set[int] = set()
+        current: BaseException | None = exc
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, (ProviderTimeoutError, asyncio.TimeoutError)):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     def _merge(
         self,

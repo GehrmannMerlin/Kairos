@@ -90,6 +90,11 @@ class ExtractionSettings:
     max_context_bytes: int = 30_000
     max_context_chars: int = 30_000
     max_snippet_chars: int = 500
+    # LLM fallback 专用：单次 typed extraction 的正文上限远小于结构化上下文，避免 30K 字符
+    # 中文正文让 DeepSeek 单请求超过 provider_inference_timeout（45s）→ 0 records。
+    llm_max_context_chars: int = 12_000
+    # 超时后「缩小上下文」重试的上限（D-013：重试必须改变输入，而非同样 prompt 无限再试）。
+    llm_retry_reduced_context_chars: int = 6_000
     min_rule_validation_samples: int = 3
     min_rule_precision: float = 0.9
     min_rule_coverage: float = 0.5
