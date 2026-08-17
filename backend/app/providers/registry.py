@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from app.providers import errors
 from app.providers.adapters.anthropic import AnthropicModelProvider
+from app.providers.adapters.bocha_search import BochaSearchProvider
 from app.providers.adapters.custom_compatible_search import CustomCompatibleSearchProvider
 from app.providers.adapters.gemini import GeminiModelProvider
 from app.providers.adapters.ollama import OllamaModelProvider
@@ -112,11 +113,16 @@ def build_model_provider(provider_type: str, http: HttpClient | None = None) -> 
 _SEARCH_PROVIDER_BUILDERS: dict[str, type] = {
     "custom_compatible_search": CustomCompatibleSearchProvider,
     "tavily": TavilySearchProvider,
+    "bocha": BochaSearchProvider,
 }
 
 
 def list_search_provider_definitions() -> list[ProviderDefinition]:
-    return [CustomCompatibleSearchProvider.definition, TavilySearchProvider.definition]
+    return [
+        CustomCompatibleSearchProvider.definition,
+        TavilySearchProvider.definition,
+        BochaSearchProvider.definition,
+    ]
 
 
 def get_search_definition(provider_type: str) -> ProviderDefinition:
