@@ -18,23 +18,54 @@ from sqlalchemy.pool import StaticPool
 _EMAIL = count(1)
 
 
-def test_resolve_terminal_command_cancelled():
-    assert resolve_terminal_command(temporal_status="CANCELED", is_partial=None) == "mark_cancelled"
+def test_resolve_terminal_command_cancelling_finishes_cancel():
+    assert (
+        resolve_terminal_command(task_state="CANCELLING", temporal_status=None, is_partial=None)
+        == "mark_cancelled"
+    )
+    assert (
+        resolve_terminal_command(
+            task_state="CANCELLING", temporal_status="CANCELED", is_partial=None
+        )
+        == "mark_cancelled"
+    )
 
 
-def test_resolve_terminal_command_completed_uses_persisted_decision():
-    assert resolve_terminal_command(temporal_status="COMPLETED", is_partial=True) == "mark_partial"
-    assert resolve_terminal_command(temporal_status="COMPLETED", is_partial=False) == "complete"
+def test_resolve_terminal_command_running_completed_uses_persisted_decision():
+    assert (
+        resolve_terminal_command(task_state="RUNNING", temporal_status="COMPLETED", is_partial=True)
+        == "mark_partial"
+    )
+    assert (
+        resolve_terminal_command(
+            task_state="RUNNING", temporal_status="COMPLETED", is_partial=False
+        )
+        == "complete"
+    )
 
 
-def test_resolve_terminal_command_completed_without_decision_fails_closed():
+def test_resolve_terminal_command_running_completed_without_decision_fails_closed():
     # workflow COMPLETED 但从未持久化 CompletionDecision → 不得猜数据结果
-    assert resolve_terminal_command(temporal_status="COMPLETED", is_partial=None) == "fail"
+    assert (
+        resolve_terminal_command(task_state="RUNNING", temporal_status="COMPLETED", is_partial=None)
+        == "fail"
+    )
 
 
-def test_resolve_terminal_command_any_other_terminal_fails():
-    for status in ("FAILED", "TERMINATED", "TIMED_OUT", None, "RUNNING"):
-        assert resolve_terminal_command(temporal_status=status, is_partial=False) == "fail"
+def test_resolve_terminal_command_running_other_terminal_fails():
+    for status in ("FAILED", "TERMINATED", "TIMED_OUT", None, "CANCELED"):
+        assert (
+            resolve_terminal_command(task_state="RUNNING", temporal_status=status, is_partial=False)
+            == "fail"
+        )
+
+
+def test_resolve_terminal_command_non_running_non_cancelling_skips():
+    for state in ("WAITING_APPROVAL", "PAUSED", "QUEUED", "DRAFT"):
+        assert (
+            resolve_terminal_command(task_state=state, temporal_status=None, is_partial=None)
+            is None
+        )
 
 
 def _engine():
@@ -56,7 +87,9 @@ def factory():
     return _make_factory()
 
 
-def _seed_run(factory, *, state="running", age_seconds=7200, with_decision=None):
+def _seed_run(
+    factory, *, state="running", task_state="RUNNING", age_seconds=7200, with_decision=None
+):
     from app.auth.repository import UserRepository
     from app.domain.repository import RunRepository, TaskRepository
 
@@ -66,6 +99,7 @@ def _seed_run(factory, *, state="running", age_seconds=7200, with_decision=None)
         task = TaskRepository(db).create(
             user_id=user.id, title="reconcile", task_type="SPECIFIED_SOURCE"
         )
+        task.state = task_state
         run = RunRepository(db).create(
             user_id=user.id, task_id=task.id, spec_version=1, plan_version=1
         )
@@ -210,3 +244,47 @@ async def test_reconcile_default_factory_obtains_session(factory, monkeypatch):
     )
     assert results[0]["run_id"] == seeded["run"].id
     assert results[0]["action"] == "skip"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_cancelling_task_marks_cancelled(factory):
+    seeded = _seed_run(factory, task_state="CANCELLING", age_seconds=7200)
+    applied: list[tuple[str, int]] = []
+
+    async def status_fn(workflow_id: str) -> str | None:
+        return None  # workflow lost while cancelling
+
+    async def apply_fn(command: str, run) -> None:
+        applied.append((command, run.run_id))
+
+    await reconcile_stale_runs(
+        workflow_status_fn=status_fn,
+        stale_after_seconds=3600,
+        dry_run=False,
+        session_factory=factory,
+        apply_fn=apply_fn,
+    )
+    assert applied == [("mark_cancelled", seeded["run"].id)]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_waiting_approval_task_skips(factory):
+    _seed_run(factory, task_state="WAITING_APPROVAL", age_seconds=7200)
+    applied: list[tuple[str, int]] = []
+
+    async def status_fn(workflow_id: str) -> str | None:
+        return None
+
+    async def apply_fn(command: str, run) -> None:
+        applied.append((command, run.run_id))
+
+    results = await reconcile_stale_runs(
+        workflow_status_fn=status_fn,
+        stale_after_seconds=3600,
+        dry_run=False,
+        session_factory=factory,
+        apply_fn=apply_fn,
+    )
+    assert results[0]["action"] == "skip"
+    assert results[0]["reason"] == "task_state=WAITING_APPROVAL"
+    assert applied == []
