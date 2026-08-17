@@ -8,6 +8,8 @@ NODE_EXECUTORS（生产为空 → NODE_EXECUTOR_UNAVAILABLE）；测试/Staging 
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 
 from temporalio import activity
@@ -36,6 +38,35 @@ _NODE_TYPE_NAMES = {
     "generate_artifact",
 }
 logger = logging.getLogger(__name__)
+
+
+async def _pool_slot_heartbeat_loop(capacity, resource_class: str, holder: str) -> None:
+    """执行期间周期续期 pool slot lease（资源占用事实，非业务 Checkpoint）。
+
+    用独立 session 与主 activity 的 admission_session 隔离（SQLAlchemy Session 非
+    并发安全）。心跳间隔来自 CapacityConfig.lease_heartbeat_seconds；任务取消时由
+    调用方 cancel 本 task，使 finally 先停心跳再释放 lease，避免过期误判。
+    """
+    from app.reliability.admission import ResourceAdmission
+
+    interval = capacity.lease_heartbeat_seconds
+    while True:
+        await asyncio.sleep(interval)
+        session = get_session_factory()()
+        try:
+            ResourceAdmission(session, capacity).heartbeat_pool_slot(
+                resource_class=resource_class, holder_id=holder
+            )
+        except Exception:
+            session.rollback()
+            logger.warning(
+                "pool_slot_heartbeat_failed resource_class=%s holder=%s",
+                resource_class,
+                holder,
+                exc_info=True,
+            )
+        finally:
+            session.close()
 
 
 @activity.defn
@@ -106,6 +137,7 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
     rc = inp.unit.resource_class
     holder = f"run{inp.run_id}-node{inp.unit.node_id or inp.unit.index}"
     admission_session = None
+    heartbeat_task = None
     if rc is not None:
         admission_session = get_session_factory()()
         capacity = capacity_from_settings(get_settings())
@@ -123,6 +155,8 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
                 status="RESOURCE_WAITING",
                 error_code="RESOURCE_UNAVAILABLE",
             )
+        # 执行期间续期 lease：长节点（如 extract）> TTL 时不因过期被误判可回收。
+        heartbeat_task = asyncio.create_task(_pool_slot_heartbeat_loop(capacity, rc, holder))
     try:
         try:
             attempt = activity.info().attempt
@@ -184,6 +218,12 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
     finally:
         if "lifecycle_session" in locals():
             lifecycle_session.close()
+        # 先停心跳再释放 lease，避免释放后心跳又把已释放行改回 active（幂等条件已防，
+        # 但顺序上先停更清晰，且确保 finally 内没有仍在飞的心跳事务）。
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
         if rc is not None and admission_session is not None:
             try:
                 ResourceAdmission(admission_session, capacity).release_pool_slot(
