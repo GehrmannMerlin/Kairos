@@ -20,6 +20,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# 与 app.worker 一致：注册 users 表到 Base.metadata，否则 _finish_run 插入 domain_events
+#（含 FK 到 users.id）时触发 NoReferencedTableError。
+from app.auth.models import User  # noqa: F401, E402
 from app.config import get_settings  # noqa: E402
 from app.infra.temporal import create_temporal_client  # noqa: E402
 from app.reconciliation.service import (  # noqa: E402
