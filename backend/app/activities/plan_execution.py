@@ -167,6 +167,11 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
         except RuntimeError:
             # Direct Activity unit tests have no Temporal context.
             attempt = 1
+        # M-11 小批次：MORE_PENDING 重跑是新的 Temporal activity（都报 attempt=1），
+        # 必须用 Workflow 回填的 batch_round 区分各批次的 lifecycle attempt，否则第 2 批
+        # 与第 1 批共用同一 NodeAttempt，start/finish_attempt 幂等跳过、事件丢失。
+        if inp.unit.batch_round:
+            attempt = inp.unit.batch_round
         from app.execution.lifecycle import ExecutionLifecycleRecorder
 
         lifecycle_session = get_session_factory()()

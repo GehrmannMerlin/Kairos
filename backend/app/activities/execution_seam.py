@@ -31,6 +31,10 @@ class ExecutionUnit:
     # M-11：来自 NodeDefinition.timeout_seconds，Workflow 用它设置 Activity start_to_close
     # （单一事实来源，避免 Workflow 固定 120s 与长节点定义不一致）。
     timeout_seconds: int | None = None
+    # M-11：小批次重跑轮次。Workflow 在 MORE_PENDING 后递增并回填，execute_safe_unit 用它
+    # 作为 lifecycle attempt 编号（Temporal 每个新 activity 调用都报 attempt=1，若不区分，
+    # 第 2 批会与第 1 批共用同一 NodeAttempt → lifecycle 事件/失败被幂等跳过）。
+    batch_round: int = 0
 
 
 @dataclass

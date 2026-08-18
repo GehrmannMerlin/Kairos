@@ -6,7 +6,7 @@ Workflow 不做任何 DB/HTTP/LLM/文件副作用；全部放入 Activity。Post
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 
 from temporalio import workflow
@@ -113,6 +113,9 @@ class TaskWorkflow:
         self._last_index = 0
         self._latest_approval: ApprovalResolutionSignal | None = None
         self._waiting_approval_id: int | None = None
+        # M-11：EXTRACT 小批次重跑轮次（node_id → batch_round）。MORE_PENDING 后递增，
+        # 下一轮 fetch 回填到 unit.batch_round，供 execute_safe_unit 区分 lifecycle attempt。
+        self._extract_rounds: dict[str, int] = {}
 
     @workflow.signal
     async def pause(self, reason: str | None = None) -> None:
@@ -361,6 +364,12 @@ class TaskWorkflow:
                         start_to_close_timeout=timedelta(seconds=60),
                     )
 
+                # M-11：EXTRACT 小批次重跑 → 回填 batch_round（区分各批 lifecycle attempt）。
+                if unit.node_type == "extract":
+                    round_no = self._extract_rounds.get(unit.node_id or str(unit.index), 0)
+                    if round_no:
+                        unit = replace(unit, batch_round=round_no)
+
                 # M-16：按 ResourceClass 确定性路由 execute_safe_unit 到对应 TaskQueue
                 # （CORE → workflow 自身队列；HTTP/BROWSER/LLM_SEARCH → 固定常量）。
                 # M-11：start_to_close 取 NodeDefinition.timeout_seconds（单一事实来源），
@@ -386,6 +395,9 @@ class TaskWorkflow:
                 if exec_result.status == "MORE_PENDING":
                     # M-11 小批次：本批已提交，仍有剩余快照。提交本批 checkpoint 后不推进
                     # index，重取同一 EXTRACT 单元处理下一小批（与 RESOURCE_WAITING 同型）。
+                    # 递增 batch_round：Temporal 新 activity 都报 attempt=1，必须显式区分。
+                    node_key = unit.node_id or str(unit.index)
+                    self._extract_rounds[node_key] = self._extract_rounds.get(node_key, 1) + 1
                     refs = exec_result.committed_refs or {}
                     await workflow.execute_activity(
                         commit_checkpoint,
@@ -567,6 +579,9 @@ class TaskWorkflow:
                     ),
                     start_to_close_timeout=timedelta(seconds=60),
                 )
+                # EXTRACT 单元完成（OK）：清理小批次轮次状态。
+                if unit.node_type == "extract":
+                    self._extract_rounds.pop(unit.node_id or str(unit.index), None)
                 self._last_index = unit.index
             except Exception:
                 # 执行循环出现不可恢复错误：fail_run 收尾（任务 FAILED、Run failed）。

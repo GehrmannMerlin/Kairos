@@ -33,7 +33,7 @@ def _unit(index: int, node_type: str = "extract") -> ExecutionUnit:
 @pytest.mark.asyncio
 async def test_more_pending_reruns_unit_then_advances(monkeypatch) -> None:
     calls: list[tuple[str, Any]] = []
-    state = {"fetch_count": 0, "extract_round": 0}
+    state = {"fetch_count": 0, "extract_round": 0, "batch_rounds": []}
 
     async def execute_activity(activity_fn: Any, activity_input: Any, **_kwargs: Any) -> Any:
         name = activity_fn.__name__
@@ -50,6 +50,7 @@ async def test_more_pending_reruns_unit_then_advances(monkeypatch) -> None:
         if name == "execute_safe_unit":
             assert activity_input.unit.timeout_seconds == 200
             state["extract_round"] += 1
+            state["batch_rounds"].append(activity_input.unit.batch_round)
             round_no = state["extract_round"]
             if round_no == 1:
                 return ExecuteUnitResult(
@@ -107,6 +108,9 @@ async def test_more_pending_reruns_unit_then_advances(monkeypatch) -> None:
     checkpoints = [value for name, value in calls if name == "commit_checkpoint"]
     assert len(checkpoints) == 2
     assert checkpoints[0].batch_identity != checkpoints[1].batch_identity
+    # M-11 batch_round 回填：首轮 0（用 temporal attempt=1），MORE_PENDING 后第 2 轮=2
+    # （区分 lifecycle attempt，避免两批共用同一 NodeAttempt）。
+    assert state["batch_rounds"] == [0, 2]
 
 
 @pytest.mark.asyncio

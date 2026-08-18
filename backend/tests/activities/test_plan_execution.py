@@ -237,3 +237,44 @@ async def test_execute_safe_unit_more_pending_is_succeeded(monkeypatch, tmp_path
         assert events == ["run.node_started", "run.node_completed"]
     finally:
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_execute_safe_unit_batch_round_creates_distinct_attempt(
+    monkeypatch, tmp_path
+) -> None:
+    """M-11：MORE_PENDING 重跑（新 Temporal activity 都报 attempt=1）必须用 batch_round
+    产生独立 NodeAttempt，否则两批共用同一 attempt、lifecycle 事件被幂等跳过。"""
+    factory, run_id = _case(monkeypatch, tmp_path, "plan-batch-round")
+
+    async def executor(_: ExecutionUnit) -> ExecuteUnitResult:
+        return ExecuteUnitResult(unit_index=1, committed_refs={}, status="OK")
+
+    monkeypatch.setattr(plan_execution, "get_node_executor", lambda _: executor)
+
+    await plan_execution.execute_safe_unit(_input(run_id))
+    second = ExecuteUnitInput(
+        run_id=run_id,
+        unit=ExecutionUnit(
+            run_id=run_id,
+            index=1,
+            unit_type="extract",
+            node_id="extract-1",
+            node_type="extract",
+            input_fingerprint="f" * 64,
+            batch_round=2,
+        ),
+    )
+    await plan_execution.execute_safe_unit(second)
+
+    session = factory()
+    try:
+        attempts = session.query(NodeAttempt).order_by(NodeAttempt.attempt).all()
+        assert [a.attempt for a in attempts] == [1, 2]
+        assert all(a.status == "SUCCEEDED" for a in attempts)
+        assert all(a.finished_at is not None for a in attempts)
+        events = [e.event_type for e in session.query(DomainEvent).order_by(DomainEvent.id)]
+        assert events.count("run.node_started") == 2
+        assert events.count("run.node_completed") == 2
+    finally:
+        session.close()
