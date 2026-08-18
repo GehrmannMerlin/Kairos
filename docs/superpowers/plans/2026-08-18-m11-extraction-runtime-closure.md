@@ -4,6 +4,8 @@
 > 分支：`fix/m11-extraction-runtime-closure`（基线 `1ac3b78` = origin/main）
 > 目标：修复 PageSnapshot → Extract → Evidence → Normalize → Deduplicate → Validate 真实 Runtime 闭环，
 > 消除 `CancelledError` 后 NodeAttempt 残留 RUNNING 与 20 页全灭 0 records。
+> 状态：**DONE（Staging 验证通过）** — 最终报告见 `docs/audits/` 或会话记录；batch_round 二次修复
+> 走 §25.4 registry-push 降级部署，PR #35 push 被 GitHub 网络阻断 → **PENDING（网络恢复后补闭环）**。
 
 ---
 
