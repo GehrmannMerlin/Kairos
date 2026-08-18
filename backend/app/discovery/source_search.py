@@ -83,6 +83,74 @@ def _normalize_source_hint(value: str) -> str:
     return normalized
 
 
+# 泛化来源类型词：目标理解有时会把「新闻聚合网站/科技新闻媒体/政府监管机构官网」
+# 这类泛化来源类型当成命名来源 hint，导致 filter 把真实搜索结果全部丢弃。
+_GENERIC_SOURCE_TYPE_WORDS = (
+    "新闻",
+    "资讯",
+    "媒体",
+    "网站",
+    "平台",
+    "机构",
+    "聚合",
+    "频道",
+    "来源",
+    "渠道",
+    "站点",
+    "专栏",
+    "门户",
+    "官方",
+    "权威",
+    "专业",
+    "行业",
+    "综合",
+    "科技",
+    "法律",
+    "政策",
+    "政府",
+    "监管",
+    "财经",
+    "体育",
+    "教育",
+    "医疗",
+    "健康",
+    "娱乐",
+    "汽车",
+    "房产",
+    "军事",
+    "国际",
+    "国内",
+    "地方",
+    "政务",
+    "时政",
+    "民生",
+    "社会",
+    "文化",
+    "旅游",
+    "消费",
+    "数码",
+    "互联网",
+    "金融",
+    "商业",
+    "企业",
+    "工业",
+    "农业",
+    "类",
+    "相关",
+)
+
+
+def _is_generic_source_hint(hint: str) -> bool:
+    """hint 去除泛化来源类型词后无剩余，则不是具体命名来源（如「新闻聚合网站」）。"""
+    normalized = _normalize_source_hint(hint)
+    if not normalized:
+        return False
+    stripped = normalized
+    for word in _GENERIC_SOURCE_TYPE_WORDS:
+        stripped = stripped.replace(word, "")
+    return not stripped.strip()
+
+
 def filter_named_source_results(
     results: list[SearchResult], source_hint: str | None
 ) -> list[SearchResult]:
@@ -190,6 +258,13 @@ class SearchService:
         source_hint = next(
             (hint for hint in source_scope.get("source_hints", []) if str(hint).strip()), None
         )
+        if source_hint is None:
+            # 无可用 hint：保持原语义（NAMED_SOURCE_ONLY 且 hint 为空 → filter 返回空）。
+            return NamedSourceResolution(is_named_source_only=True, source_hint=None)
+        # 泛化来源类型（新闻聚合网站/科技新闻媒体…）不是具体命名来源：不过滤，否则会把
+        # 真实搜索结果全部丢弃（探索式/混合式主题任务被误判 NAMED_SOURCE_ONLY 的根因）。
+        if _is_generic_source_hint(source_hint):
+            return NamedSourceResolution(is_named_source_only=False, source_hint=None)
         return NamedSourceResolution(is_named_source_only=True, source_hint=source_hint)
 
     def _build_provider(self, provider_type: str):
