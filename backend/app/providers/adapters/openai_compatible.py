@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from time import perf_counter
 
+from app.providers import errors
 from app.providers.protocol import (
     ModelCatalogResult,
     ProviderDefinition,
@@ -33,6 +34,39 @@ def map_status(
     if http_status == 429:
         return ProviderTestStatus.RATE_LIMITED, "HTTP_429"
     return ProviderTestStatus.FAILED, f"HTTP_{http_status}"
+
+
+def raise_for_search_status(http_status: int, *, retry_after_seconds: float | None = None) -> None:
+    """Raise a typed ProviderError for a non-200 search response.
+
+    ``search()`` must surface non-200 statuses so the M-16 provider-retry layer
+    can classify/retry (429 backoff, auth fail-fast) instead of silently
+    degrading a transient error into "0 results" / NO_MATCHING_PAGES.
+    """
+    if http_status == 200:
+        return
+    if http_status in (401, 403):
+        raise errors.ProviderAuthFailedError("搜索服务认证失败")
+    if http_status == 404:
+        raise errors.ProviderNetworkError("搜索服务端点不可用")
+    if http_status == 429:
+        raise errors.ProviderRateLimitedError(
+            "搜索服务限流", retry_after_seconds=retry_after_seconds
+        )
+    if 500 <= http_status < 600:
+        raise errors.ProviderNetworkError("搜索服务返回服务端错误")
+    raise errors.ProviderError(f"搜索服务返回 HTTP {http_status}")
+
+
+def _parse_retry_after(resp) -> float | None:
+    """Read the safe ``Retry-After`` header (seconds) when present."""
+    value = (resp.headers or {}).get("retry-after")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class OpenAICompatibleModelProvider:

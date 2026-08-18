@@ -68,3 +68,15 @@ async def test_search_404_maps_to_network_error() -> None:
     )
     result = await provider.test_connection(api_key="sk-test", base_url="http://stub/search")
     assert result.status is ProviderTestStatus.NETWORK_ERROR
+
+
+@pytest.mark.asyncio
+async def test_search_raises_on_non_200_instead_of_silent_empty() -> None:
+    # search() 必须把 429/5xx 抛成 typed 错误交给 M-16 retry 分类，不得静默返回 []。
+    from app.providers import errors
+
+    provider = build_search_provider(
+        "custom_compatible_search", http=FakeHttpClient(status_code=429, body={})
+    )
+    with pytest.raises(errors.ProviderRateLimitedError):
+        await provider.search(query="x", limit=5, api_key="k", base_url="http://stub/search")

@@ -135,3 +135,31 @@ async def test_bocha_malformed_json_maps_to_failed() -> None:
     provider = build_search_provider("bocha", http=FakeHttpClient(status_code=200, body="<html>"))
     result = await provider.test_connection(api_key="k", base_url=None)
     assert result.status is ProviderTestStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_bocha_search_raises_on_rate_limited() -> None:
+    # search() 不得把 429 静默吞成 0 结果（M-16 retry 层依赖异常分类）
+    from app.providers import errors
+
+    provider = build_search_provider("bocha", http=FakeHttpClient(status_code=429, body={}))
+    with pytest.raises(errors.ProviderRateLimitedError):
+        await provider.search(query="x", limit=5, api_key="k", base_url=None)
+
+
+@pytest.mark.asyncio
+async def test_bocha_search_raises_on_auth_failed() -> None:
+    from app.providers import errors
+
+    provider = build_search_provider("bocha", http=FakeHttpClient(status_code=401, body={}))
+    with pytest.raises(errors.ProviderAuthFailedError):
+        await provider.search(query="x", limit=5, api_key="k", base_url=None)
+
+
+@pytest.mark.asyncio
+async def test_bocha_search_raises_on_server_error() -> None:
+    from app.providers import errors
+
+    provider = build_search_provider("bocha", http=FakeHttpClient(status_code=503, body={}))
+    with pytest.raises(errors.ProviderNetworkError):
+        await provider.search(query="x", limit=5, api_key="k", base_url=None)
