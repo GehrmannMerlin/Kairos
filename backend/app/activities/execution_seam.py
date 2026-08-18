@@ -28,6 +28,9 @@ class ExecutionUnit:
     credential_ref: str | None = None  # 脱敏凭据引用（非明文）
     # M-16：来自 NodeDefinition.resource_class，用于确定性 TaskQueue 路由与 pool 准入。
     resource_class: str | None = None
+    # M-11：来自 NodeDefinition.timeout_seconds，Workflow 用它设置 Activity start_to_close
+    # （单一事实来源，避免 Workflow 固定 120s 与长节点定义不一致）。
+    timeout_seconds: int | None = None
 
 
 @dataclass
