@@ -94,7 +94,12 @@ def _robots_url_for(origin: str) -> str:
 
 
 async def fetch_robots(http: DiscoveryHttp, robots_url: str) -> RobotsPolicy:
-    resp = await http.get_text(robots_url, timeout_seconds=15.0)
+    try:
+        resp = await http.get_text(robots_url, timeout_seconds=15.0)
+    except Exception:
+        # 传输错误（连接失败/超时/DNS）按「无规则 → 允许」保守处理，不把
+        # robots.txt 探测失败升级成整个 AccessRulesCheck 节点崩溃（M-10 自会处理页面抓取）。
+        return RobotsPolicy()
     if resp.status_code not in (200, 404):
         # 非 404 错误按保守“无规则”处理（由上层 AccessRules 决定）
         return RobotsPolicy()

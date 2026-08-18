@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from app.discovery.robots import parse_robots
+import pytest
+from app.discovery.http import DiscoveryHttp
+from app.discovery.robots import RobotsPolicy, fetch_robots, parse_robots
 
 
 def test_parse_allow_deny_and_sitemap() -> None:
@@ -35,3 +37,19 @@ def test_longest_match_wins() -> None:
     policy = parse_robots("User-agent: *\nAllow: /a\nDisallow: /a/b\n")
     assert policy.allowed("https://example.com/a/c")
     assert not policy.allowed("https://example.com/a/b/c")
+
+
+class _RaisingTransport:
+    async def request(self, *, method: str, url: str, timeout_seconds: float):
+        raise RuntimeError("connection failed")
+
+
+@pytest.mark.asyncio
+async def test_fetch_robots_transport_error_degrades_to_allow() -> None:
+    """robots.txt 网络失败不得让 AccessRulesCheck 节点崩溃，按「无规则 → 允许」处理。"""
+    http = DiscoveryHttp(
+        transport=_RaisingTransport(), allow_hosts=frozenset({"robots.example.test"})
+    )
+    policy = await fetch_robots(http, "http://robots.example.test/robots.txt")
+    assert isinstance(policy, RobotsPolicy)
+    assert policy.allowed("http://robots.example.test/anything")
