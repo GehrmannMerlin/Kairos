@@ -297,7 +297,12 @@ class SearchConfigRepository:
         )
 
     def get_first_available(self, user_id: int) -> SearchConfig | None:
-        """Stable owner-scoped selection for frozen execution preflight."""
+        """Stable owner-scoped selection for frozen execution preflight.
+
+        Newest available wins (same ordering as ``list_current``), so a newly
+        configured/tested Search Provider becomes the default for future tasks;
+        the frozen preflight still makes the choice immutable per task run.
+        """
         return self._db.scalar(
             select(SearchConfig)
             .where(
@@ -305,7 +310,7 @@ class SearchConfigRepository:
                 SearchConfig.is_current.is_(True),
                 SearchConfig.connection_status == "available",
             )
-            .order_by(SearchConfig.created_at.asc(), SearchConfig.id.asc())
+            .order_by(SearchConfig.created_at.desc(), SearchConfig.id.desc())
             .limit(1)
         )
 

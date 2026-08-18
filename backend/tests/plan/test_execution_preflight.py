@@ -195,6 +195,44 @@ def test_hybrid_freezes_available_search_config(hybrid_preflight_case):
     assert outcome.search_config_version == hybrid_preflight_case.search.version
 
 
+def test_hybrid_freezes_newest_available_search_config(hybrid_preflight_case):
+    """当存在多个可用 SearchConfig 时，冻结执行默认选择最新配置（未来任务默认切换）。"""
+    from datetime import UTC, datetime, timedelta
+
+    db = hybrid_preflight_case.db
+    repo = SearchConfigRepository(db)
+    user_id = hybrid_preflight_case.user.id
+    older = repo.create_version(
+        user_id=user_id,
+        name="older",
+        provider_type="tavily",
+        base_url=None,
+        credential_version_id=None,
+    )
+    newer = repo.create_version(
+        user_id=user_id,
+        name="newer",
+        provider_type="bocha",
+        base_url=None,
+        credential_version_id=None,
+    )
+    older.connection_status = "available"
+    newer.connection_status = "available"
+    now = datetime.now(UTC)
+    older.created_at = now - timedelta(days=1)
+    newer.created_at = now
+    db.commit()
+    outcome = hybrid_preflight_case.service.evaluate(
+        user_id=user_id,
+        task_id=hybrid_preflight_case.task.id,
+        spec_version=hybrid_preflight_case.spec.version,
+        plan_version=hybrid_preflight_case.plan.version,
+    )
+    assert outcome.status is ExecutionPreflightStatus.READY
+    assert outcome.search_config_id == newer.config_id
+    assert outcome.search_config_version == newer.version
+
+
 def test_unsupported_node_is_blocked(preflight_case):
     service = ExecutionPreflightService(
         preflight_case.db,
