@@ -393,6 +393,93 @@ async def test_named_source_search_without_usable_hint_admits_no_candidates(
     assert list(select_urls(db, run.task_id)) == []
 
 
+@pytest.mark.asyncio
+async def test_generic_source_type_hint_does_not_filter_search_results(tmp_path) -> None:
+    """泛化来源类型（新闻聚合网站/科技新闻媒体）不是具体命名来源：不得过滤真实搜索结果。"""
+    db, _, run, _, _ = _frozen_search_case(tmp_path, source_hints=["新闻聚合网站", "科技新闻媒体"])
+    provider = _SearchProvider(
+        [
+            SearchResult(
+                url="https://news.example.test/a",
+                title="全球AI监管政策观察",
+                snippet="各国监管动态",
+                provider="frozen-provider",
+                rank=1,
+                query="人工智能监管政策",
+            ),
+            SearchResult(
+                url="https://policy.example.test/b",
+                title="人工智能治理年度报告",
+                snippet="政策解读",
+                provider="frozen-provider",
+                rank=2,
+                query="人工智能监管政策",
+            ),
+        ]
+    )
+    service = SearchService(db, vault=_SearchVault(), provider_builder=lambda _: provider)
+
+    result = await service.execute(
+        ExecutionUnit(
+            run_id=run.id,
+            index=1,
+            unit_type="node",
+            input_fingerprint="search-test",
+            node_id="search-1",
+            node_type="source_search",
+            parameters={"query": "人工智能监管政策"},
+        )
+    )
+
+    assert result.committed_refs["candidate_sites"] == 2
+    assert len(list(select_urls(db, run.task_id))) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_hint", ["新华网", "山东省人民政府官网"])
+async def test_concrete_named_source_hint_still_filters(tmp_path, source_hint: str) -> None:
+    """具体命名来源 hint 仍按冻结来源过滤，只保留命中的结果。"""
+    db, _, run, _, _ = _frozen_search_case(tmp_path, source_hint=source_hint)
+    provider = _SearchProvider(
+        [
+            SearchResult(
+                url="https://named.example.test/a",
+                title=f"{source_hint}发布最新公告",
+                snippet="官方信息",
+                provider="frozen-provider",
+                rank=1,
+                query="来源查询",
+            ),
+            SearchResult(
+                url="https://unrelated.example.test/b",
+                title="无关商业推广",
+                snippet="与来源无关",
+                provider="frozen-provider",
+                rank=2,
+                query="来源查询",
+            ),
+        ]
+    )
+    service = SearchService(db, vault=_SearchVault(), provider_builder=lambda _: provider)
+
+    result = await service.execute(
+        ExecutionUnit(
+            run_id=run.id,
+            index=1,
+            unit_type="node",
+            input_fingerprint="search-test",
+            node_id="search-1",
+            node_type="source_search",
+            parameters={"query": "来源查询"},
+        )
+    )
+
+    # 只保留命中了具体来源标题的结果
+    assert result.committed_refs["candidate_sites"] == 1
+    urls = select_urls(db, run.task_id)
+    assert list(urls) == ["https://named.example.test/a"]
+
+
 def select_urls(db: Session, task_id: int):
     from app.domain.models import URLResource
 
