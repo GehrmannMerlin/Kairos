@@ -436,6 +436,42 @@ async def test_generic_source_type_hint_does_not_filter_search_results(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_topic_collection_descriptor_hint_does_not_filter(tmp_path) -> None:
+    """主题采集描述（人工智能安全相关新闻报道）不是命名来源：不得过滤真实搜索结果。"""
+    db, _, run, _, _ = _frozen_search_case(
+        tmp_path, source_hints=["人工智能安全相关新闻报道", "搜索引擎搜索结果"]
+    )
+    provider = _SearchProvider(
+        [
+            SearchResult(
+                url="https://news.example.test/a",
+                title="人工智能安全监管动态",
+                snippet="最新报道",
+                provider="frozen-provider",
+                rank=1,
+                query="人工智能安全 最新新闻报道",
+            ),
+        ]
+    )
+    service = SearchService(db, vault=_SearchVault(), provider_builder=lambda _: provider)
+
+    result = await service.execute(
+        ExecutionUnit(
+            run_id=run.id,
+            index=1,
+            unit_type="node",
+            input_fingerprint="search-test",
+            node_id="search-1",
+            node_type="source_search",
+            parameters={"query": "人工智能安全 最新新闻报道"},
+        )
+    )
+
+    assert result.committed_refs["candidate_sites"] == 1
+    assert len(list(select_urls(db, run.task_id))) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("source_hint", ["新华网", "山东省人民政府官网"])
 async def test_concrete_named_source_hint_still_filters(tmp_path, source_hint: str) -> None:
     """具体命名来源 hint 仍按冻结来源过滤，只保留命中的结果。"""

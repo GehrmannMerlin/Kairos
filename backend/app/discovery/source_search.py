@@ -139,12 +139,38 @@ _GENERIC_SOURCE_TYPE_WORDS = (
     "相关",
 )
 
+# 采集内容描述词：命中说明 hint 描述的是「要采什么内容」，而非「从哪个命名来源采」。
+# 如「人工智能安全相关新闻报道」「搜索引擎搜索结果」。真实命名来源（新华网/人民网/
+# 山东省人民政府官网）不含这些词。
+_COLLECTION_DESCRIPTOR_WORDS = (
+    "新闻",
+    "报道",
+    "信息",
+    "内容",
+    "文章",
+    "资料",
+    "搜索",
+    "结果",
+    "相关",
+    "资讯",
+    "动态",
+    "公告",
+    "页面",
+    "链接",
+)
+
 
 def _is_generic_source_hint(hint: str) -> bool:
-    """hint 去除泛化来源类型词后无剩余，则不是具体命名来源（如「新闻聚合网站」）。"""
+    """hint 描述的是采集内容或泛化来源类型，而非具体命名来源。
+
+    - 含采集内容描述词（新闻/报道/搜索…）→ 主题采集描述，不过滤。
+    - 去除泛化来源类型词后无剩余 → 泛化来源类型，不过滤。
+    """
     normalized = _normalize_source_hint(hint)
     if not normalized:
         return False
+    if any(word in normalized for word in _COLLECTION_DESCRIPTOR_WORDS):
+        return True
     stripped = normalized
     for word in _GENERIC_SOURCE_TYPE_WORDS:
         stripped = stripped.replace(word, "")
