@@ -23,6 +23,11 @@ from app.providers.adapters.openai_compatible import (
     map_status,
     raise_for_search_status,
 )
+from app.providers.errors import (
+    ProviderAuthFailedError,
+    ProviderError,
+    ProviderRateLimitedError,
+)
 from app.providers.protocol import (
     BaseUrlMode,
     ProviderDefinition,
@@ -34,6 +39,28 @@ from app.providers.transport import HttpClient, HttpxTransport
 
 _DEFAULT_BASE_URL = "https://api.bochaai.com"
 _MAX_COUNT = 50  # Bocha 官方 count 上限 1-50
+
+
+def _raise_for_body_code(body: Any) -> None:
+    """Bocha 把业务错误放在 HTTP 200 + JSON body ``code`` 字段（如 429 限流）。
+
+    HTTP 状态检查无法发现这类错误，必须按 body.code 分类，否则限流会被吞成
+    「0 结果 → NO_MATCHING_PAGES」。成功码同时兼容 200（实测）与 "0"（官方文档）。
+    """
+    if not isinstance(body, dict):
+        return
+    code = body.get("code")
+    if code is None or code in (0, "0", 200, "200"):
+        return
+    try:
+        code_int = int(code)
+    except (TypeError, ValueError):
+        return
+    if code_int in (401, 403):
+        raise ProviderAuthFailedError("搜索服务认证失败")
+    if code_int == 429:
+        raise ProviderRateLimitedError("搜索服务限流")
+    raise ProviderError(f"搜索服务返回错误 code={code}")
 
 
 def _extract_web_pages(body: Any) -> list[dict]:
@@ -85,9 +112,22 @@ class BochaSearchProvider:
                 latency_ms=int((perf_counter() - started) * 1000),
             )
         status, code = map_status(resp.status_code, model_specific_404=False)
-        # 200 但 body 不是 JSON 对象（malformed）→ 视为 FAILED，而不是可用。
-        if status is ProviderTestStatus.AVAILABLE and not isinstance(resp.body, dict):
-            status, code = ProviderTestStatus.FAILED, "INVALID_RESPONSE"
+        if status is ProviderTestStatus.AVAILABLE:
+            if not isinstance(resp.body, dict):
+                status, code = ProviderTestStatus.FAILED, "INVALID_RESPONSE"
+            else:
+                body_code = resp.body.get("code")
+                if body_code is not None and body_code not in (0, "0", 200, "200"):
+                    try:
+                        body_code_int = int(body_code)
+                    except (TypeError, ValueError):
+                        body_code_int = None
+                    if body_code_int in (401, 403):
+                        status, code = ProviderTestStatus.AUTH_FAILED, "BODY_401"
+                    elif body_code_int == 429:
+                        status, code = ProviderTestStatus.RATE_LIMITED, "BODY_429"
+                    else:
+                        status, code = ProviderTestStatus.FAILED, f"BODY_{body_code}"
         return ProviderTestResult(
             status=status, error_code=code, latency_ms=int((perf_counter() - started) * 1000)
         )
@@ -105,6 +145,7 @@ class BochaSearchProvider:
             timeout_seconds=15.0,
         )
         raise_for_search_status(resp.status_code, retry_after_seconds=_parse_retry_after(resp))
+        _raise_for_body_code(resp.body)
         out: list[SearchResult] = []
         for idx, item in enumerate(_extract_web_pages(resp.body), start=1):
             # 单条缺 title/snippet 不影响保留合法 URL；url 缺失由下游 merge 丢弃。

@@ -163,3 +163,38 @@ async def test_bocha_search_raises_on_server_error() -> None:
     provider = build_search_provider("bocha", http=FakeHttpClient(status_code=503, body={}))
     with pytest.raises(errors.ProviderNetworkError):
         await provider.search(query="x", limit=5, api_key="k", base_url=None)
+
+
+@pytest.mark.asyncio
+async def test_bocha_search_raises_on_body_level_rate_limit() -> None:
+    # Bocha 限流可能返回 HTTP 200 + body.code=429；必须按 body.code 分类，不能吞成 0 结果。
+    from app.providers import errors
+
+    provider = build_search_provider(
+        "bocha",
+        http=FakeHttpClient(status_code=200, body={"code": 429, "msg": "rate limited"}),
+    )
+    with pytest.raises(errors.ProviderRateLimitedError):
+        await provider.search(query="x", limit=5, api_key="k", base_url=None)
+
+
+@pytest.mark.asyncio
+async def test_bocha_search_raises_on_body_level_auth_failed() -> None:
+    from app.providers import errors
+
+    provider = build_search_provider(
+        "bocha",
+        http=FakeHttpClient(status_code=200, body={"code": 401, "msg": "invalid key"}),
+    )
+    with pytest.raises(errors.ProviderAuthFailedError):
+        await provider.search(query="x", limit=5, api_key="k", base_url=None)
+
+
+@pytest.mark.asyncio
+async def test_bocha_test_connection_maps_body_level_rate_limit() -> None:
+    provider = build_search_provider(
+        "bocha",
+        http=FakeHttpClient(status_code=200, body={"code": 429, "msg": "rate limited"}),
+    )
+    result = await provider.test_connection(api_key="k", base_url=None)
+    assert result.status is ProviderTestStatus.RATE_LIMITED
