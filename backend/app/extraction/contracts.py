@@ -95,6 +95,10 @@ class ExtractionSettings:
     llm_max_context_chars: int = 12_000
     # 超时后「缩小上下文」重试的上限（D-013：重试必须改变输入，而非同样 prompt 无限再试）。
     llm_retry_reduced_context_chars: int = 6_000
+    # M-11 小批次：单次 Extract Activity 最多处理的快照数（D-015 小批次事务）。
+    # 预算与 Activity timeout 层级：budget(100s) + 最坏单快照(90s) < Activity timeout(200s)。
+    extract_batch_size: int = 5
+    extract_activity_budget_seconds: int = 100
     min_rule_validation_samples: int = 3
     min_rule_precision: float = 0.9
     min_rule_coverage: float = 0.5

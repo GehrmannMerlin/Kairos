@@ -8,4 +8,4 @@ from alembic.script import ScriptDirectory
 
 def test_alembic_has_exactly_one_execution_preflight_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0016"]
+    assert script.get_heads() == ["0017"]

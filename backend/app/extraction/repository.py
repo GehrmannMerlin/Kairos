@@ -248,7 +248,22 @@ class ExtractionRepository:
         extracted = {r.payload.get("snapshot_id") for r in self.records_for_task(user_id, task_id)}
         rows = list(
             self._db.scalars(
-                select(PS).where(PS.user_id == user_id, PS.task_id == task_id).order_by(PS.id)
+                select(PS)
+                .where(PS.user_id == user_id, PS.task_id == task_id)
+                .where(PS.extraction_status.is_(None))
+                .order_by(PS.id)
             )
         )
         return [r for r in rows if r.id not in extracted][:limit]
+
+    def mark_snapshot_extraction_failed(self, snapshot_id: int) -> None:
+        """记录快照的合法提取失败（M-11 失败账本），同一事务提交由调用方负责。
+
+        让后续小批次不再重复处理同一失败快照（避免 MORE_PENDING 重跑无限循环）。
+        """
+        from app.domain.models import PageSnapshot as PS
+
+        row = self._db.get(PS, snapshot_id)
+        if row is not None:
+            row.extraction_status = "failed"
+            self._db.add(row)

@@ -1,12 +1,15 @@
 """M-08 EXTRACT / NORMALIZE 节点真实执行器（M-11）。
 
-EXTRACT：消费 immutable PageSnapshot → 提取阶梯 → 单事务写入 Record(EXTRACTED) +
-FieldEvidence + DomainEvent → committed_refs。NORMALIZE：只做字段级 canonicalization，
+EXTRACT：小批次消费 immutable PageSnapshot（extract_batch_size 个/次）→ 提取阶梯 →
+每个快照独立事务写入 Record(EXTRACTED) + FieldEvidence + DomainEvent；剩余快照返回
+MORE_PENDING 由 Workflow 重取同一单元继续。NORMALIZE：只做字段级 canonicalization，
 绝不业务去重/冲突裁决（四十五）。
 """
 
 from __future__ import annotations
 
+import asyncio
+from time import perf_counter
 from typing import Any
 
 from app.activities.execution_seam import ExecuteUnitResult
@@ -57,15 +60,18 @@ class ExtractNodeExecutor:
             run.user_id, run.task_id, run.spec_version
         )
         repo = ExtractionRepository(self._db)
-        pending = repo.pending_snapshots(
-            user_id=run.user_id, task_id=run.task_id, limit=self._max_batch
-        )
+        # M-11 小批次（D-015）：单次 Activity 最多处理 extract_batch_size 个快照，每个快照
+        # 独立事务提交。剩余快照通过 MORE_PENDING → Workflow 重取同一单元继续。
+        limit = min(self._max_batch, self._settings.extract_batch_size)
+        pending = repo.pending_snapshots(user_id=run.user_id, task_id=run.task_id, limit=limit)
         if not pending:
             return ExecuteUnitResult(
                 unit_index=unit.index,
                 status="OK",
                 committed_refs={
                     "extracted": 0,
+                    "failed": 0,
+                    "remaining": 0,
                     "run_id": run.id,
                     "node_id": unit.node_id,
                     "node_type": unit.node_type,
@@ -76,22 +82,65 @@ class ExtractNodeExecutor:
         self._resolved_model_audit = audit
         pipeline = self._pipeline or self._build_pipeline(run, resolved, api_key, audit)
         emit_event(self._db, run, "extraction.started", {"snapshots": len(pending)})
+        # started 事件独立提交，保证取消/预算中断时进度信号仍可见（不再是“最后一次性提交”）。
+        self._db.commit()
+
+        started = perf_counter()
+        budget = self._settings.extract_activity_budget_seconds
         extracted = 0
-        llm_invocations = 0
+        failed = 0
         for snapshot in pending:
+            # 预算检查在每个快照开始前：预算(100s)+最坏单快照(90s) < Activity timeout(200s)，
+            # 保证本 Activity 在 start_to_close 前正常返回（MORE_PENDING），而不是被 Temporal 取消。
+            if perf_counter() - started > budget:
+                break
             try:
                 result = await pipeline.run(snapshot, spec.payload, user_id=run.user_id)
-            except Exception as exc:  # 单快照失败不阻塞批次（D-013 失败隔离）
+            except asyncio.CancelledError:
+                # 真实取消（BaseException）向上传播，绝不吞成 ProviderTimeout/普通失败；
+                # 此前已提交的快照不丢，未提交部分随 session 回滚。D-013 取消永不重试。
+                raise
+            except Exception as exc:
+                # 单快照失败局部化（D-013）；失败账本防止 MORE_PENDING 重跑无限循环。
+                failed += 1
+                repo.mark_snapshot_extraction_failed(snapshot.id)
                 emit_event(
                     self._db,
                     run,
                     "extraction.failed",
                     {"snapshot_id": snapshot.id, "error": str(exc)[:200]},
                 )
+                self._db.commit()
                 continue
-            llm_invocations += int((result.technical_metadata or {}).get("llm_invocations", 0))
+            page_llm = int((result.technical_metadata or {}).get("llm_invocations", 0))
             if not result.candidates:
+                # 全阶梯（结构化/规则/LLM 缩小重试）后仍无候选：页面级合法失败，记录账本。
+                failed += 1
+                repo.mark_snapshot_extraction_failed(snapshot.id)
+                emit_event(
+                    self._db,
+                    run,
+                    "extraction.failed",
+                    {
+                        "snapshot_id": snapshot.id,
+                        "error": "no candidates after extraction ladder",
+                        "unresolved_fields": list(result.unresolved_fields)[:5],
+                    },
+                )
+                self._db.commit()
                 continue
+            if page_llm > 0:
+                # 真实模型调用（安全摘要：仅 provider/model，绝无 secret/prompt）。
+                emit_event(
+                    self._db,
+                    run,
+                    "extraction.llm_fallback_used",
+                    {
+                        "snapshot_id": snapshot.id,
+                        "provider": self._resolved_model_audit.get("provider"),
+                        "model": self._resolved_model_audit.get("model"),
+                    },
+                )
             record = self._persist(run, snapshot, result)
             extracted += 1
             emit_event(
@@ -100,23 +149,20 @@ class ExtractNodeExecutor:
                 "extraction.completed",
                 {"snapshot_id": snapshot.id, "record_id": record.id},
             )
-        if llm_invocations > 0:
-            # 让用户看到真实模型调用（安全摘要：仅 provider/model，绝无 secret/prompt）。
-            emit_event(
-                self._db,
-                run,
-                "extraction.llm_fallback_used",
-                {
-                    "provider": self._resolved_model_audit.get("provider"),
-                    "model": self._resolved_model_audit.get("model"),
-                },
-            )
-        self._db.commit()
+            self._db.commit()
+
+        remaining = len(repo.pending_snapshots(user_id=run.user_id, task_id=run.task_id))
+        first_snapshot_id = pending[0].id if pending else 0
+        # 批次身份唯一（首快照 id 单调递增），供 Workflow commit_checkpoint 区分各小批。
+        batch_identity = f"extract-{run.id}-{unit.index}-{first_snapshot_id}"
         return ExecuteUnitResult(
             unit_index=unit.index,
-            status="OK",
+            status="MORE_PENDING" if remaining > 0 else "OK",
             committed_refs={
                 "extracted": extracted,
+                "failed": failed,
+                "remaining": remaining,
+                "batch_identity": batch_identity,
                 "run_id": run.id,
                 "node_id": unit.node_id,
                 "node_type": unit.node_type,
