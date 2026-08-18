@@ -12,6 +12,8 @@ from datetime import timedelta
 from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
+    from temporalio.common import RetryPolicy
+
     from app.activities.approval import (
         BlockHighRiskNodeInput,
         RequestApprovalInput,
@@ -361,7 +363,18 @@ class TaskWorkflow:
 
                 # M-16：按 ResourceClass 确定性路由 execute_safe_unit 到对应 TaskQueue
                 # （CORE → workflow 自身队列；HTTP/BROWSER/LLM_SEARCH → 固定常量）。
-                exec_kwargs: dict = {"start_to_close_timeout": timedelta(seconds=120)}
+                # M-11：start_to_close 取 NodeDefinition.timeout_seconds（单一事实来源），
+                # 避免长节点（extract/browser_render）被固定 120s 提前取消；
+                # 有界 retry policy 防止与内层 provider 重试形成乘法，且取消永不重试。
+                timeout = timedelta(seconds=unit.timeout_seconds or 120)
+                exec_kwargs: dict = {
+                    "start_to_close_timeout": timeout,
+                    "retry_policy": RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=2),
+                        non_retryable_error_types=["CancelledError", "asyncio.CancelledError"],
+                    ),
+                }
                 queue_override = workflow_queue_override(unit.resource_class or "")
                 if queue_override:
                     exec_kwargs["task_queue"] = queue_override
@@ -370,6 +383,27 @@ class TaskWorkflow:
                     ExecuteUnitInput(run_id=inp.run_id, unit=unit),
                     **exec_kwargs,
                 )
+                if exec_result.status == "MORE_PENDING":
+                    # M-11 小批次：本批已提交，仍有剩余快照。提交本批 checkpoint 后不推进
+                    # index，重取同一 EXTRACT 单元处理下一小批（与 RESOURCE_WAITING 同型）。
+                    refs = exec_result.committed_refs or {}
+                    await workflow.execute_activity(
+                        commit_checkpoint,
+                        CommitCheckpointInput(
+                            task_id=inp.task_id,
+                            user_id=inp.user_id,
+                            run_id=inp.run_id,
+                            spec_version=inp.spec_version,
+                            plan_version=self._current_plan_version,
+                            batch_identity=str(refs.get("batch_identity") or f"unit-{unit.index}"),
+                            node_run_id=None,
+                            input_fingerprint=unit.input_fingerprint,
+                            committed_refs=exec_result.committed_refs,
+                            content_hash=None,
+                        ),
+                        start_to_close_timeout=timedelta(seconds=60),
+                    )
+                    continue
                 if exec_result.status == "RESOURCE_WAITING":
                     # M-16：资源池无 slot → 等待，不推进 _last_index，不失败（D-071 §38）。
                     refs = exec_result.committed_refs or {}
@@ -522,7 +556,10 @@ class TaskWorkflow:
                         run_id=inp.run_id,
                         spec_version=inp.spec_version,
                         plan_version=self._current_plan_version,
-                        batch_identity=f"unit-{unit.index}",
+                        batch_identity=str(
+                            (exec_result.committed_refs or {}).get("batch_identity")
+                            or f"unit-{unit.index}"
+                        ),
                         node_run_id=None,
                         input_fingerprint=unit.input_fingerprint,
                         committed_refs=exec_result.committed_refs,

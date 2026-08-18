@@ -409,6 +409,9 @@ class PageSnapshot(Base):
     credential_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 脱敏，无明文
     http_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # allowlist 摘要
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="stored")
+    # M-11 提取失败账本（migration 0017）：NULL=待提取 / "failed"=合法提取失败（跳过重处理）。
+    # 只标记一次提取结果，不覆盖观察数据，保持 snapshot 不可变语义。
+    extraction_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

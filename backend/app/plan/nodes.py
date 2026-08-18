@@ -221,7 +221,9 @@ _STANDARD_DEFINITIONS: tuple[NodeDefinition, ...] = (
         parameter_schema=_ExtractParams,
         input_contract=(ResourceKind.SNAPSHOT, ResourceKind.SPEC),
         output_contract=(ResourceKind.RECORD, ResourceKind.EVIDENCE),
-        timeout_seconds=120,
+        # M-11：小批次（extract_batch_size=5）+ 预算(100s) + 最坏单快照(90s) < 200s，
+        # 保证 Activity 正常返回 MORE_PENDING 而非被 start_to_close 取消。
+        timeout_seconds=200,
         retry_policy=RetryPolicy(max_attempts=3, backoff_seconds=2),
         risk_level=RiskLevel.LOW,
         idempotency_identity="node_type+input_fingerprint",
