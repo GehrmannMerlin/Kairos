@@ -16,7 +16,11 @@ from __future__ import annotations
 
 from time import perf_counter
 
-from app.providers.adapters.openai_compatible import map_status
+from app.providers.adapters.openai_compatible import (
+    _parse_retry_after,
+    map_status,
+    raise_for_search_status,
+)
 from app.providers.protocol import (
     BaseUrlMode,
     ProviderDefinition,
@@ -81,6 +85,7 @@ class TavilySearchProvider:
             body={"query": query, "search_depth": "basic", "max_results": min(limit, 5)},
             timeout_seconds=15.0,
         )
+        raise_for_search_status(resp.status_code, retry_after_seconds=_parse_retry_after(resp))
         body = resp.body if isinstance(resp.body, dict) else {}
         raw = body.get("results") or []
         out: list[SearchResult] = []

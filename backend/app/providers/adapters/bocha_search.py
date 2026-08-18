@@ -18,7 +18,11 @@ from __future__ import annotations
 from time import perf_counter
 from typing import Any
 
-from app.providers.adapters.openai_compatible import map_status
+from app.providers.adapters.openai_compatible import (
+    _parse_retry_after,
+    map_status,
+    raise_for_search_status,
+)
 from app.providers.protocol import (
     BaseUrlMode,
     ProviderDefinition,
@@ -100,6 +104,7 @@ class BochaSearchProvider:
             body={"query": query, "count": max(1, min(limit, _MAX_COUNT))},
             timeout_seconds=15.0,
         )
+        raise_for_search_status(resp.status_code, retry_after_seconds=_parse_retry_after(resp))
         out: list[SearchResult] = []
         for idx, item in enumerate(_extract_web_pages(resp.body), start=1):
             # 单条缺 title/snippet 不影响保留合法 URL；url 缺失由下游 merge 丢弃。
