@@ -173,3 +173,67 @@ async def test_execute_safe_unit_normalizes_credential_required_reason(
         assert event.payload["reason_code"] == "CREDENTIAL_REQUIRED"
     finally:
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_execute_safe_unit_finalizes_attempt_on_cancellation(monkeypatch, tmp_path) -> None:
+    """M-11 P0：CancelledError 不能被 except Exception 吞掉，attempt 必须收口 CANCELLED。
+
+    过去这里依赖 except Exception 兜底，但 Python ≥3.11 的 asyncio.CancelledError 继承
+    BaseException，导致 finish_attempt 永不执行、NodeAttempt 残留 RUNNING。
+    """
+    import asyncio
+
+    factory, run_id = _case(monkeypatch, tmp_path, "plan-cancel")
+
+    async def executor(_: ExecutionUnit) -> ExecuteUnitResult:
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(plan_execution, "get_node_executor", lambda _: executor)
+    with pytest.raises(asyncio.CancelledError):
+        await plan_execution.execute_safe_unit(_input(run_id))
+
+    session = factory()
+    try:
+        attempt = session.query(NodeAttempt).one()
+        node = session.query(NodeRun).one()
+        events = [e.event_type for e in session.query(DomainEvent).order_by(DomainEvent.id)]
+        # 取消传播 + attempt 终态收口，不残留 RUNNING
+        assert attempt.status == "CANCELLED"
+        assert attempt.finished_at is not None
+        assert node.state == "CANCELLED"
+        assert node.finished_at is not None
+        assert events == ["run.node_started", "run.node_cancelled"]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_execute_safe_unit_more_pending_is_succeeded(monkeypatch, tmp_path) -> None:
+    """M-11：小批次返回 MORE_PENDING 时 attempt 记为 SUCCEEDED（本批已提交）。"""
+    factory, run_id = _case(monkeypatch, tmp_path, "plan-more-pending")
+
+    async def executor(_: ExecutionUnit) -> ExecuteUnitResult:
+        return ExecuteUnitResult(
+            unit_index=1,
+            status="MORE_PENDING",
+            committed_refs={
+                "extracted": 5,
+                "failed": 0,
+                "remaining": 3,
+                "batch_identity": "extract-1-1-10",
+            },
+        )
+
+    monkeypatch.setattr(plan_execution, "get_node_executor", lambda _: executor)
+    result = await plan_execution.execute_safe_unit(_input(run_id))
+    assert result.status == "MORE_PENDING"
+
+    session = factory()
+    try:
+        attempt = session.query(NodeAttempt).one()
+        events = [e.event_type for e in session.query(DomainEvent).order_by(DomainEvent.id)]
+        assert attempt.status == "SUCCEEDED"
+        assert events == ["run.node_started", "run.node_completed"]
+    finally:
+        session.close()

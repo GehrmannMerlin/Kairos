@@ -578,6 +578,51 @@ def test_delayed_pending_progress_cannot_reopen_newer_terminal(
     assert node.finished_at == finished_at
 
 
+def test_cancelled_attempt_is_terminal(lifecycle_case: LifecycleCase) -> None:
+    """M-11：Temporal 取消后 attempt 必须收口为 CANCELLED，绝不残留 RUNNING。"""
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=1
+    )
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=1,
+        status="CANCELLED",
+        committed_refs={},
+        error_code="CANCELLED",
+    )
+
+    attempt = lifecycle_case.session.query(NodeAttempt).one()
+    node = lifecycle_case.session.query(NodeRun).one()
+    assert attempt.status == "CANCELLED"
+    assert attempt.finished_at is not None
+    assert node.state == "CANCELLED"
+    assert node.finished_at is not None
+    assert lifecycle_case.event_types()[-1] == "run.node_cancelled"
+
+
+def test_more_pending_attempt_is_succeeded(lifecycle_case: LifecycleCase) -> None:
+    """M-11：小批次还有剩余时 attempt 记为 SUCCEEDED（本批已提交），非失败。"""
+    lifecycle_case.recorder.start_attempt(
+        run_id=lifecycle_case.run.id, unit=lifecycle_case.unit, attempt=1
+    )
+    lifecycle_case.recorder.finish_attempt(
+        run_id=lifecycle_case.run.id,
+        unit=lifecycle_case.unit,
+        attempt=1,
+        status="MORE_PENDING",
+        committed_refs={"extracted": 5, "failed": 0, "remaining": 3},
+        error_code=None,
+    )
+
+    attempt = lifecycle_case.session.query(NodeAttempt).one()
+    event = lifecycle_case.session.query(DomainEvent).order_by(DomainEvent.id.desc()).first()
+    assert attempt.status == "SUCCEEDED"
+    assert event is not None
+    assert event.event_type == "run.node_completed"
+    assert event.payload["counts"] == {"extracted": 5, "failed": 0}
+
+
 def test_unknown_lifecycle_status_fails_closed_without_secret_text(
     lifecycle_case: LifecycleCase,
 ) -> None:

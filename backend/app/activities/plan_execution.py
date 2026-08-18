@@ -97,9 +97,12 @@ async def fetch_next_execution_unit(inp: FetchUnitInput) -> FetchUnitResult:
         from app.plan.nodes import NodeRegistry
 
         rc = None
+        timeout_seconds = None
         try:
             definition = NodeRegistry().get(str(node_type))
-            rc = definition.resource_class.value if definition else None
+            if definition:
+                rc = definition.resource_class.value
+                timeout_seconds = definition.timeout_seconds
         except Exception:
             rc = None
         return FetchUnitResult(
@@ -120,6 +123,7 @@ async def fetch_next_execution_unit(inp: FetchUnitInput) -> FetchUnitResult:
                 approval_parameters=parameters,
                 credential_ref=parameters.get("credential_ref"),
                 resource_class=rc,
+                timeout_seconds=timeout_seconds,
             )
         )
     finally:
@@ -179,6 +183,29 @@ async def execute_safe_unit(inp: ExecuteUnitInput) -> ExecuteUnitResult:
                 )
             else:
                 result = await executor(inp.unit)
+        except asyncio.CancelledError:
+            # Temporal 取消（start_to_close 超时 / workflow cancel / worker shutdown）。
+            # asyncio.CancelledError 继承 BaseException，现有 `except Exception` 不捕获，
+            # 否则 finish_attempt 永不执行 → NodeAttempt 残留 RUNNING（M-11 根因）。
+            # 先把 attempt 收口为 CANCELLED，再向上传播取消；finally 负责释放 lease/心跳。
+            try:
+                lifecycle.finish_attempt(
+                    run_id=inp.run_id,
+                    unit=inp.unit,
+                    attempt=attempt,
+                    status="CANCELLED",
+                    committed_refs={},
+                    error_code="CANCELLED",
+                )
+            except Exception:
+                lifecycle_session.rollback()
+                logger.warning(
+                    "lifecycle_cancel_finish_failed run_id=%s node_id=%s attempt=%s",
+                    inp.run_id,
+                    inp.unit.node_id or inp.unit.index,
+                    attempt,
+                )
+            raise
         except Exception:
             # The executor error is the caller-visible failure. Lifecycle
             # persistence is best-effort here and must not mask it.

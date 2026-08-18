@@ -18,11 +18,17 @@ from app.state.events import append_domain_event
 _LIFECYCLE_STATUS = {
     "RUNNING": ("run.node_progress", "RUNNING", "RUNNING", False),
     "SUCCEEDED": ("run.node_completed", "SUCCEEDED", "SUCCEEDED", True),
+    # MORE_PENDING：小批次提取已提交本批、但单元内仍有剩余工作；attempt 视为成功，
+    # Node 终态由最后一个批次（OK）落定（M-11 Extraction Runtime Closure）。
+    "MORE_PENDING": ("run.node_completed", "SUCCEEDED", "SUCCEEDED", True),
     "FAILED": ("run.node_failed", "FAILED", "FAILED", True),
     "NODE_EXECUTOR_UNAVAILABLE": ("run.node_failed", "FAILED", "FAILED", True),
     "BLOCKED": ("run.node_blocked", "BLOCKED", "BLOCKED", True),
     "WAITING_APPROVAL": ("run.node_blocked", "BLOCKED", "WAITING_APPROVAL", True),
     "RESOURCE_WAITING": ("run.node_blocked", "WAITING_RESOURCE", "RESOURCE_WAITING", True),
+    # CANCELLED：Temporal 取消（start_to_close 超时 / workflow cancel / worker shutdown）
+    # 时 attempt 的合法终态，绝不残留 RUNNING（M-11 Extraction Runtime Closure）。
+    "CANCELLED": ("run.node_cancelled", "CANCELLED", "CANCELLED", True),
 }
 _SAFE_REASON_CODES = frozenset(
     {
@@ -42,6 +48,7 @@ _SAFE_REASON_CODES = frozenset(
         "BASE_URL_REQUIRED",
         "INVALID_BASE_URL",
         "RESOURCE_UNAVAILABLE",
+        "CANCELLED",
         "INVALID_LIFECYCLE_STATUS",
     }
 )
