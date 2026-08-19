@@ -84,6 +84,81 @@ def _build_model_resolver(session):
     return resolver, provider_service
 
 
+def _previous_frozen_search_config(
+    session,
+    *,
+    user_id: int,
+    task_id: int,
+    spec_version: int,
+    before_plan_version: int,
+) -> tuple[str | None, int | None]:
+    """Latest prior READY preflight's frozen (search_config_id, version), if any.
+
+    A continuation plan version inherits the Run's frozen SearchConfig instead of
+    re-selecting the current default provider. Without this, Round-2 source_search
+    looks up a READY preflight for the new plan_version, finds none, and fails with
+    ``FROZEN_CONFIG_UNAVAILABLE`` even though the frozen config is still valid.
+    """
+    from sqlalchemy import select
+
+    from app.domain.models import ExecutionPreflightResult
+
+    row = session.scalar(
+        select(ExecutionPreflightResult)
+        .where(
+            ExecutionPreflightResult.user_id == user_id,
+            ExecutionPreflightResult.task_id == task_id,
+            ExecutionPreflightResult.spec_version == spec_version,
+            ExecutionPreflightResult.plan_version < before_plan_version,
+            ExecutionPreflightResult.status == "READY",
+        )
+        .order_by(ExecutionPreflightResult.plan_version.desc(), ExecutionPreflightResult.id.desc())
+        .limit(1)
+    )
+    if row is None or row.search_config_id is None or row.search_config_version is None:
+        return None, None
+    return row.search_config_id, row.search_config_version
+
+
+def _ensure_continuation_preflight(
+    session,
+    *,
+    user_id: int,
+    task_id: int,
+    spec_version: int,
+    new_plan_version: int,
+) -> bool:
+    """Persist a preflight for ``new_plan_version`` carrying the Run's frozen SearchConfig.
+
+    Returns True when the preflight is READY. Returns False when it is BLOCKED — the caller
+    surfaces that as an explicit replan failure instead of silently switching to the current
+    default provider or returning empty results.
+    """
+    from app.config import get_settings
+    from app.plan.preflight import ExecutionPreflightService, ExecutionPreflightStatus
+
+    # autoflush=False：让 pending 的 PlanVersion V2 / task.current_plan_version 对
+    # 后续 preflight 查询可见（_context_matches 必须读到 current_plan_version == 新版本）。
+    session.flush()
+
+    frozen_id, frozen_version = _previous_frozen_search_config(
+        session,
+        user_id=user_id,
+        task_id=task_id,
+        spec_version=spec_version,
+        before_plan_version=new_plan_version,
+    )
+    outcome = ExecutionPreflightService(session, settings=get_settings()).evaluate(
+        user_id=user_id,
+        task_id=task_id,
+        spec_version=spec_version,
+        plan_version=new_plan_version,
+        frozen_search_config_id=frozen_id,
+        frozen_search_config_version=frozen_version,
+    )
+    return outcome.status is ExecutionPreflightStatus.READY
+
+
 @activity.defn
 async def replan_for_continuation(
     inp: ReplanContinuationInput,
@@ -186,6 +261,16 @@ async def replan_for_continuation(
             task_row = TaskRepository(session).get_owned(inp.user_id, inp.task_id)
             task_row.current_plan_version = existing_child.version
             session.add(task_row)
+            if not _ensure_continuation_preflight(
+                session,
+                user_id=inp.user_id,
+                task_id=inp.task_id,
+                spec_version=inp.spec_version,
+                new_plan_version=existing_child.version,
+            ):
+                return ReplanContinuationResult(
+                    status="FAILED", failure_code="FROZEN_CONFIG_UNAVAILABLE"
+                )
             session.commit()
             return ReplanContinuationResult(new_plan_version=existing_child.version, status="OK")
         new_version = parent.version + 1
@@ -249,6 +334,16 @@ async def replan_for_continuation(
             },
             dispatch_key=f"task:{inp.task_id}:plan_replanned",
         )
+        if not _ensure_continuation_preflight(
+            session,
+            user_id=inp.user_id,
+            task_id=inp.task_id,
+            spec_version=inp.spec_version,
+            new_plan_version=new_version,
+        ):
+            return ReplanContinuationResult(
+                status="FAILED", failure_code="FROZEN_CONFIG_UNAVAILABLE"
+            )
         session.commit()
         return ReplanContinuationResult(new_plan_version=new_version, status="OK")
     except Exception:

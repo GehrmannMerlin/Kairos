@@ -450,3 +450,157 @@ def test_non_owner_cannot_evaluate_preflight(preflight_case):
             spec_version=preflight_case.spec.version,
             plan_version=preflight_case.plan.version,
         )
+
+
+def test_replan_preflight_carries_frozen_config_to_continuation_plan(hybrid_preflight_case):
+    """Round-2 Replan：新 plan_version 的 preflight 继承 Run 冻结配置，不切到当前 default。
+
+    Task freezes SearchConfig v1 → 稍后 v2 成为 current/default → Round-2 Replan
+    仍冻结 v1。若 replan 不携带冻结配置，Round-2 source_search 会因缺少 READY
+    preflight 抛 FROZEN_CONFIG_UNAVAILABLE（Task 130 真实故障）。
+    """
+    from app.activities.replan import _ensure_continuation_preflight
+
+    case = hybrid_preflight_case
+    db = case.db
+    frozen = case.search  # v1, available
+    db.add(
+        ExecutionPreflightResult(
+            user_id=case.user.id,
+            task_id=case.task.id,
+            spec_version=case.spec.version,
+            plan_version=case.plan.version,
+            capability_manifest_version="test-manifest",
+            status="READY",
+            issues=[],
+            search_config_id=frozen.config_id,
+            search_config_version=frozen.version,
+        )
+    )
+    # v2 成为 current/default（get_first_available 会选它；冻结必须仍用 v1）
+    current = SearchConfigRepository(db).append_version(
+        config_id=frozen.config_id,
+        user_id=case.user.id,
+        name="current v2",
+        provider_type="bocha",
+        base_url=None,
+        credential_version_id=None,
+    )
+    current.connection_status = "available"
+    v2 = PlanVersionRepository(db).create(
+        user_id=case.user.id,
+        task_id=case.task.id,
+        spec_version=case.spec.version,
+        version=2,
+        payload=_payload(
+            task_id=case.task.id, spec_version=case.spec.version, task_type=TaskType.HYBRID
+        ),
+        validation_status="VALID",
+        plan_fingerprint="b" * 64,
+        registry_versions={},
+        generation_policy="replan",
+        trigger_reason="continuation_search_more_required",
+        parent_plan_version_id=case.plan.id,
+        commit=False,
+    )
+    case.task.current_plan_version = v2.version
+    db.commit()
+
+    ready = _ensure_continuation_preflight(
+        db,
+        user_id=case.user.id,
+        task_id=case.task.id,
+        spec_version=case.spec.version,
+        new_plan_version=v2.version,
+    )
+    db.commit()
+
+    assert ready is True
+    row = db.scalar(
+        select(ExecutionPreflightResult).where(
+            ExecutionPreflightResult.task_id == case.task.id,
+            ExecutionPreflightResult.plan_version == v2.version,
+        )
+    )
+    assert row is not None
+    assert row.status == ExecutionPreflightStatus.READY.value
+    assert row.search_config_id == frozen.config_id
+    assert row.search_config_version == frozen.version  # 冻结 v1，而非 current v2
+
+
+def test_replan_preflight_revoked_frozen_config_blocks_without_fallback(
+    hybrid_preflight_case,
+):
+    """冻结配置被 revoke：显式 BLOCKED（FROZEN_CONFIG_UNAVAILABLE），不回退到 current default。"""
+    from app.activities.replan import _ensure_continuation_preflight
+
+    case = hybrid_preflight_case
+    db = case.db
+    frozen = case.search
+    db.add(
+        ExecutionPreflightResult(
+            user_id=case.user.id,
+            task_id=case.task.id,
+            spec_version=case.spec.version,
+            plan_version=case.plan.version,
+            capability_manifest_version="test-manifest",
+            status="READY",
+            issues=[],
+            search_config_id=frozen.config_id,
+            search_config_version=frozen.version,
+        )
+    )
+    # 新的 current/default 可用配置（不得被静默选中）
+    current = SearchConfigRepository(db).append_version(
+        config_id=frozen.config_id,
+        user_id=case.user.id,
+        name="current v2",
+        provider_type="bocha",
+        base_url=None,
+        credential_version_id=None,
+    )
+    current.connection_status = "available"
+    # revoke 冻结配置行
+    db.query(SearchConfig).filter(
+        SearchConfig.config_id == frozen.config_id,
+        SearchConfig.version == frozen.version,
+    ).delete()
+    v2 = PlanVersionRepository(db).create(
+        user_id=case.user.id,
+        task_id=case.task.id,
+        spec_version=case.spec.version,
+        version=2,
+        payload=_payload(
+            task_id=case.task.id, spec_version=case.spec.version, task_type=TaskType.HYBRID
+        ),
+        validation_status="VALID",
+        plan_fingerprint="b" * 64,
+        registry_versions={},
+        generation_policy="replan",
+        trigger_reason="continuation_search_more_required",
+        parent_plan_version_id=case.plan.id,
+        commit=False,
+    )
+    case.task.current_plan_version = v2.version
+    db.commit()
+
+    ready = _ensure_continuation_preflight(
+        db,
+        user_id=case.user.id,
+        task_id=case.task.id,
+        spec_version=case.spec.version,
+        new_plan_version=v2.version,
+    )
+    db.commit()
+
+    assert ready is False
+    row = db.scalar(
+        select(ExecutionPreflightResult).where(
+            ExecutionPreflightResult.task_id == case.task.id,
+            ExecutionPreflightResult.plan_version == v2.version,
+        )
+    )
+    assert row is not None
+    assert row.status == ExecutionPreflightStatus.BLOCKED.value
+    assert any(issue["code"] == "FROZEN_CONFIG_UNAVAILABLE" for issue in row.issues)
+    assert row.search_config_id is None  # 不回退到 current v2

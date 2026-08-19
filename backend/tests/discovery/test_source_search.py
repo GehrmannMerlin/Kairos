@@ -284,6 +284,74 @@ async def test_source_search_null_frozen_refs_never_falls_back_to_current(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_source_search_round2_uses_carried_frozen_config(tmp_path) -> None:
+    """Round-2（plan_version=2，replan 后）沿用携带的冻结配置 v1，不切到 default v2。"""
+    db, _, run, v1, v2 = _frozen_search_case(tmp_path)
+    # 模拟 replan 产物：新 plan_version + 携带冻结配置的 READY preflight
+    run.plan_version = 2
+    db.add(
+        ExecutionPreflightResult(
+            user_id=run.user_id,
+            task_id=run.task_id,
+            spec_version=run.spec_version,
+            plan_version=2,
+            capability_manifest_version="round2",
+            status="READY",
+            issues=[],
+            search_config_id=v1.config_id,
+            search_config_version=v1.version,
+        )
+    )
+    db.commit()
+
+    provider = _SearchProvider(
+        [
+            SearchResult(
+                url="https://www.shandong.gov.cn/news",
+                title="山东省人民政府 公告",
+                snippet="官方发布",
+                provider="frozen-provider",
+                rank=1,
+                query="山东政府",
+            )
+        ]
+    )
+    provider_types: list[str] = []
+
+    def build_provider(provider_type: str) -> _SearchProvider:
+        provider_types.append(provider_type)
+        return provider
+
+    class Vault:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        def read_for_execution(self, *, user_id: int, credential_version_id: int) -> str:
+            self.calls.append((user_id, credential_version_id))
+            return "v1-secret"
+
+    vault = Vault()
+    service = SearchService(db, vault=vault, provider_builder=build_provider)
+
+    result = await service.execute(
+        ExecutionUnit(
+            run_id=run.id,
+            index=1,
+            unit_type="node",
+            input_fingerprint="search-test",
+            node_id="search-1",
+            node_type="source_search",
+            parameters={"query": "山东政府", "max_results": 2},
+        )
+    )
+
+    assert result.status == "OK"
+    assert provider_types == [v1.provider_type]
+    assert vault.calls == [(run.user_id, v1.credential_version_id)]
+    assert v2.provider_type not in provider_types
+
+
+@pytest.mark.asyncio
 async def test_named_source_search_with_no_matching_result_admits_no_frontier_host(
     tmp_path,
 ) -> None:
