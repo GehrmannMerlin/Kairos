@@ -48,11 +48,20 @@ def _looks_structured(url: str, content_type: str | None) -> bool:
 
 
 def _visible_text(body: bytes) -> str:
-    """去掉 script/style 与所有标签后的可读文本（attribute 值不算文本节点）。"""
+    """去掉 script/style/noscript 与所有标签后的可读文本（attribute 值不算文本节点）。
+
+    ``<noscript>`` 是 JS 回退提示（如「请启用 JavaScript」），不是页面正文；保留它会让
+    application shell 被误判为静态内容，从而永远无法升级到 Playwright（Task 143 根因）。
+    """
     import re
 
     text = body.decode("utf-8", errors="ignore")
-    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", text, flags=re.S | re.I)
+    text = re.sub(
+        r"<script.*?</script>|<style.*?</style>|<noscript.*?</noscript>",
+        " ",
+        text,
+        flags=re.S | re.I,
+    )
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -69,11 +78,13 @@ _TEXT_MARKUP = r"<p\b|<h[1-6]\b|<li\b|<td\b|<article\b|<table\b"
 
 
 def _has_text_markup(body: bytes) -> bool:
-    """剥离 script/style 后仍存在真实文本标记（<p>/<li>/<td> 等）→ 静态内容。"""
+    """剥离 script/style/noscript 后仍存在真实文本标记（<p>/<li>/<td> 等）→ 静态内容。"""
     import re
 
     text = re.sub(
-        r"<script.*?</script>|<style.*?</style>", " ", body.decode("utf-8", errors="ignore"),
+        r"<script.*?</script>|<style.*?</style>|<noscript.*?</noscript>",
+        " ",
+        body.decode("utf-8", errors="ignore"),
         flags=re.S | re.I,
     )
     return re.search(_TEXT_MARKUP, text.lower()) is not None
