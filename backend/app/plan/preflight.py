@@ -80,8 +80,22 @@ class ExecutionPreflightService:
         self._repository = ExecutionPreflightRepository(db)
 
     def evaluate(
-        self, *, user_id: int, task_id: int, spec_version: int, plan_version: int
+        self,
+        *,
+        user_id: int,
+        task_id: int,
+        spec_version: int,
+        plan_version: int,
+        frozen_search_config_id: str | None = None,
+        frozen_search_config_version: int | None = None,
     ) -> ExecutionPreflightOutcome:
+        """Persist a READY/BLOCKED readiness fact.
+
+        ``frozen_search_config_id/version`` — when given, resolve exactly that immutable
+        SearchConfig row instead of the current default. Used by replan to carry the Run's
+        frozen config into continuation plan versions (Round-2 continuation must not silently
+        switch to a newer default provider). A missing frozen row blocks without falling back.
+        """
         task, spec, plan = self._load_owned_frozen_inputs(
             user_id=user_id,
             task_id=task_id,
@@ -116,15 +130,38 @@ class ExecutionPreflightService:
             isinstance(node, dict) and node.get("node_type") == NodeType.SOURCE_SEARCH.value
             for node in nodes
         )
-        search = self._available_search_config(user_id) if needs_search else None
-        if needs_search and search is None:
-            issues.append(
-                self._issue(
-                    "FROZEN_CONFIG_UNAVAILABLE",
-                    "执行所需的搜索服务配置不可用。",
-                    "请配置并测试可用的搜索服务后重新执行检查。",
+        search = None
+        if needs_search:
+            frozen_id, frozen_version = frozen_search_config_id, frozen_search_config_version
+            if frozen_id is None and frozen_version is None:
+                search = self._available_search_config(user_id)
+                if search is None:
+                    issues.append(
+                        self._issue(
+                            "FROZEN_CONFIG_UNAVAILABLE",
+                            "执行所需的搜索服务配置不可用。",
+                            "请配置并测试可用的搜索服务后重新执行检查。",
+                        )
+                    )
+            elif frozen_id is None or frozen_version is None:
+                issues.append(
+                    self._issue(
+                        "FROZEN_CONFIG_UNAVAILABLE",
+                        "冻结的搜索服务配置标识不完整。",
+                        "请恢复该搜索服务配置后重新执行检查。",
+                    )
                 )
-            )
+            else:
+                try:
+                    search = self._search_configs.get_version(user_id, frozen_id, frozen_version)
+                except NotFoundError:
+                    issues.append(
+                        self._issue(
+                            "FROZEN_CONFIG_UNAVAILABLE",
+                            "冻结的搜索服务配置已不可用。",
+                            "请恢复该搜索服务配置后重新执行检查。",
+                        )
+                    )
 
         if not self._frozen_model_config_available(user_id, plan):
             issues.append(
