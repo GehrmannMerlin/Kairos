@@ -333,3 +333,43 @@ async def test_m10_to_m11_handoff_fetch_then_extract(ctx, storage):
     assert extract_result.committed_refs["extracted"] == 1
     records = ExtractionRepository(db).records_for_task(user.id, ctx["task"].id)
     assert records[0].payload["values"]["公司名"] == "深圳光明科技"
+
+
+# ---- DEPLOY-GATE-3: rendered SPA readable text must not be lost to the 30KB HTML window ----
+# 回归：Task 149（toutiao.com 动态渲染）证明 542KB rendered DOM 的新闻标题位于
+# ~503KB 偏移（大段 script 启动包之后）。若 readable_text 只从 max_context_bytes(30KB)
+# 的 HTML 窗口提取，将只剩空壳（"今日头条"）→ LLM 看到 4 字符 → 0 records。
+# 修复契约：readable_text 必须基于完整 HTML 提取，再各自截断到 max_context_chars；
+# html=bounded_html 给确定性提取器的 30KB 上限保持不变。
+RENDERED_SPA_HTML = (
+    "<html><head><title>今日头条</title>"
+    + "<script>" + ("window.__BOOT_DATA__ = '{}';" * 1) + "</script>"
+    + ("<script>" + ("x" * 5000) + "</script>") * 8  # ~40KB script boot blocks
+    + "</head><body>"
+    + '<div class="feed">'
+    + '<a class="title" aria-label="联播+｜太平洋彼岸值得信赖的朋友">'
+    + "联播+｜太平洋彼岸值得信赖的朋友</a>"
+    + '<a class="title" aria-label="公积金新政来了，有哪些利好？">公积金新政来了，有哪些利好？</a>'
+    + "</div></body></html>"
+)
+
+
+@pytest.mark.asyncio
+async def test_rendered_spa_readable_text_survives_large_boot_block(ctx, storage):
+    """Replay of Task 149: readable_text must include deep-offset real content,
+    not just the first 30KB HTML window (shell)."""
+    db = ctx["db"]
+    user = ctx["user"]
+    spec = SpecVersionRepository(db).get_version(user.id, ctx["task"].id, 1)
+    snap_id = seed_snapshot(ctx, RENDERED_SPA_HTML.encode("utf-8"), storage)
+
+    builder = ExtractionContextBuilder(db, storage)
+    ectx = await builder.build(db.get(PageSnapshot, snap_id), spec.payload)
+
+    # The raw HTML is well over max_context_bytes (boot block pushes content deep)
+    assert len(RENDERED_SPA_HTML) > 30_000
+    # Real content must survive into readable_text for the LLM
+    assert "联播+｜太平洋彼岸值得信赖的朋友" in ectx.readable_text
+    assert "公积金新政来了，有哪些利好？" in ectx.readable_text
+    # Deterministic extractors still get a bounded html window (safety cap preserved)
+    assert len(ectx.html) <= 30_000

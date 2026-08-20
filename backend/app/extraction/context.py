@@ -28,12 +28,17 @@ class ExtractionContextBuilder:
 
     async def build(self, snapshot: PageSnapshot, spec_payload: dict) -> ExtractionContext:
         html = await self._load_html(snapshot)
+        # readable_text 必须基于完整 HTML 提取，再各自截断到 max_context_chars：
+        # 大 SPA（如 Task 149 的 542KB rendered DOM）真实内容位于大段 script 启动包之后
+        # （~503KB 偏移），若只用 max_context_bytes(30KB) 的窗口，readable_text 只剩空壳
+        # → LLM 无正文可提取 → 0 records（DEPLOY-GATE-3 回归）。
+        readable_text = self._readable_text(html)
         bounded_html = html[: self._settings.max_context_bytes]
         return ExtractionContext(
             snapshot_ref=self._to_ref(snapshot),
             spec_payload=spec_payload,
             fields=self._parse_fields(spec_payload),
-            readable_text=self._readable_text(bounded_html),
+            readable_text=readable_text,
             html=bounded_html,
             user_id=snapshot.user_id,
             db=self._db,
