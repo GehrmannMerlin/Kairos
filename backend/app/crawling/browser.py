@@ -7,6 +7,7 @@ core worker 不随便启动 Chromium。Browser Agent（TIER3）本轮只保留�
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -30,6 +31,40 @@ BROWSER_AGENT_REQUIRED = "BROWSER_AGENT_REQUIRED"
 
 # M-16：进程内 active browser 登记 + 优雅退出回收（孤儿进程兜底，§48）。
 _BROWSER_REGISTRY = BrowserProcessRegistry()
+
+# Task 146 实测：SPA 持续导航时 page.content() 的真实 Playwright 错误
+# （Error: "Page.content: Unable to retrieve content because the page is
+# navigating and changing the content."）。仅当错误明确属于该导航竞态时，
+# 才允许有界稳定等待后重试；其余 Playwright 错误保持现有 taxonomy 直传。
+_NAVIGATION_RACE_MARKERS = ("navigating", "changing the content")
+
+
+async def _capture_rendered_content(
+    page: Any, *, max_attempts: int = 3, settle_ms: int = 250
+) -> str:
+    """有界捕获 rendered HTML：仅对 page.content() 导航/内容变化竞态做短稳定重试。
+
+    - 竞态（页面仍在导航/变化）→ 等待 settle_ms 后重试，最多 max_attempts 次。
+    - 非导航 Playwright 错误 → 不重试，原样抛出走现有错误分类。
+    - CancelledError（Task/Activity 取消）→ BaseException，不会被 except Exception
+      捕获，天然向上传播；绝不当成竞态重试（不重演 M-11 历史错误）。
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return await page.content()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 需按 message 判定是否导航竞态
+            msg = str(exc)
+            last_exc = exc
+            is_race = all(marker in msg for marker in _NAVIGATION_RACE_MARKERS)
+            if is_race and attempt + 1 < max_attempts:
+                await asyncio.sleep(settle_ms / 1000)
+                continue
+            raise
+    assert last_exc is not None
+    raise last_exc
 
 
 async def close_all_browsers() -> int:
@@ -94,9 +129,12 @@ class PlaywrightChromiumRenderer:
                             # cookies 是 runtime dict 契约；add_cookies 类型为 SetCookieParam
                             await context.add_cookies(cast(Any, cookies))
                         page = await context.new_page()
-                        await page.goto(url, wait_until="domcontentloaded", timeout=int(to * 1000))
-                        await page.wait_for_timeout(600)  # 等待同步 JS 注入
-                        html = await page.content()
+                        await page.goto(url, wait_until="load", timeout=int(to * 1000))
+                        # SPA 水合/动态内容：有界短等待让同步 JS 注入先落盘，随后
+                        # _capture_rendered_content 仅对导航/内容变化竞态做有界重试，
+                        # 避免在页面仍导航时直接读 DOM 导致 Rendered Snapshot 丢失。
+                        await page.wait_for_timeout(250)
+                        html = await _capture_rendered_content(page, max_attempts=3, settle_ms=250)
                         final_url = page.url
                         title = await page.title()
                     finally:
