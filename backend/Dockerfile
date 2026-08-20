@@ -8,8 +8,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # PyPI index is configurable at build time (no scattered hardcoded mirror).
 # Override with: --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG PIP_INDEX_URL=https://pypi.org/simple
-# Whether this image includes browser-worker deps (playwright ~48MB). The API
-# image does not need it; the worker (browser role) does. Default: 0.
+# Chromium download host. Defaults to the npmmirror Playwright CDN mirror
+# (reliable from CN region where storage.googleapis.com TLS is flaky). Override
+# with --build-arg PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.playwright.dev to use the
+# official CDN. Playwright's `install` appends `/builds/<browser>/<rev>/...`.
+ARG PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+# Whether this image includes browser-worker deps (playwright ~48MB + chromium).
+# The API image does not need it; the worker (browser role) does. Default: 0.
+# When enabled, chromium is installed via the pinned Playwright driver itself
+# (`playwright install chromium`), so the binary revision always matches the
+# installed playwright package — never a hardcoded executable path.
 ARG KAIROS_INCLUDE_BROWSER=0
 
 WORKDIR /app
@@ -22,7 +30,17 @@ WORKDIR /app
 COPY pyproject.toml alembic.ini ./
 RUN mkdir -p app && touch app/__init__.py && \
     if [ "$KAIROS_INCLUDE_BROWSER" = "1" ]; then \
-        pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --timeout 120 --retries 5 '.[browser]'; \
+        pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --timeout 120 --retries 5 '.[browser]' \
+        && PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_DOWNLOAD_HOST" python -m playwright install --no-progress chromium \
+        && sed -i 's|deb.debian.org/debian|mirrors.tuna.tsinghua.edu.cn/debian|g; s|security.debian.org/debian-security|mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources \
+        && apt-get update -y \
+        && apt-get install -y --no-install-recommends --fix-missing \
+            libnss3 libnspr4 libdbus-1-3 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+            libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+            libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 \
+            libcairo2 libatspi2.0-0t64 libx11-6 libxcb1 libxext6 \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/*; \
     else \
         pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --timeout 120 --retries 5 .; \
     fi
