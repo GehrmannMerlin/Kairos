@@ -163,8 +163,11 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
   }
 
   function loadDagIfNeeded(): Promise<void> {
-    if (dag.value || dagLoading.value) return Promise.resolve()
-    return loadDag()
+    if (dagLoading.value) return Promise.resolve()
+    if (!dag.value) return loadDag()
+    // DAG 已加载：仅在 DAG 视图模式下随 live 事件刷新，保持节点着色/当前节点最新。
+    if (viewMode.value === 'dag') return loadDag()
+    return Promise.resolve()
   }
 
   /**

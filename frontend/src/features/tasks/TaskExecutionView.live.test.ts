@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   openDrawer: vi.fn(),
   filter: '' as string,
   hasMore: false,
-  viewMode: 'stage' as 'stage' | 'dag',
+  viewModeRef: null as unknown as Ref<'stage' | 'dag'>,
   dag: null as DagView | null,
   viewRef: null as unknown as Ref<ExecutionView | null>,
   timelineRef: null as unknown as Ref<TimelineEvent[]>,
@@ -35,8 +35,8 @@ vi.mock('@/features/execution/useExecution', () => ({
     timelineError: ref(null),
     filter: computed(() => mocks.filter),
     hasMore: ref(false),
-    viewMode: computed(() => mocks.viewMode),
-    dag: ref(null),
+    viewMode: computed(() => mocks.viewModeRef.value),
+    dag: computed(() => mocks.dag),
     dagLoading: ref(false),
     dagError: ref(null),
     live: mocks.liveRef,
@@ -123,8 +123,12 @@ describe('TaskExecutionView 实时时间线', () => {
     mocks.reconcileVersionRef = ref(0)
     mocks.filter = ''
     mocks.hasMore = false
-    mocks.viewMode = 'stage'
+    mocks.viewModeRef = ref<'stage' | 'dag'>('stage')
     mocks.dag = null
+    // toggleDag 模拟真实 composable：在 stage/dag 间切换视图。
+    mocks.toggleDag = vi.fn(() => {
+      mocks.viewModeRef.value = mocks.viewModeRef.value === 'stage' ? 'dag' : 'stage'
+    })
   })
 
   it('run 激活时自动连接流并显示实时状态', async () => {
@@ -170,5 +174,118 @@ describe('TaskExecutionView 实时时间线', () => {
     mocks.reconcileVersionRef.value = 1
     await nextTick()
     expect(mocks.refreshSnapshot).toHaveBeenCalled()
+  })
+
+  it('阶段卡随事件由 in_progress 转为 completed', async () => {
+    mocks.viewRef.value = {
+      ...structuredClone(VIEW),
+      stages: [
+        {
+          key: 'fetch',
+          label: '网页抓取',
+          state: 'in_progress',
+          event_count: 1,
+          url_processed: 0,
+          record_count: 0,
+          error_count: 0,
+        },
+      ],
+    }
+    const wrapper = mount(TaskExecutionView, { props: { taskId: '25' } })
+    await flushPromises()
+    expect(wrapper.find('.stage-card--in_progress').exists()).toBe(true)
+    // live 事件到达后节流刷新，snapshot 返回 completed。
+    emitTimeline({
+      event_id: 12,
+      status: 'COMPLETED',
+      node_id: 'n3',
+      node_type: 'fetch',
+      stage: 'fetch',
+    })
+    await nextTick()
+    mocks.viewRef.value = {
+      ...mocks.viewRef.value,
+      stages: [
+        {
+          key: 'fetch',
+          label: '网页抓取',
+          state: 'completed',
+          event_count: 2,
+          url_processed: 1,
+          record_count: 1,
+          error_count: 0,
+        },
+      ],
+    }
+    await nextTick()
+    expect(wrapper.find('.stage-card--in_progress').exists()).toBe(false)
+    expect(wrapper.find('.stage-card--completed').exists()).toBe(true)
+  })
+
+  it('DAG 节点按 live 状态着色并高亮当前节点', async () => {
+    mocks.dag = {
+      task_id: 25,
+      plan_version: 2,
+      spec_version: 1,
+      validation_status: 'VALID',
+      stage_status: { fetch: 'running' },
+      nodes: [
+        {
+          node_id: 'n1',
+          node_type: 'plan',
+          definition_version: '1.0.0',
+          resource_class: null,
+          depends_on: [],
+          optional: false,
+          fail_policy: 'retry',
+          stage: 'goal_plan',
+          parameters_summary: {},
+          execution: {
+            event_count: 1,
+            last_status: 'SUCCEEDED',
+            last_error: null,
+            attempt_count: 1,
+            tool: null,
+            model: null,
+            duration_ms: null,
+            tokens_in: null,
+            tokens_out: null,
+            url_fetched_count: 0,
+            record_count: 0,
+          },
+        },
+        {
+          node_id: 'n3',
+          node_type: 'fetch',
+          definition_version: '1.0.0',
+          resource_class: 'http',
+          depends_on: ['n1'],
+          optional: false,
+          fail_policy: 'retry',
+          stage: 'fetch',
+          parameters_summary: {},
+          execution: {
+            event_count: 5,
+            last_status: 'RUNNING',
+            last_error: null,
+            attempt_count: 1,
+            tool: 'http',
+            model: null,
+            duration_ms: null,
+            tokens_in: null,
+            tokens_out: null,
+            url_fetched_count: 12,
+            record_count: 0,
+          },
+        },
+      ],
+      edges: [{ from_node_id: 'n1', to_node_id: 'n3' }],
+    }
+    const wrapper = mount(TaskExecutionView, { props: { taskId: '25' } })
+    await flushPromises()
+    wrapper.find('.exec-toggle').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.dag-node--succeeded').exists()).toBe(true)
+    expect(wrapper.find('.dag-node--active').exists()).toBe(true)
   })
 })
