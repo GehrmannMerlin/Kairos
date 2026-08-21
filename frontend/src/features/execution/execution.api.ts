@@ -58,7 +58,13 @@ export function openExecutionTimelineStream(
 
 export function parseTimelineSseMessage(data: string): TimelineEvent | null {
   try {
-    return JSON.parse(data) as TimelineEvent
+    const parsed = JSON.parse(data) as unknown
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const candidate = parsed as Record<string, unknown>
+    // 最小形状校验：畸形帧（缺 event_id/timestamp）直接丢弃，避免高位水位去重被静默禁用。
+    if (typeof candidate.event_id !== 'number') return null
+    if (typeof candidate.timestamp !== 'string') return null
+    return candidate as unknown as TimelineEvent
   } catch {
     return null
   }

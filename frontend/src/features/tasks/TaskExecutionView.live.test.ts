@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   loadMore: vi.fn(),
   toggleDag: vi.fn(),
   openDrawer: vi.fn(),
+  routeParams: null as unknown as Ref<{ taskId: string }>,
   filter: '' as string,
   hasMore: false,
   viewModeRef: null as unknown as Ref<'stage' | 'dag'>,
@@ -23,7 +24,13 @@ const mocks = vi.hoisted(() => ({
   reconcileVersionRef: null as unknown as Ref<number>,
 }))
 
-vi.mock('vue-router', () => ({ useRoute: () => ({ params: { taskId: '25' } }) }))
+vi.mock('vue-router', () => ({
+  useRoute: () => ({
+    get params() {
+      return mocks.routeParams.value
+    },
+  }),
+}))
 vi.mock('@/app/overlay/drawer.store', () => ({ openDrawer: mocks.openDrawer }))
 vi.mock('@/features/execution/useExecution', () => ({
   useExecution: () => ({
@@ -117,6 +124,7 @@ function emitTimeline(partial: Record<string, unknown>): void {
 describe('TaskExecutionView 实时时间线', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.routeParams = ref({ taskId: '25' })
     mocks.viewRef = ref(structuredClone(VIEW))
     mocks.timelineRef = ref<TimelineEvent[]>([])
     mocks.liveRef = ref<'idle' | 'connecting' | 'open' | 'reconnecting'>('idle')
@@ -168,12 +176,39 @@ describe('TaskExecutionView 实时时间线', () => {
     expect(wrapper.find('.step-status--running').exists()).toBe(true)
   })
 
-  it('流 reconcile 版本递增时刷新快照', async () => {
+  it('reconcile 由 hook 单一触发，视图不重复刷新快照', async () => {
     mount(TaskExecutionView, { props: { taskId: '25' } })
     await flushPromises()
+    expect(mocks.connectLive).toHaveBeenCalledTimes(1)
+    // 视图不再监听 reconcileVersion：reconnect 的 reconcile 完全由 useExecution.onopen 负责，
+    // 从而保证一次 reconnect 只做一次全量 reconcile（无双重执行）。
     mocks.reconcileVersionRef.value = 1
     await nextTick()
-    expect(mocks.refreshSnapshot).toHaveBeenCalled()
+    expect(mocks.refreshSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('跨任务导航（相同 RUNNING 状态）重新连接新任务流', async () => {
+    mount(TaskExecutionView, { props: { taskId: '25' } })
+    await flushPromises()
+    expect(mocks.connectLive).toHaveBeenCalledTimes(1)
+    // 模拟 useExecution 内部 taskId watch 在导航后断开旧流，live 回到 idle。
+    mocks.liveRef.value = 'idle'
+    mocks.routeParams.value = { taskId: '26' }
+    await nextTick()
+    // 即使新任务 run.state 仍为 RUNNING，也要为 taskId 变化重新 connectLive。
+    expect(mocks.connectLive).toHaveBeenCalledTimes(2)
+  })
+
+  it('终态 run 显示已结束且断开流，不再声称实时更新', async () => {
+    mocks.viewRef.value = {
+      ...structuredClone(VIEW),
+      run: { ...VIEW.run!, state: 'COMPLETED' },
+    }
+    const wrapper = mount(TaskExecutionView, { props: { taskId: '25' } })
+    await flushPromises()
+    expect(mocks.disconnectLive).toHaveBeenCalled()
+    expect(wrapper.find('.live-badge--ended').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('实时')
   })
 
   it('阶段卡随事件由 in_progress 转为 completed', async () => {
@@ -286,6 +321,7 @@ describe('TaskExecutionView 实时时间线', () => {
     wrapper.find('.exec-toggle').trigger('click')
     await flushPromises()
     expect(wrapper.find('.dag-node--succeeded').exists()).toBe(true)
+    expect(wrapper.find('.dag-node--running').exists()).toBe(true)
     expect(wrapper.find('.dag-node--active').exists()).toBe(true)
   })
 })

@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getDag, getExecution, getNodeDetail, getTimeline } from './execution.api'
+import {
+  getDag,
+  getExecution,
+  getNodeDetail,
+  getTimeline,
+  parseTimelineSseMessage,
+} from './execution.api'
 
 vi.mock('@/app/api/client', () => ({
   apiClient: { get: vi.fn() },
@@ -31,5 +37,17 @@ describe('execution.api', () => {
     expect(String(url)).toContain('category=error')
     expect(String(url)).toContain('after_id=42')
     expect(String(url)).toContain('limit=20')
+  })
+
+  it('parseTimelineSseMessage 拒绝畸形帧并保留有效帧', () => {
+    expect(
+      parseTimelineSseMessage(JSON.stringify({ event_id: 7, timestamp: '2026-08-21T12:00:00Z' })),
+    ).toEqual({ event_id: 7, timestamp: '2026-08-21T12:00:00Z' })
+    expect(parseTimelineSseMessage('not-json')).toBeNull()
+    expect(
+      parseTimelineSseMessage(JSON.stringify({ timestamp: '2026-08-21T12:00:00Z' })),
+    ).toBeNull()
+    expect(parseTimelineSseMessage(JSON.stringify({ event_id: 7 }))).toBeNull()
+    expect(parseTimelineSseMessage('null')).toBeNull()
   })
 })
