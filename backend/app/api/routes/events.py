@@ -13,7 +13,7 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Protocol
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import sessionmaker
@@ -24,6 +24,11 @@ from app.api.events import (
     max_task_event_id,
     query_task_events,
 )
+from app.api.sse_cursor import (
+    MAX_EVENT_ID,
+    parse_event_id,
+    parse_last_event_id,
+)
 from app.auth.deps import require_user
 from app.auth.models import User
 from app.domain.repository import TaskRepository
@@ -31,7 +36,6 @@ from app.infra.deps import get_db
 from app.observability.execution_metrics import get_execution_metrics
 
 router = APIRouter(prefix="/events", tags=["events"])
-_MAX_EVENT_ID = 2**63 - 1
 _SSE_PAGE_SIZE = 200
 
 
@@ -45,22 +49,10 @@ class _SessionFactory(Protocol):
     def __call__(self) -> DbSession: ...
 
 
-def _parse_event_id(value: str) -> int:
-    if not value.isascii() or not value.isdecimal() or not 0 < len(value) <= 19:
-        raise HTTPException(status_code=400, detail="Invalid event cursor")
-    cursor = int(value)
-    if cursor > _MAX_EVENT_ID:
-        raise HTTPException(status_code=400, detail="Invalid event cursor")
-    return cursor
-
-
-def _parse_last_event_id(request: Request, after_id: str | None) -> int:
-    header = request.headers.get("last-event-id")
-    if header is not None:
-        return _parse_event_id(header)
-    if after_id is not None:
-        return _parse_event_id(after_id)
-    return 0
+# 向后兼容别名：task SSE 既有测试直接导入下划线私有名；共享实现在 app.api.sse_cursor。
+_parse_event_id = parse_event_id
+_parse_last_event_id = parse_last_event_id
+_MAX_EVENT_ID = MAX_EVENT_ID
 
 
 def _format_sse(event: SSETaskEvent) -> str:
@@ -175,7 +167,7 @@ def task_events(
     db: DbSession = Depends(get_db),
 ) -> StreamingResponse:
     user_id = user.id
-    cursor = _parse_last_event_id(request, after_id)
+    cursor = parse_last_event_id(request, after_id)
     TaskRepository(db).get_owned(user_id, task_id)  # owner-safe 404
     stream_sessions = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
     db.rollback()
