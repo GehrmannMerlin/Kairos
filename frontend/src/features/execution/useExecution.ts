@@ -35,6 +35,7 @@ export interface UseExecution {
   setFilter: (category: TimelineCategory | '') => void
   toggleDag: () => void
   refreshSnapshot: () => Promise<void>
+  refreshLiveOverview: () => Promise<void>
   mergeTimelineEvent: (event: TimelineEvent) => void
   connectLive: () => void
   disconnectLive: () => void
@@ -83,6 +84,7 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
     setFilter,
     toggleDag,
     refreshSnapshot,
+    refreshLiveOverview,
     mergeTimelineEvent,
     connectLive,
     disconnectLive,
@@ -160,20 +162,33 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
     await Promise.all([loadOverview(), loadTimeline(null)])
   }
 
+  function loadDagIfNeeded(): Promise<void> {
+    if (dag.value || dagLoading.value) return Promise.resolve()
+    return loadDag()
+  }
+
+  /**
+   * 轻量刷新：只刷新 overview（必要时 DAG），不重置 timeline。
+   * 供流式事件节流刷新使用——snapshot 权威、stream 增量，绝不在刷新时丢弃已完成节点。
+   */
+  async function refreshLiveOverview(): Promise<void> {
+    await Promise.all([loadOverview(), loadDagIfNeeded()])
+  }
+
   function mergeTimelineEvent(event: TimelineEvent): void {
     if (timeline.value.some((item) => item.event_id === event.event_id)) return
     timeline.value = [...timeline.value, event].sort((a, b) => a.event_id - b.event_id)
   }
 
   /**
-   * 事件 burst 节流刷新：500ms 窗口内多条事件合并为一次 snapshot 刷新（reconcile 路径）。
-   * 经 self.refreshSnapshot 调用，便于外部 spy 可观测，且与手动刷新保持同一语义。
+   * 事件 burst 节流刷新：500ms 窗口内多条事件合并为一次轻量刷新。
+   * 经 self.refreshLiveOverview 调用，便于外部 spy 可观测，且保持 timeline 增量以流为准。
    */
   function scheduleCoalescedRefresh(): void {
     clearTimeout(liveTimer)
     liveTimer = window.setTimeout(() => {
       const token = ++refreshToken
-      void self.refreshSnapshot().finally(() => {
+      void self.refreshLiveOverview().finally(() => {
         if (token !== refreshToken) return
       })
     }, LIVE_REFRESH_DEBOUNCE_MS)
