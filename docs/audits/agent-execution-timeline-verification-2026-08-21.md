@@ -98,6 +98,7 @@ b052df4 fix(execution): coalesced refresh keeps timeline incremental
 7d0a203 feat(execution): render live timeline steps with status transitions
 dc76628 feat(execution): live stage transitions and dag node coloring
 f878c00 docs(execution): record real-time timeline acceptance and decision
+1a7b2da fix(execution): preserve live timeline on reconnect
 ```
 
 ---
