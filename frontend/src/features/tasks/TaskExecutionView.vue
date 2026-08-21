@@ -26,13 +26,11 @@ const {
   dagLoading,
   dagError,
   live,
-  reconcileVersion,
   loadMore,
   setFilter,
   toggleDag,
   connectLive,
   disconnectLive,
-  refreshSnapshot,
 } = useExecution(taskId)
 
 // ---- Timeline 流生命周期：run 非终态时连接，进入终态断开，卸载不泄漏 ----
@@ -44,24 +42,26 @@ const TERMINAL_RUN_STATES = new Set([
   'BLOCKED',
 ])
 
+// 监听 taskId 与 run state：跨任务导航时即便两任务均为相同激活状态（如 RUNNING→RUNNING），
+// 也要在 hook 已断开旧流后重新连接新任务流；连接判定以实际 live 连接状态为准。
 watch(
-  () => view.value?.run?.state,
-  (state, previous) => {
+  [taskId, () => view.value?.run?.state],
+  ([, state]) => {
     if (state == null) return
     const terminal = TERMINAL_RUN_STATES.has(state)
-    const wasActive = previous != null && !TERMINAL_RUN_STATES.has(previous)
     if (terminal) {
       disconnectLive()
-    } else if (!wasActive) {
+    } else if (live.value === 'idle') {
       connectLive()
     }
   },
   { immediate: true },
 )
 
-// 流恢复（reconnecting→open）后以 snapshot 为准 reconcile，流式增量不丢。
-watch(reconcileVersion, (version, previous) => {
-  if (version > previous) void refreshSnapshot()
+// 终态 / 无 run 的 live 徽标状态：终态显示"已结束"，无 run 不显示徽标。
+const runEnded = computed(() => {
+  const state = view.value?.run?.state ?? null
+  return state != null && TERMINAL_RUN_STATES.has(state)
 })
 
 onBeforeUnmount(disconnectLive)
@@ -149,7 +149,9 @@ function dagNodeStatusClass(node: DagNode): string {
               · Run #{{ view.run.run_id }} · 计划 v{{ view.plan?.plan_version }}</template
             >
           </p>
+          <span v-if="runEnded" class="live-badge live-badge--ended">已结束</span>
           <span
+            v-else-if="view.run"
             class="live-badge"
             :class="{
               'live-badge--open': live === 'open',

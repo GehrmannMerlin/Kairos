@@ -19,6 +19,10 @@ const running = computed(() =>
   ['RUNNING', 'WAITING_RESOURCE', 'WAITING_RETRY', 'PENDING'].includes(props.event.status ?? ''),
 )
 const failed = computed(() => ['FAILED', 'BLOCKED'].includes(props.event.status ?? ''))
+// 中性/终态：取消、暂停、等待审批不是成功，不能用绿色 ✓ 展示。
+const halted = computed(() =>
+  ['CANCELLED', 'PAUSED', 'WAITING_APPROVAL'].includes(props.event.status ?? ''),
+)
 </script>
 
 <template>
@@ -30,11 +34,18 @@ const failed = computed(() => ['FAILED', 'BLOCKED'].includes(props.event.status 
     <span
       class="step-status"
       :class="
-        running ? 'step-status--running' : failed ? 'step-status--failed' : 'step-status--done'
+        running
+          ? 'step-status--running'
+          : failed
+            ? 'step-status--failed'
+            : halted
+              ? 'step-status--halted'
+              : 'step-status--done'
       "
     >
       <span v-if="running" class="step-status__pulse" />
       <span v-else-if="failed" class="step-status__cross" />
+      <span v-else-if="halted" class="step-status__halted" />
       <span v-else class="step-status__check" />
     </span>
     <div class="step-body">
@@ -98,6 +109,11 @@ const failed = computed(() => ['FAILED', 'BLOCKED'].includes(props.event.status 
 .step-status__cross::before {
   content: '✕';
   color: var(--color-danger, #c62828);
+  font-weight: 700;
+}
+.step-status__halted::before {
+  content: '∥';
+  color: var(--color-text-secondary, #6b7280);
   font-weight: 700;
 }
 @keyframes step-pulse {

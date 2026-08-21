@@ -32,7 +32,7 @@ Task 6 为“集成回归 + 真实任务验收 + 决策”。依据 controller p
 | 命令 | 结果 |
 |---|---|
 | `python -m pytest tests/execution tests/api/test_task_events.py tests/api/test_understand.py tests/api/test_plan_api.py -q` | **143 passed in 48.22s** |
-| `python -m ruff check app tests` | **Feature 文件 All checks passed**；`tests/ops/test_release_contract.py` 6 条（5×E501 + 2×F401，含 1 文件重复行）为 **2026-08-12 `e357bec` 既有基线**，本分支零改动（`git diff main...HEAD` 为空） |
+| `python -m ruff check app tests` | **Feature 文件 All checks passed**；`tests/ops/test_release_contract.py` 6 条（4×E501 + 2×F401，2026-08-21 复跑确认）为 **2026-08-12 `e357bec` 既有基线**，本分支零改动（`git diff main...HEAD` 为空） |
 | `python -m mypy app` | **Success: no issues found in 237 source files** |
 | `python -m alembic heads` | **`0017 (head)`（唯一 head，零 migration）** |
 | `python -c "from app.main import create_app; create_app()"` | **成功**（仅有 TracerProvider override 提示，非错误） |
@@ -97,7 +97,7 @@ e062f71 feat(execution): stream rich execution timeline over SSE
 b052df4 fix(execution): coalesced refresh keeps timeline incremental
 7d0a203 feat(execution): render live timeline steps with status transitions
 dc76628 feat(execution): live stage transitions and dag node coloring
-<task-6> docs(execution): record real-time timeline acceptance and decision
+f878c00 docs(execution): record real-time timeline acceptance and decision
 ```
 
 ---

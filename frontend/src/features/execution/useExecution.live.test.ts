@@ -2,7 +2,8 @@ import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref } from 'vue'
 
-import { getDag } from './execution.api'
+import { getDag, getTimeline } from './execution.api'
+import type { TimelineEvent } from './types'
 import { useExecution } from './useExecution'
 
 // 先定义 listeners，供 fakeSource.addEventListener 闭包引用（避免 use-before-define）。
@@ -58,6 +59,30 @@ function emitTimeline(eventId: number) {
   })
 }
 
+function buildEvent(eventId: number, overrides: Partial<TimelineEvent> = {}): TimelineEvent {
+  return {
+    event_id: eventId,
+    timestamp: '2026-08-21T12:00:00Z',
+    categories: [],
+    stage: 'fetch',
+    summary: `事件 ${eventId}`,
+    status: 'COMPLETED',
+    error_code: null,
+    run_id: 8,
+    node_run_id: null,
+    node_id: 'n3',
+    retry_count: 0,
+    tool: null,
+    model: null,
+    duration_ms: null,
+    tokens_in: null,
+    tokens_out: null,
+    evidence_refs: [],
+    trace_ref: null,
+    ...overrides,
+  }
+}
+
 describe('useExecution live timeline stream', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -95,7 +120,7 @@ describe('useExecution live timeline stream', () => {
     expect(store.timeline.value.map((e) => e.event_id)).toEqual([10, 11, 12])
   })
 
-  it('reconnect→open 触发一次 reconcile 刷新', async () => {
+  it('reconnect→open 恰好触发一次 reconcile 刷新并递增版本', async () => {
     const store = useExecution(ref(25))
     const refresh = vi.spyOn(store, 'refreshSnapshot')
     store.connectLive()
@@ -103,7 +128,27 @@ describe('useExecution live timeline stream', () => {
     ;(fakeSource as any).onerror?.()
     ;(fakeSource as any).onopen?.() // EventSource mock 触发 reconnecting→open
     await nextTick()
+    // 单一 owner（useExecution.onopen）触发 reconcile；视图不再重复刷新。
     expect(refresh).toHaveBeenCalledTimes(1)
+    expect(store.reconcileVersion.value).toBe(1)
+  })
+
+  it('reconcile 刷新尾部保留：流已追加的高位事件不被分页首屏覆盖', async () => {
+    const store = useExecution(ref(25))
+    const page1 = Array.from({ length: 50 }, (_, i) => buildEvent(i + 1))
+    const highTail = Array.from({ length: 10 }, (_, i) => buildEvent(51 + i))
+    // 流已把事件 51-60 追加进 timeline，而服务端首屏分页只回 1-50。
+    store.timeline.value = [...page1, ...highTail]
+    vi.mocked(getTimeline).mockResolvedValueOnce({
+      task_id: 25,
+      items: page1,
+      next_cursor: null,
+      has_more: false,
+    })
+    await store.refreshSnapshot()
+    expect(store.timeline.value.map((e) => e.event_id)).toEqual(
+      Array.from({ length: 60 }, (_, i) => i + 1),
+    )
   })
 
   it('taskId 变化断开旧流并重置', async () => {

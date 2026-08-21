@@ -62,7 +62,6 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
   let streamSource: EventSource | null = null
   let liveTimer: number | undefined
   let lastStreamEventId = 0
-  let refreshToken = 0
 
   // 经 self 暴露的方法引用外部返回对象，使 live 内部刷新路径可被外部 spy 观测。
   const self: UseExecution = {
@@ -158,8 +157,40 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
     }
   }
 
+  /**
+   * 尾部保留的分页重载：以服务端首屏分页为权威基础，重新并入当前 timeline 中
+   * 已由流追加的高位事件（event_id 超出首屏 50 条的部分），按 event_id 去重并升序。
+   * 保证 reconnect reconcile 与手动刷新绝不丢弃已合并的实时事件，同时缓解初始加载
+   * 时流回放快于首次分页响应的竞态。
+   */
+  async function reloadTimelinePreservingTail(): Promise<void> {
+    const current = ++timelineSeq
+    timelineLoading.value = true
+    timelineError.value = null
+    try {
+      const data = await getTimeline(taskId.value, {
+        category: filter.value || undefined,
+        limit: TIMELINE_PAGE_SIZE,
+      })
+      if (current !== timelineSeq) return
+      const byId = new Map<number, TimelineEvent>()
+      for (const ev of data.items) byId.set(ev.event_id, ev)
+      for (const ev of timeline.value) {
+        if (!byId.has(ev.event_id)) byId.set(ev.event_id, ev)
+      }
+      timeline.value = [...byId.values()].sort((a, b) => a.event_id - b.event_id)
+      nextCursor.value = data.next_cursor
+      hasMore.value = data.has_more
+    } catch (err) {
+      if (current !== timelineSeq) return
+      timelineError.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      if (current === timelineSeq) timelineLoading.value = false
+    }
+  }
+
   async function refreshSnapshot(): Promise<void> {
-    await Promise.all([loadOverview(), loadTimeline(null)])
+    await Promise.all([loadOverview(), reloadTimelinePreservingTail()])
   }
 
   function loadDagIfNeeded(): Promise<void> {
@@ -190,10 +221,7 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
   function scheduleCoalescedRefresh(): void {
     clearTimeout(liveTimer)
     liveTimer = window.setTimeout(() => {
-      const token = ++refreshToken
-      void self.refreshLiveOverview().finally(() => {
-        if (token !== refreshToken) return
-      })
+      void self.refreshLiveOverview()
     }, LIVE_REFRESH_DEBOUNCE_MS)
   }
 
