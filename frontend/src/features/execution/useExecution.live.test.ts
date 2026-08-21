@@ -2,6 +2,7 @@ import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref } from 'vue'
 
+import { getDag } from './execution.api'
 import { useExecution } from './useExecution'
 
 // 先定义 listeners，供 fakeSource.addEventListener 闭包引用（避免 use-before-define）。
@@ -113,5 +114,45 @@ describe('useExecution live timeline stream', () => {
     await nextTick()
     expect(fakeSource.close).toHaveBeenCalled()
     expect(store.live.value).toBe('idle')
+  })
+
+  it('dag 模式且 DAG 已加载时，live 事件节流刷新重新拉取 DAG', async () => {
+    const store = useExecution(ref(25))
+    store.viewMode.value = 'dag'
+    store.dag.value = {
+      task_id: 25,
+      plan_version: 1,
+      spec_version: 1,
+      validation_status: 'VALID',
+      stage_status: {},
+      nodes: [],
+      edges: [],
+    }
+    store.connectLive()
+    await flushPromises()
+    expect(getDag).toHaveBeenCalledTimes(0)
+    emitTimeline(10)
+    vi.advanceTimersByTime(600)
+    await flushPromises()
+    expect(getDag).toHaveBeenCalledTimes(1)
+  })
+
+  it('stage 模式且 DAG 已加载时，live 事件节流刷新不重复拉取 DAG', async () => {
+    const store = useExecution(ref(25))
+    store.dag.value = {
+      task_id: 25,
+      plan_version: 1,
+      spec_version: 1,
+      validation_status: 'VALID',
+      stage_status: {},
+      nodes: [],
+      edges: [],
+    }
+    store.connectLive()
+    await flushPromises()
+    emitTimeline(10)
+    vi.advanceTimersByTime(600)
+    await flushPromises()
+    expect(getDag).toHaveBeenCalledTimes(0)
   })
 })

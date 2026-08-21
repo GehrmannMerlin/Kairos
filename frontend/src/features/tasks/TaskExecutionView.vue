@@ -124,6 +124,16 @@ function openNode(node: DagNode): void {
 function nodeStatus(node: DagNode): string {
   return dag.value?.stage_status[node.stage] ?? 'not_started'
 }
+
+// ---- DAG 节点 live 着色：由 node.execution.last_status 驱动，未知/null 用中性样式 ----
+function dagNodeStatusClass(node: DagNode): string {
+  const status = node.execution.last_status ?? ''
+  if (status === 'SUCCEEDED') return 'dag-node--succeeded'
+  if (status === 'FAILED') return 'dag-node--failed'
+  if (status === 'RUNNING' || status === 'PENDING') return 'dag-node--running'
+  if (status.startsWith('WAITING_')) return 'dag-node--waiting'
+  return 'dag-node--idle'
+}
 </script>
 
 <template>
@@ -234,6 +244,10 @@ function nodeStatus(node: DagNode): string {
                   :key="node.node_id"
                   type="button"
                   class="dag-node"
+                  :class="[
+                    dagNodeStatusClass(node),
+                    { 'dag-node--active': node.node_id === view?.current_node?.node_id },
+                  ]"
                   data-testid="dag-node"
                   @click="openNode(node)"
                 >
@@ -315,6 +329,16 @@ function nodeStatus(node: DagNode): string {
 }
 .stage-card--in_progress {
   border-color: var(--color-accent, #2563eb);
+  animation: stage-card-pulse 1.6s ease-in-out infinite;
+}
+@keyframes stage-card-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(37, 99, 235, 0);
+  }
 }
 .stage-card__label {
   font-weight: 600;
@@ -384,6 +408,32 @@ function nodeStatus(node: DagNode): string {
 }
 .dag-node:hover {
   border-color: var(--color-accent, #2563eb);
+}
+.dag-node--succeeded {
+  border-color: #16a34a;
+}
+.dag-node--failed {
+  border-color: #dc2626;
+}
+.dag-node--running {
+  border-color: var(--color-accent, #2563eb);
+  animation: dag-node-pulse 1.2s ease-in-out infinite;
+}
+.dag-node--waiting {
+  border-color: #b45309;
+}
+.dag-node--active {
+  outline: 2px solid var(--color-accent, #2563eb);
+  outline-offset: 1px;
+}
+@keyframes dag-node-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
 }
 .dag-node__type {
   font-weight: 600;
