@@ -36,9 +36,14 @@ vi.mock('@/features/execution/useExecution', () => ({
     dag: ref(mocks.dag),
     dagLoading: ref(false),
     dagError: ref(null),
+    live: ref('idle'),
+    reconcileVersion: ref(0),
     loadMore: mocks.loadMore,
     setFilter: mocks.setFilter,
     toggleDag: mocks.toggleDag,
+    refreshSnapshot: vi.fn(() => Promise.resolve()),
+    connectLive: vi.fn(),
+    disconnectLive: vi.fn(),
   }),
 }))
 

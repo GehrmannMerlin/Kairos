@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // 执行详情二级页（D-055/D-063）：默认"阶段 + 时间线"，可切换只读 Plan DAG。
 // 阶段/时间线全部来自后端 Execution/Timeline Query；Token 只作技术统计，无金额 UI。
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { openDrawer } from '@/app/overlay/drawer.store'
+import TimelineStepRow from '@/features/execution/TimelineStepRow.vue'
 import { useExecution } from '@/features/execution/useExecution'
 import type { DagNode, TimelineCategory } from '@/features/execution/types'
 
@@ -24,10 +25,46 @@ const {
   dag,
   dagLoading,
   dagError,
+  live,
+  reconcileVersion,
   loadMore,
   setFilter,
   toggleDag,
+  connectLive,
+  disconnectLive,
+  refreshSnapshot,
 } = useExecution(taskId)
+
+// ---- Timeline 流生命周期：run 非终态时连接，进入终态断开，卸载不泄漏 ----
+const TERMINAL_RUN_STATES = new Set([
+  'COMPLETED',
+  'PARTIALLY_COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'BLOCKED',
+])
+
+watch(
+  () => view.value?.run?.state,
+  (state, previous) => {
+    if (state == null) return
+    const terminal = TERMINAL_RUN_STATES.has(state)
+    const wasActive = previous != null && !TERMINAL_RUN_STATES.has(previous)
+    if (terminal) {
+      disconnectLive()
+    } else if (!wasActive) {
+      connectLive()
+    }
+  },
+  { immediate: true },
+)
+
+// 流恢复（reconnecting→open）后以 snapshot 为准 reconcile，流式增量不丢。
+watch(reconcileVersion, (version, previous) => {
+  if (version > previous) void refreshSnapshot()
+})
+
+onBeforeUnmount(disconnectLive)
 
 const STAGE_STATE_LABEL: Record<string, string> = {
   not_started: '未开始',
@@ -95,13 +132,37 @@ function nodeStatus(node: DagNode): string {
     <p v-else-if="error" class="empty">{{ error }}</p>
     <template v-else-if="view">
       <div class="exec-header">
+        <div class="exec-header__row">
+          <p class="muted">
+            运行状态：{{ view.run?.state ?? '—' }}
+            <template v-if="view.run">
+              · Run #{{ view.run.run_id }} · 计划 v{{ view.plan?.plan_version }}</template
+            >
+          </p>
+          <span
+            class="live-badge"
+            :class="{
+              'live-badge--open': live === 'open',
+              'live-badge--reconnecting': live === 'reconnecting',
+            }"
+          >
+            <span v-if="live === 'open'" class="live-badge__dot" />
+            {{
+              live === 'reconnecting'
+                ? '连接中断，正在恢复…'
+                : live === 'open'
+                  ? '实时更新中'
+                  : '实时更新'
+            }}
+          </span>
+        </div>
         <p class="muted">
-          运行状态：{{ view.run?.state ?? '—' }}
-          <template v-if="view.run"> · Run #{{ view.run.run_id }} · 计划 v{{ view.plan?.plan_version }}</template>
-        </p>
-        <p class="muted">
-          URL：发现 {{ view.urls.discovered ?? 0 }} / 抓取 {{ view.urls.fetched ?? 0 }} / 失败 {{ view.urls.failed ?? 0 }}
-          <template v-if="view.records"> · 记录：通过 {{ view.records.passed ?? 0 }} / 待复核 {{ view.records.needs_review ?? 0 }}</template>
+          URL：发现 {{ view.urls.discovered ?? 0 }} / 抓取 {{ view.urls.fetched ?? 0 }} / 失败
+          {{ view.urls.failed ?? 0 }}
+          <template v-if="view.records">
+            · 记录：通过 {{ view.records.passed ?? 0 }} / 待复核
+            {{ view.records.needs_review ?? 0 }}</template
+          >
         </p>
         <button type="button" class="exec-toggle" @click="toggleDag">
           {{ viewMode === 'stage' ? '查看流程图' : '查看阶段' }}
@@ -121,7 +182,8 @@ function nodeStatus(node: DagNode): string {
             <span class="stage-card__label">{{ stage.label }}</span>
             <span class="stage-card__state">{{ STAGE_STATE_LABEL[stage.state] }}</span>
             <span class="muted stage-card__meta">
-              事件 {{ stage.event_count }}<template v-if="stage.url_processed"> · URL {{ stage.url_processed }}</template>
+              事件 {{ stage.event_count
+              }}<template v-if="stage.url_processed"> · URL {{ stage.url_processed }}</template>
               <template v-if="stage.record_count"> · 记录 {{ stage.record_count }}</template>
               <template v-if="stage.error_count"> · 错误 {{ stage.error_count }}</template>
             </span>
@@ -144,17 +206,12 @@ function nodeStatus(node: DagNode): string {
         <p v-if="timelineLoading && timeline.length === 0" class="muted">加载时间线…</p>
         <p v-else-if="timelineError" class="empty">{{ timelineError }}</p>
         <ul v-else-if="timeline.length" class="timeline-list">
-          <li v-for="ev in timeline" :key="ev.event_id" class="timeline-item">
-            <span class="timeline-item__time">{{ new Date(ev.timestamp).toLocaleString() }}</span>
-            <span class="timeline-item__summary">{{ ev.summary }}</span>
-            <span class="timeline-item__stage muted">{{ ev.stage }}</span>
-            <span v-if="ev.error_code" class="timeline-item__error">{{ ev.error_code }}</span>
-            <span v-if="ev.tool" class="muted">· {{ ev.tool }}</span>
-            <span v-if="ev.model" class="muted">· {{ ev.model }}</span>
-            <span v-if="ev.tokens_in != null || ev.tokens_out != null" class="muted">
-              · tokens {{ ev.tokens_in ?? 0 }}/{{ ev.tokens_out ?? 0 }}
-            </span>
-          </li>
+          <TimelineStepRow
+            v-for="ev in timeline"
+            :key="ev.event_id"
+            :event="ev"
+            :active="ev.node_id === view?.current_node?.node_id"
+          />
         </ul>
         <p v-else class="muted">暂无时间线事件</p>
         <div v-if="hasMore" class="timeline-more">
@@ -198,7 +255,35 @@ function nodeStatus(node: DagNode): string {
 
 <style scoped>
 .exec-header {
+  display: grid;
+  gap: 0.3rem;
   margin-bottom: 0.75rem;
+}
+.exec-header__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.exec-header__row .muted {
+  margin: 0;
+}
+.live-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+}
+.live-badge__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--color-success, #1a7f37);
+}
+.live-badge--reconnecting {
+  color: var(--color-danger, #c62828);
 }
 .exec-toggle {
   padding: 0.3rem 0.6rem;
@@ -270,29 +355,6 @@ function nodeStatus(node: DagNode): string {
   list-style: none;
   margin: 0;
   padding: 0;
-}
-.timeline-item {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.35rem 0;
-  border-bottom: 1px solid var(--color-border);
-  font-size: 0.9rem;
-}
-.timeline-item__time {
-  color: var(--color-text-secondary);
-  font-size: 0.8rem;
-}
-.timeline-item__summary {
-  font-weight: 500;
-}
-.timeline-item__stage {
-  font-size: 0.8rem;
-}
-.timeline-item__error {
-  color: #dc2626;
-  font-size: 0.8rem;
 }
 .timeline-more {
   margin-top: 0.6rem;
