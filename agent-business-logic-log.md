@@ -1244,3 +1244,14 @@
 - 安全边界：所有查询与 replay 均受 owner/task/run 约束；事件 payload 和指标使用显式 allowlist，禁止密钥、令牌、请求头、URL 高基数标签、异常正文和推理过程。
 - 已知边界：当前 SSE cursor 使用持久化 DomainEvent 标量 ID。PostgreSQL sequence 分配顺序不等于提交顺序，因此在不引入提交序列化或新的 durable commit-ordered cursor 前，不能数学上保证并发事务晚提交的小 ID 永不遗漏。本事故修复不以有损重放或平行事件系统掩盖该限制。
 - 当前证据状态：本地代码与定向测试完成；PR/CI、Staging、Production、浏览器、Temporal/数据库一致性及回滚证据尚未执行，状态只能是 `CODE_COMPLETE`。
+
+## D-078：执行详情页提供实时执行时间线流（Execution Visibility Layer）
+- 状态：待讨论
+- 日期：2026-08-21
+- 维度：12. 可观测性
+- 背景：D-055/D-063 已确定执行详情二级页与"阶段+时间线"；D-077 已确定 snapshot 权威 + SSE 增量。
+- 决定：在既有 /tasks/:taskId/execution 二级页提供实时工作流展示：
+  - 新增 owner-scoped SSE 流 GET /tasks/{taskId}/execution/timeline/stream，输出与 REST timeline 完全一致的富 TimelineEvent（复用 TimelineMapper）。
+  - 前端执行页连接该流：事件逐条实时追加、阶段卡与计数节流刷新、DAG 节点按 live 事实着色、reconnect 后 reconcile 一次。
+  - 复用 D-077 的 DomainEvent.id 游标语义与已知提交顺序限制，由 reconnect reconcile 兜底；不新增事件表/消息中间件，不修改 Workflow/Temporal/Agent Loop/Provider/Extraction，零 migration。
+- 影响：用户可实时看到 Agent 每一步执行；后端只读新增，不影响 DEPLOY_GATE-3 已验证据与 Production 既有行为。

@@ -932,6 +932,8 @@ worker-* 通过内网访问 PostgreSQL/Temporal/Object Storage
 - Evidence Viewer 查看的是当时 snapshot，不重新实时抓页面冒充证据。
 - 无权限 evidence id 不泄漏元数据。
 
+> **2026-08-21 实施证据（Execution Timeline 实时时间线流）**：时间线在既有 REST `/execution/timeline` 基础上新增 owner-scoped SSE 流 `GET /tasks/{task_id}/execution/timeline/stream`，REST 与流共用同一 `TimelineMapper` 输出富 `TimelineEvent`；前端执行页接入实时追加 + 阶段/DAG live 着色 + reconnect reconcile。相关决策见 D-078（状态：待讨论）。本地门禁证据见 `docs/audits/agent-execution-timeline-verification-2026-08-21.md`；真实任务验收仍 PENDING（需部署运行新端点的栈）。
+
 ## 完成门禁
 
 - 对一条真实 Staging Record 能从 Data → Record Drawer → Quick Evidence → Full Evidence Viewer 完整追溯。
@@ -939,6 +941,13 @@ worker-* 通过内网访问 PostgreSQL/Temporal/Object Storage
 ## 与后续联动
 
 - M-15 导出质量报告/Artifact 元数据；M-17 使用同一追踪链做运维诊断。
+
+### 2026-08-21 Execution Timeline 实时时间线流实施证据（本地）
+
+- 实现：`backend/app/execution/timeline.py` 抽取共享 `TimelineMapper`（REST 与流一致映射）；`backend/app/execution/timeline_stream.py` 新增 SSE 流（replay 冻结 `replay_through_id` → 2s 轮询活区 → keepalive）；`backend/app/api/routes/execution.py` 挂载 `GET /tasks/{task_id}/execution/timeline/stream`（owner-safe，`?after_id` / `Last-Event-ID` 游标复用 `app/api/sse_cursor.py`）。前端：`execution.api.ts` + `useExecution.ts` 流客户端（单调去重 + 节流 snapshot + reconnect reconcile），`TimelineStepRow.vue` / `TaskExecutionView.vue` 实时步骤行与阶段/DAG live 着色。
+- 零 migration：`alembic heads` 唯一 `0017`；不修改 Workflow/Temporal/Agent Loop/Provider/Extraction；既有 task SSE `/api/events/tasks/{task_id}` 不变（游标解析共享但逻辑逐字一致）。
+- 测试证据（2026-08-21 本地全绿）：`tests/execution`（含 `test_timeline_mapper.py` 206 行、`test_timeline_stream_api.py` 462 行）+ `tests/api/test_task_events.py` + `test_understand.py` + `test_plan_api.py` 共 **143 passed**；`ruff check` 对本次涉及文件 **All checks passed**（`tests/ops/test_release_contract.py` 6 条 E501/F401 为 2026-08-12 `e357bec` 既有基线，本分支零改动）；`mypy app` **Success, no issues in 237 source files**；`create_app()` 正常。前端 `npm run test:unit` **41 files / 201 tests passed**、`type-check`、`lint:check`（0 errors）、`build` 全 PASS；`format:check` 仓库级失败为 Windows CRLF 既有基线（119 个未触碰文件），本分支变更文件单独 Prettier 检查通过。
+- 真实任务验收：**PENDING**（需部署运行新端点的栈；本地 API 未运行，staging 后端尚未部署该端点）。验收脚本 `infra/scripts/_execution_timeline_staging_acceptance.py` 已按 `_m16/_m17` 模式创建（`_` 前缀，**未入库**），待部署后执行。证据完整记录于 `docs/audits/agent-execution-timeline-verification-2026-08-21.md`。
 
 ---
 
