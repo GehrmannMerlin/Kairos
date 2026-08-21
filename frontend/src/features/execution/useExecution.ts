@@ -2,10 +2,19 @@
 
 import { ref, watch, type Ref } from 'vue'
 
-import { getDag, getExecution, getTimeline } from './execution.api'
+import {
+  getDag,
+  getExecution,
+  getTimeline,
+  openExecutionTimelineStream,
+  parseTimelineSseMessage,
+} from './execution.api'
 import type { DagView, ExecutionView, TimelineCategory, TimelineEvent } from './types'
 
 const TIMELINE_PAGE_SIZE = 50
+const LIVE_REFRESH_DEBOUNCE_MS = 500
+
+export type LiveState = 'idle' | 'connecting' | 'open' | 'reconnecting'
 
 export interface UseExecution {
   view: Ref<ExecutionView | null>
@@ -20,11 +29,15 @@ export interface UseExecution {
   dag: Ref<DagView | null>
   dagLoading: Ref<boolean>
   dagError: Ref<string | null>
+  live: Ref<LiveState>
+  reconcileVersion: Ref<number>
   loadMore: () => Promise<void>
   setFilter: (category: TimelineCategory | '') => void
   toggleDag: () => void
   refreshSnapshot: () => Promise<void>
   mergeTimelineEvent: (event: TimelineEvent) => void
+  connectLive: () => void
+  disconnectLive: () => void
 }
 
 export function useExecution(taskId: Ref<string | number>): UseExecution {
@@ -41,8 +54,39 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
   const dag = ref<DagView | null>(null)
   const dagLoading = ref(false)
   const dagError = ref<string | null>(null)
+  const live = ref<LiveState>('idle')
+  const reconcileVersion = ref(0)
   let seq = 0
   let timelineSeq = 0
+  let streamSource: EventSource | null = null
+  let liveTimer: number | undefined
+  let lastStreamEventId = 0
+  let refreshToken = 0
+
+  // 经 self 暴露的方法引用外部返回对象，使 live 内部刷新路径可被外部 spy 观测。
+  const self: UseExecution = {
+    view,
+    loading,
+    error,
+    timeline,
+    timelineLoading,
+    timelineError,
+    filter,
+    hasMore,
+    viewMode,
+    dag,
+    dagLoading,
+    dagError,
+    live,
+    reconcileVersion,
+    loadMore,
+    setFilter,
+    toggleDag,
+    refreshSnapshot,
+    mergeTimelineEvent,
+    connectLive,
+    disconnectLive,
+  }
 
   async function loadOverview(): Promise<void> {
     const current = ++seq
@@ -121,9 +165,60 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
     timeline.value = [...timeline.value, event].sort((a, b) => a.event_id - b.event_id)
   }
 
+  /**
+   * 事件 burst 节流刷新：500ms 窗口内多条事件合并为一次 snapshot 刷新（reconcile 路径）。
+   * 经 self.refreshSnapshot 调用，便于外部 spy 可观测，且与手动刷新保持同一语义。
+   */
+  function scheduleCoalescedRefresh(): void {
+    clearTimeout(liveTimer)
+    liveTimer = window.setTimeout(() => {
+      const token = ++refreshToken
+      void self.refreshSnapshot().finally(() => {
+        if (token !== refreshToken) return
+      })
+    }, LIVE_REFRESH_DEBOUNCE_MS)
+  }
+
+  /** 打开 timeline SSE 流（owner-safe、task 维度；run 为空时仅无事件，仍建流）。 */
+  function connectLive(): void {
+    disconnectLive()
+    live.value = 'connecting'
+    streamSource = openExecutionTimelineStream(taskId.value, {
+      lastEventId: lastStreamEventId || undefined,
+    })
+    streamSource.addEventListener('timeline', (e: MessageEvent) => {
+      const dto = parseTimelineSseMessage(String(e.data))
+      if (!dto || dto.event_id <= lastStreamEventId) return
+      lastStreamEventId = dto.event_id
+      mergeTimelineEvent(dto)
+      scheduleCoalescedRefresh()
+    })
+    streamSource.onopen = () => {
+      if (live.value === 'reconnecting') {
+        reconcileVersion.value += 1
+        void self.refreshSnapshot()
+      }
+      live.value = 'open'
+    }
+    streamSource.onerror = () => {
+      live.value = 'reconnecting'
+    }
+  }
+
+  function disconnectLive(): void {
+    if (streamSource) {
+      streamSource.close()
+      streamSource = null
+    }
+    clearTimeout(liveTimer)
+    live.value = 'idle'
+  }
+
   watch(
     taskId,
     () => {
+      disconnectLive()
+      lastStreamEventId = 0
       nextCursor.value = null
       timeline.value = []
       dag.value = null
@@ -133,23 +228,5 @@ export function useExecution(taskId: Ref<string | number>): UseExecution {
     { immediate: true },
   )
 
-  return {
-    view,
-    loading,
-    error,
-    timeline,
-    timelineLoading,
-    timelineError,
-    filter,
-    hasMore,
-    viewMode,
-    dag,
-    dagLoading,
-    dagError,
-    loadMore,
-    setFilter,
-    toggleDag,
-    refreshSnapshot,
-    mergeTimelineEvent,
-  }
+  return self
 }
