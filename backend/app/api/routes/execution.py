@@ -7,9 +7,12 @@ owner-safe：任务越权 → 404。DTO 契约来自 app.execution.contracts。
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import sessionmaker
 
+from app.api.sse_cursor import parse_last_event_id
 from app.auth.deps import require_user
 from app.auth.models import User
 from app.domain.repository import TaskRepository
@@ -21,6 +24,7 @@ from app.execution.contracts import (
     TimelinePage,
 )
 from app.execution.service import ExecutionService
+from app.execution.timeline_stream import timeline_stream
 from app.infra.deps import get_db
 
 router = APIRouter(prefix="/tasks/{task_id}/execution", tags=["execution"])
@@ -51,6 +55,27 @@ def get_timeline(
     return service.timeline(
         user_id=user.id, task_id=task_id, category=category, after_id=after_id, limit=limit
     )
+
+
+@router.get("/timeline/stream")
+def get_timeline_stream(
+    task_id: int,
+    request: Request,
+    after_id: str | None = None,
+    user: User = Depends(require_user),
+    db: DbSession = Depends(get_db),
+) -> StreamingResponse:
+    cursor = parse_last_event_id(request, after_id)
+    TaskRepository(db).get_owned(user.id, task_id)  # owner-safe 404
+    stream_sessions = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+    db.rollback()
+    stream = timeline_stream(
+        session_factory=stream_sessions,
+        user_id=user.id,
+        task_id=task_id,
+        cursor=cursor,
+    )
+    return StreamingResponse(stream, media_type="text/event-stream")
 
 
 @router.get("/dag", response_model=DagView)
