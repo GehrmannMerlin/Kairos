@@ -77,18 +77,21 @@ describe('useExecution live timeline stream', () => {
     expect(store.timeline.value.map((e) => e.event_id)).toEqual([10, 11])
   })
 
-  it('burst 事件只触发一次节流 snapshot 刷新', async () => {
+  it('burst 事件只触发一次节流 overview 刷新（不重置 timeline）', async () => {
     const store = useExecution(ref(25))
-    const refresh = vi.spyOn(store, 'refreshSnapshot')
+    const refresh = vi.spyOn(store, 'refreshLiveOverview')
     store.connectLive()
     await flushPromises()
     emitTimeline(10)
     emitTimeline(11)
     emitTimeline(12)
     await nextTick()
+    expect(store.timeline.value.map((e) => e.event_id)).toEqual([10, 11, 12])
     vi.advanceTimersByTime(600) // 节流窗口结束
     await flushPromises()
     expect(refresh).toHaveBeenCalledTimes(1)
+    // 轻量刷新不重置 timeline，流式增量保留。
+    expect(store.timeline.value.map((e) => e.event_id)).toEqual([10, 11, 12])
   })
 
   it('reconnect→open 触发一次 reconcile 刷新', async () => {
