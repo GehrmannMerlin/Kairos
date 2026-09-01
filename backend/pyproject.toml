@@ -1,0 +1,51 @@
+[project]
+name = "kairos-app-backend"
+version = "0.1.0"
+description = "Kairos durable agent and workspace foundation"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "alembic>=1.16.0",
+  "asyncpg>=0.30.0",
+  "fastapi>=0.115.0",
+  "httpx>=0.28.1",
+  "pydantic-settings>=2.8.0",
+  "pydantic-ai-slim[openai,temporal]",
+  "pydantic-ai-harness",
+  "sse-starlette>=2.3.0",
+  "sqlalchemy[asyncio]>=2.0.40",
+  "temporalio==1.32.0",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.25.0",
+  "ruff>=0.11.0",
+]
+
+[tool.uv.sources]
+pydantic-ai-slim = { path = "../../pydantic-ai/pydantic_ai_slim", editable = true }
+pydantic-ai-harness = { path = "../../pydantic-ai-harness", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "integration: uses a real external service or local infrastructure",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
