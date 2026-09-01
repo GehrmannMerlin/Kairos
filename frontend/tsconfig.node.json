@@ -6,6 +6,7 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "composite": true,
+    "noEmit": true,
     "skipLibCheck": true,
     "types": ["node"]
   },
