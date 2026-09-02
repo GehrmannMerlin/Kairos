@@ -10,7 +10,7 @@
 
 **Spec:** `C:\Users\韩吉衍\.codex\attachments\f1f04c8e-4f18-4918-b2b1-85f93a8ab3a1\pasted-text.txt`
 
-**Execution status (2026-09-02):** Implementation and deterministic verification complete. Real credential-dependent smoke gates remain `BLOCKED` because this environment has no `DEEPSEEK_API_KEY` or `TAVILY_API_KEY`; no mock fallback was used.
+**Execution status (2026-09-02):** Implementation and deterministic verification complete. The real Tavily preflight passed after transient credentials were authorized. Exploratory smoke reached real DeepSeek/Tavily discovery, fetch, snapshot, inspection, and deduplication, but the final smoke result was not accepted because the local Docker/Temporal environment was interrupted before the bounded terminal verification could be captured; no mock fallback was used.
 
 ## Global Constraints
 
@@ -188,7 +188,7 @@
 - [ ] Step 2: Implement the autonomous smoke goal “Find 5 well-established Python web frameworks” with required `name`, `website`, `description` fields and official-source guidance, target 5 and bounded server limits.
 - [ ] Step 3: Collect only bounded SSE event names/metadata and query facts after completion; verify at least one SearchRound, SEARCH CollectionSources are canonical-unique, every formal field has verified PageSnapshot Evidence, and canonical count drives completion.
 - [ ] Step 4: Fetch Temporal history metadata only, serialize events for byte count and scan for HTML/provider raw response/credential markers; report `PASS/WARN` health and fail only on unbounded payloads.
-- [ ] Step 5: Run at most two real exploratory smoke attempts if credentials exist; otherwise preserve a truthful BLOCKED report. Run final affected backend tests, frontend checks, `alembic upgrade head`, and ruff before the final report.
+- [ ] Step 5: Run at most two real exploratory smoke attempts if credentials exist; otherwise preserve a truthful BLOCKED report. Run final affected backend tests, frontend checks, `alembic upgrade head`, and ruff before the final report. Current real smoke remains unaccepted because the local Docker/Temporal environment was interrupted during terminal verification.
 
 ## Self-Review Checklist
 
@@ -198,4 +198,4 @@
 - [ ] Search snippets are bounded discovery metadata and the missing-snapshot negative test prevents them from becoming Evidence/Records.
 - [ ] Completion is decided by the deterministic evaluator, never by the LLM final message or Agent-selected counters.
 - [ ] Full HTML, raw Provider payload and full MinIO content remain outside Temporal History.
-- [ ] Real A/C/F gates are marked BLOCKED when `DEEPSEEK_API_KEY` or Search Provider credentials are absent; deterministic tests are not presented as real smoke passes.
+- [ ] Real A/C/F gates are not marked PASS without a captured terminal smoke result; deterministic tests are not presented as real smoke passes. Tavily preflight is independently recorded as PASS.
