@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     model_id: str = "deepseek:deepseek-chat"
     model_credential_env: str = "DEEPSEEK_API_KEY"
     model_api_key: SecretStr | None = None
+    search_provider_type: str = "tavily"
+    search_provider_credential_env: str = "TAVILY_API_KEY"
+    search_provider_base_url: str = "https://api.tavily.com"
     http_max_bytes: int = 1_000_000
     http_timeout_seconds: float = 20.0
     collection_http_max_bytes: int = 5_242_880

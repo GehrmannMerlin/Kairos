@@ -85,6 +85,8 @@ class CollectionSpecVersion(Base):
     fields_json: Mapped[list[dict]] = mapped_column("fields", JSON)
     seed_urls_json: Mapped[list[str]] = mapped_column("seed_urls", JSON)
     target_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scope_domains_json: Mapped[list[str]] = mapped_column("scope_domains", JSON, default=list)
+    search_limits_json: Mapped[dict] = mapped_column("search_limits", JSON, default=dict)
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -103,6 +105,17 @@ class CollectionSource(Base):
     url: Mapped[str] = mapped_column(Text)
     canonical_url: Mapped[str] = mapped_column(Text, index=True)
     origin: Mapped[str] = mapped_column(String(32), default="SEED")
+    search_round_id: Mapped[str | None] = mapped_column(
+        ForeignKey("search_rounds.search_round_id"), nullable=True, index=True
+    )
+    discovered_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provider_score: Mapped[float | None] = mapped_column(nullable=True)
+    search_title: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    search_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
     snapshot_id: Mapped[str | None] = mapped_column(nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -116,6 +129,35 @@ class CollectionSource(Base):
     __table_args__ = (
         UniqueConstraint("spec_version_id", "canonical_url", name="uq_collection_source_spec_canonical_url"),
     )
+
+
+class SearchRound(Base):
+    __tablename__ = "search_rounds"
+
+    search_round_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(128), index=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), index=True)
+    task_run_id: Mapped[str] = mapped_column(ForeignKey("task_runs.task_run_id"), index=True)
+    spec_version_id: Mapped[str] = mapped_column(
+        ForeignKey("collection_spec_versions.spec_version_id"), index=True
+    )
+    round_number: Mapped[int] = mapped_column(Integer)
+    query: Mapped[str] = mapped_column(Text)
+    query_hash: Mapped[str] = mapped_column(String(64), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    requested_results: Mapped[int] = mapped_column(Integer)
+    returned_results: Mapped[int] = mapped_column(Integer, default=0)
+    accepted_results: Mapped[int] = mapped_column(Integer, default=0)
+    new_sources: Mapped[int] = mapped_column(Integer, default=0)
+    passed_records_before: Mapped[int] = mapped_column(Integer, default=0)
+    passed_records_after: Mapped[int] = mapped_column(Integer, default=0)
+    new_passed_records: Mapped[int] = mapped_column(Integer, default=0)
+    result_source_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="RUNNING", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("task_run_id", "round_number", name="uq_search_round_run_number"),)
 
 
 class PageSnapshot(Base):
@@ -176,6 +218,12 @@ class Record(Base):
     )
     ordinal: Mapped[int] = mapped_column(Integer)
     data_json: Mapped[dict] = mapped_column(JSON)
+    normalized_data_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    record_fingerprint: Mapped[str] = mapped_column(String(64), index=True, default="")
+    identity_key: Mapped[str] = mapped_column(Text, index=True, default="")
+    canonical_record_id: Mapped[str | None] = mapped_column(
+        ForeignKey("records.record_id"), nullable=True, index=True
+    )
     status: Mapped[str] = mapped_column(String(32), index=True)
     validation_issues: Mapped[list[str]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
