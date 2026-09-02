@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     model_api_key: SecretStr | None = None
     http_max_bytes: int = 1_000_000
     http_timeout_seconds: float = 20.0
+    collection_http_max_bytes: int = 5_242_880
+    robots_timeout_seconds: float = 10.0
+    minio_endpoint: str = "http://127.0.0.1:9000"
+    minio_access_key: str | None = None
+    minio_secret_key: SecretStr | None = None
+    minio_bucket: str = "kairos-snapshots"
     event_poll_seconds: float = 0.5
     native_folder_picker_enabled: bool = False
 
