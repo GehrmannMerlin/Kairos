@@ -290,6 +290,7 @@ async def persist_page_snapshot(
                         PageSnapshot.snapshot_id == source.snapshot_id,
                         PageSnapshot.owner_id == owner_id,
                         PageSnapshot.task_id == task_id,
+                        PageSnapshot.task_run_id == task_run_id,
                     )
                 )
                 if existing is not None:
