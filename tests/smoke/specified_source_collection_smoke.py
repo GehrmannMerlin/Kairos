@@ -21,16 +21,20 @@ sys.path.insert(0, str(_APP_ROOT / "backend"))
 
 from app.config import get_settings
 from app.storage import MinioS3ObjectStore, snapshot_object_keys
-from app.url_policy import RobotsPolicy, request_with_safe_redirects
+from app.url_policy import (
+    RetryableFetchError,
+    RobotsPolicy,
+    request_with_safe_redirects,
+)
 from pydantic_ai.durable_exec.temporal import PydanticAIPlugin
 from temporalio.client import Client
 
 API_BASE = "http://127.0.0.1:8000"
 OWNER_ID = f"smoke-owner-{uuid4().hex}"
 SEED_URLS = [
-    "https://example.com/",
-    "https://www.iana.org/help/example-domains",
-    "https://www.rfc-editor.org/",
+    "https://www.python.org/",
+    "https://www.djangoproject.com/",
+    "https://www.postgresql.org/",
 ]
 
 
@@ -42,17 +46,23 @@ async def _preflight_sources() -> None:
     timeout = httpx.Timeout(20.0)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         for url in SEED_URLS:
-            try:
-                await RobotsPolicy(client_factory=lambda: httpx.AsyncClient(
-                    timeout=timeout,
-                    follow_redirects=False,
-                    headers={"User-Agent": "KairosBot/0.1"},
-                )).check(url)
-                response, _ = await request_with_safe_redirects(client, url)
-            except Exception as exc:
-                raise SmokeBlocked(f"source preflight failed: {type(exc).__name__}") from exc
-            if response.status_code != 200:
-                raise SmokeBlocked(f"source preflight returned HTTP {response.status_code}")
+            for attempt in range(3):
+                try:
+                    await RobotsPolicy(client_factory=lambda: httpx.AsyncClient(
+                        timeout=timeout,
+                        follow_redirects=False,
+                        headers={"User-Agent": "KairosBot/0.1"},
+                    )).check(url)
+                    response, _ = await request_with_safe_redirects(client, url)
+                except (RetryableFetchError, httpx.TimeoutException, httpx.TransportError) as exc:
+                    if attempt == 0:
+                        continue
+                    raise SmokeBlocked(f"source preflight failed for {url}: {type(exc).__name__}") from exc
+                except Exception as exc:
+                    raise SmokeBlocked(f"source preflight failed for {url}: {type(exc).__name__}") from exc
+                if response.status_code != 200:
+                    raise SmokeBlocked(f"source preflight returned HTTP {response.status_code}")
+                break
 
 
 async def _read_sse(client: httpx.AsyncClient, task_id: str, run_id: str) -> list[str]:
@@ -141,6 +151,7 @@ async def _run() -> dict[str, Any]:
         run = run_response.json()
         sse_events = await _read_sse(client, task_id, run["task_run_id"])
         task = await _get_json(client, f"/api/tasks/{task_id}")
+        spec = await _get_json(client, f"/api/tasks/{task_id}/collection/spec")
         progress = await _get_json(client, f"/api/tasks/{task_id}/collection/progress")
         records = await _get_json(client, f"/api/tasks/{task_id}/records")
 
