@@ -26,12 +26,14 @@ from app.domain import (
     CollectionSpecConfirm,
     CollectionSpecVersion,
     RecordStatus,
+    SearchRoundSummary,
     TaskRunStatus,
     TaskStatus,
     WorkspaceMetadata,
     WorkspacePermission,
 )
 from app.repositories import (
+    _search_round_summary_from_model,
     bind_task_workspace,
     confirm_collection_spec,
     create_task_run,
@@ -48,9 +50,11 @@ from app.repositories import (
     list_collection_records,
     list_collection_sources,
     list_record_evidence,
+    list_search_rounds,
     list_workspace_metadata,
     update_task_run,
 )
+from app.search import SearchProviderError, resolve_search_provider
 from app.workflows import KairosAgentWorkflow, KairosAgentWorkflowInput
 from app.workspace import LocalFolderPicker, WorkspacePathResolver
 
@@ -80,6 +84,7 @@ class RunCreateRequest(BaseModel):
 
     prompt: str = Field(min_length=1, max_length=20_000)
     model_config_id: str | None = None
+    search_provider_config_id: str | None = None
 
 
 class RunResponse(BaseModel):
@@ -105,6 +110,7 @@ class RecordResponse(BaseModel):
     fields: dict[str, Any]
     status: RecordStatus
     validation_issues: list[str]
+    canonical_record_id: str | None = None
 
 
 class EvidenceResponse(BaseModel):
@@ -115,6 +121,12 @@ class EvidenceResponse(BaseModel):
     quote: str
     verified: bool
     confidence: float | None
+
+
+class SearchProviderAvailabilityResponse(BaseModel):
+    provider: str
+    display_name: str
+    configured: bool
 
 
 class SnapshotMetadataResponse(BaseModel):
@@ -184,6 +196,8 @@ async def _collection_spec_response(
                 status=row.status,
                 snapshot_id=row.snapshot_id,
                 failure_code=row.failure_code,
+                title=row.search_title,
+                snippet=(row.search_snippet or "")[:500],
             )
             for row in rows
         ],
@@ -293,6 +307,11 @@ async def confirm_collection_spec_api(
     x_kairos_user_id: Annotated[str | None, Header()] = None,
 ) -> CollectionSpecResponse:
     owner_id = _owner_id(x_kairos_user_id)
+    if body.mode.value in {"EXPLORATORY", "HYBRID"}:
+        try:
+            resolve_search_provider()
+        except SearchProviderError as exc:
+            raise _collection_http_error(CollectionError(exc.code, exc.message)) from exc
     try:
         spec = await confirm_collection_spec(task_id, owner_id, body)
     except CollectionError as exc:
@@ -310,6 +329,27 @@ async def get_collection_spec_api(
     if spec is None:
         raise HTTPException(status_code=404, detail="collection spec not found")
     return await _collection_spec_response(spec)
+
+
+@app.get("/api/providers/search/availability", response_model=SearchProviderAvailabilityResponse)
+async def search_provider_availability_api(
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> SearchProviderAvailabilityResponse:
+    _owner_id(x_kairos_user_id)
+    settings = get_settings()
+    try:
+        provider = resolve_search_provider()
+    except SearchProviderError:
+        return SearchProviderAvailabilityResponse(
+            provider=settings.search_provider_type,
+            display_name=settings.search_provider_type.title(),
+            configured=False,
+        )
+    return SearchProviderAvailabilityResponse(
+        provider=getattr(provider, "provider_name", settings.search_provider_type),
+        display_name=getattr(provider, "provider_name", settings.search_provider_type).title(),
+        configured=True,
+    )
 
 
 @app.post("/api/tasks/{task_id}/workspace", response_model=TaskResponse)
@@ -368,6 +408,13 @@ async def start_run(
     if client is None:
         raise HTTPException(status_code=503, detail="Temporal client is unavailable")
     settings = get_settings()
+    if task.spec_version_id is not None:
+        spec = await get_collection_spec(task_id, owner_id)
+        if spec is not None and spec.mode.value in {"EXPLORATORY", "HYBRID"}:
+            try:
+                resolve_search_provider(body.search_provider_config_id)
+            except SearchProviderError as exc:
+                raise _collection_http_error(CollectionError(exc.code, exc.message)) from exc
     workspace_id = task.workspace_id
     workspace_permission = WorkspacePermission.NONE
     if workspace_id is not None:
@@ -386,7 +433,7 @@ async def start_run(
         workspace_id=workspace_id,
         workspace_permission=workspace_permission,
         model_config_id=model_config_id,
-        search_provider_config_id=None,
+        search_provider_config_id=body.search_provider_config_id,
     )
     created = await create_task_run(task_id, owner_id, task_run_id, workflow_id, body.prompt)
     if created is None:
@@ -424,9 +471,28 @@ async def collection_progress_api(
         raise _collection_http_error(exc) from exc
 
 
+@app.get("/api/tasks/{task_id}/collection/search-rounds")
+async def collection_search_rounds_api(
+    task_id: str,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> list[SearchRoundSummary]:
+    owner_id = _owner_id(x_kairos_user_id)
+    task = await get_task(task_id, owner_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    if task.spec_version_id is None:
+        return []
+    run = await get_latest_task_run(task_id, owner_id)
+    if run is None:
+        return []
+    rows = await list_search_rounds(task_id, run.task_run_id, owner_id, task.spec_version_id)
+    return [_search_round_summary_from_model(row) for row in rows]
+
+
 @app.get("/api/tasks/{task_id}/records", response_model=list[RecordResponse])
 async def collection_records_api(
     task_id: str,
+    include_duplicates: bool = Query(default=False),
     x_kairos_user_id: Annotated[str | None, Header()] = None,
 ) -> list[RecordResponse]:
     owner_id = _owner_id(x_kairos_user_id)
@@ -438,7 +504,13 @@ async def collection_records_api(
     run = await get_latest_task_run(task_id, owner_id)
     if run is None:
         return []
-    rows = await list_collection_records(task_id, run.task_run_id, owner_id, task.spec_version_id)
+    rows = await list_collection_records(
+        task_id,
+        run.task_run_id,
+        owner_id,
+        task.spec_version_id,
+        include_duplicates=include_duplicates,
+    )
     return [
         RecordResponse(
             record_id=row.record_id,
@@ -447,6 +519,7 @@ async def collection_records_api(
             fields=row.data_json,
             status=RecordStatus(row.status),
             validation_issues=row.validation_issues,
+            canonical_record_id=row.canonical_record_id,
         )
         for row in rows
     ]
