@@ -100,11 +100,17 @@ textarea { resize: vertical; min-height: 100px; }
 .collection-dashboard { margin-top: 26px; border: 1px solid var(--line); background: var(--panel); }
 .dashboard-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; padding: 24px 28px 20px; border-bottom: 1px solid var(--line); }
 .source-count { color: var(--signal); font: 11px var(--mono); }
-.metric-grid { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); border-bottom: 1px solid var(--line); }
+.metric-grid { display: grid; grid-template-columns: repeat(7, minmax(100px, 1fr)); border-bottom: 1px solid var(--line); }
 .metric { display: flex; flex-direction: column; gap: 8px; padding: 16px 18px; border-right: 1px solid var(--line); }
 .metric:last-child { border-right: 0; }
 .metric span { color: var(--muted); font: 10px var(--mono); text-transform: uppercase; }
 .metric strong { color: var(--ink); font-size: 22px; letter-spacing: -0.04em; }
+.rounds-strip { padding: 20px 28px; border-bottom: 1px solid var(--line); background: #111820; }
+.rounds-strip .panel-heading { padding-bottom: 8px; }
+.round-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.round-list li { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.round-list li > span, .round-list small { color: var(--muted); font: 10px var(--mono); }
+.round-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .results-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.8fr); }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 520px; }
@@ -144,6 +150,9 @@ tbody tr:hover, tbody tr.selected { background: rgba(125, 231, 228, 0.06); }
   .metric:nth-child(2n) { border-right: 0; }
   .metric:nth-last-child(-n + 1) { grid-column: span 2; border-top: 1px solid var(--line); }
   .dashboard-heading { align-items: flex-start; flex-direction: column; }
+  .rounds-strip { padding-left: 18px; padding-right: 18px; }
+  .round-list li { grid-template-columns: 30px minmax(0, 1fr); }
+  .round-list small { grid-column: 2; }
   .results-grid { grid-template-columns: 1fr; }
   .evidence-panel { border-top: 1px solid var(--line); border-left: 0; }
 }

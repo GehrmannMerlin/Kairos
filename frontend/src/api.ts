@@ -2,7 +2,8 @@ export type WorkspacePermission = 'NONE' | 'READ_ONLY' | 'READ_WRITE' | 'LOCAL_F
 export type TaskStatus = 'DRAFT' | 'RUNNING' | 'COMPLETED' | 'PARTIALLY_COMPLETED' | 'FAILED'
 export type TaskRunStatus = 'RUNNING' | 'COMPLETED' | 'PARTIALLY_COMPLETED' | 'FAILED'
 export type CollectionFieldType = 'STRING' | 'INTEGER' | 'NUMBER' | 'BOOLEAN' | 'DATE' | 'URL'
-export type CollectionSourceStatus = 'PENDING' | 'FETCHED' | 'PROCESSED' | 'FAILED' | 'BLOCKED'
+export type CollectionMode = 'SPECIFIED_SOURCE' | 'EXPLORATORY' | 'HYBRID'
+export type CollectionSourceStatus = 'PENDING' | 'FETCHED' | 'PROCESSED' | 'FAILED' | 'BLOCKED' | 'SKIPPED'
 export type RecordStatus = 'PASSED' | 'NEEDS_REVIEW' | 'REJECTED'
 
 export interface Workspace {
@@ -57,6 +58,7 @@ export interface CollectionSource {
   status: CollectionSourceStatus
   snapshot_id: string | null
   failure_code: string | null
+  snippet?: string
 }
 
 export interface CollectionSpec {
@@ -64,14 +66,23 @@ export interface CollectionSpec {
   owner_id: string
   task_id: string
   version: number
-  mode: 'SPECIFIED_SOURCE'
+  mode: CollectionMode
   goal: string
   fields: CollectionField[]
   seed_urls: string[]
   target_count: number | null
+  scope_domains: string[]
+  search_limits: SearchLimits
   confirmed_at: string
   created_at: string
   sources: CollectionSource[]
+}
+
+export interface SearchLimits {
+  max_search_rounds: number
+  max_results_per_round: number
+  max_discovered_sources: number
+  max_processed_sources: number
 }
 
 export interface CollectionProgress {
@@ -81,11 +92,25 @@ export interface CollectionProgress {
   processed_sources: number
   failed_sources: number
   blocked_sources: number
+  skipped_sources: number
   total_records: number
   passed_records: number
   needs_review_records: number
   rejected_records: number
   remaining_sources: number
+  mode: CollectionMode
+  target_count: number | null
+  passed_canonical_records: number
+  observations_total: number
+  canonical_records_total: number
+  remaining_to_target: number | null
+  search_rounds_completed: number
+  max_search_rounds: number
+  sources_discovered: number
+  new_sources_last_round: number
+  last_round_new_passed_records: number
+  saturation_state: string
+  actionable_sources: CollectionSource[]
 }
 
 export interface CollectionRecord {
@@ -95,6 +120,32 @@ export interface CollectionRecord {
   fields: Record<string, unknown>
   status: RecordStatus
   validation_issues: string[]
+  canonical_record_id: string | null
+}
+
+export interface SearchRound {
+  search_round_id: string
+  task_run_id: string
+  round_number: number
+  query: string
+  query_hash: string
+  provider: string
+  requested_results: number
+  returned_results: number
+  accepted_results: number
+  new_sources: number
+  passed_records_before: number
+  passed_records_after: number
+  new_passed_records: number
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED'
+  created_at: string
+  completed_at: string | null
+}
+
+export interface SearchProviderAvailability {
+  provider: string
+  display_name: string
+  configured: boolean
 }
 
 export interface FieldEvidence {
@@ -132,13 +183,23 @@ export const api = {
     request<Task>(`/api/tasks/${taskId}/workspace?workspace_id=${encodeURIComponent(workspaceId)}`, {
       method: 'POST',
     }),
-  startRun: (taskId: string, prompt: string) =>
+  startRun: (taskId: string, prompt: string, searchProviderConfigId?: string | null) =>
     request<Run>(`/api/tasks/${taskId}/runs`, {
       method: 'POST',
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, search_provider_config_id: searchProviderConfigId ?? null }),
     }),
   getTask: (taskId: string) => request<Task>(`/api/tasks/${taskId}`),
-  confirmCollectionSpec: (taskId: string, body: { goal: string; fields: CollectionField[]; seed_urls: string[] }) =>
+  confirmCollectionSpec: (
+    taskId: string,
+    body: {
+      goal: string
+      fields: CollectionField[]
+      seed_urls: string[]
+      mode: CollectionMode
+      target_count: number | null
+      scope_domains: string[]
+    },
+  ) =>
     request<CollectionSpec>(`/api/tasks/${taskId}/collection/spec`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -147,6 +208,10 @@ export const api = {
   getCollectionProgress: (taskId: string) =>
     request<CollectionProgress>(`/api/tasks/${taskId}/collection/progress`),
   getRecords: (taskId: string) => request<CollectionRecord[]>(`/api/tasks/${taskId}/records`),
+  getSearchRounds: (taskId: string) =>
+    request<SearchRound[]>(`/api/tasks/${taskId}/collection/search-rounds`),
+  getSearchProviderAvailability: () =>
+    request<SearchProviderAvailability>('/api/providers/search/availability'),
   getRecordEvidence: (taskId: string, recordId: string) =>
     request<FieldEvidence[]>(`/api/tasks/${taskId}/records/${recordId}/evidence`),
 }

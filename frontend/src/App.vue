@@ -6,10 +6,13 @@ import {
   eventSource,
   type AgentEvent,
   type CollectionField,
+  type CollectionMode,
   type CollectionProgress,
   type CollectionRecord,
   type CollectionSpec,
   type FieldEvidence,
+  type SearchProviderAvailability,
+  type SearchRound,
   type Task,
   type Workspace,
   type WorkspacePermission,
@@ -31,11 +34,16 @@ const eventStream = ref<EventSource | null>(null)
 const collectionSpec = ref<CollectionSpec | null>(null)
 const collectionGoal = ref('')
 const collectionSeedUrls = ref('')
+const collectionMode = ref<CollectionMode>('SPECIFIED_SOURCE')
+const collectionTargetCount = ref('5')
+const collectionScopeDomains = ref('')
 const collectionFields = ref<CollectionFieldDraft[]>([
   { name: 'title', type: 'STRING', required: true, description: '' },
 ])
 const collectionProgress = ref<CollectionProgress | null>(null)
 const collectionRecords = ref<CollectionRecord[]>([])
+const collectionSearchRounds = ref<SearchRound[]>([])
+const searchProvider = ref<SearchProviderAvailability | null>(null)
 const selectedRecord = ref<CollectionRecord | null>(null)
 const selectedEvidence = ref<FieldEvidence[]>([])
 const evidenceBusy = ref(false)
@@ -49,7 +57,12 @@ const runLabel = computed(() => {
 
 async function bootstrap(): Promise<void> {
   try {
-    workspaces.value = await api.listWorkspaces()
+    const [workspaceItems, provider] = await Promise.all([
+      api.listWorkspaces(),
+      api.getSearchProviderAvailability().catch(() => null),
+    ])
+    workspaces.value = workspaceItems
+    searchProvider.value = provider
     task.value = await api.createTask()
     try {
       collectionSpec.value = await api.getCollectionSpec(task.value.task_id)
@@ -68,12 +81,14 @@ async function bootstrap(): Promise<void> {
 async function refreshCollectionViews(): Promise<void> {
   if (!task.value || !collectionSpec.value) return
   try {
-    const [progress, records] = await Promise.all([
+    const [progress, records, rounds] = await Promise.all([
       api.getCollectionProgress(task.value.task_id),
       api.getRecords(task.value.task_id),
+      api.getSearchRounds(task.value.task_id),
     ])
     collectionProgress.value = progress
     collectionRecords.value = records
+    collectionSearchRounds.value = rounds
     if (selectedRecord.value) {
       selectedRecord.value = records.find((record) => record.record_id === selectedRecord.value?.record_id) ?? null
     }
@@ -88,8 +103,18 @@ async function confirmCollectionSpec(): Promise<void> {
     .split(/\r?\n/)
     .map((url) => url.trim())
     .filter(Boolean)
-  if (!collectionGoal.value.trim() || !seedUrls.length || !collectionFields.value.length) {
-    errorMessage.value = 'Goal, at least one seed URL, and one field are required.'
+  const scopeDomains = collectionScopeDomains.value
+    .split(/\r?\n|,/)
+    .map((domain) => domain.trim().toLowerCase())
+    .filter(Boolean)
+  const targetCount = Number.parseInt(collectionTargetCount.value, 10)
+  const seedRequired = collectionMode.value === 'SPECIFIED_SOURCE'
+  const hybridScopeMissing = collectionMode.value === 'HYBRID' && !seedUrls.length && !scopeDomains.length
+  const targetMissing = collectionMode.value !== 'SPECIFIED_SOURCE' && (!Number.isInteger(targetCount) || targetCount < 1)
+  if (!collectionGoal.value.trim() || (seedRequired && !seedUrls.length) || hybridScopeMissing || targetMissing || !collectionFields.value.length) {
+    errorMessage.value = seedRequired
+      ? 'Goal, at least one seed URL, and one field are required.'
+      : 'Goal, target count, one field, and a valid seed or scope are required.'
     return
   }
   busy.value = true
@@ -98,6 +123,9 @@ async function confirmCollectionSpec(): Promise<void> {
     collectionSpec.value = await api.confirmCollectionSpec(task.value.task_id, {
       goal: collectionGoal.value.trim(),
       seed_urls: seedUrls,
+      mode: collectionMode.value,
+      target_count: seedRequired ? null : targetCount,
+      scope_domains: scopeDomains,
       fields: collectionFields.value.map((field) => ({
         ...field,
         name: field.name.trim(),
@@ -199,7 +227,15 @@ function attachEvent(name: string): void {
     if (!events.value.some((item) => item.event_id === event.event_id)) {
       events.value.push(event)
     }
-    if (event.event_type.startsWith('collection.')) void refreshCollectionViews()
+    if (
+      event.event_type.startsWith('collection.') ||
+      event.event_type === 'search.completed' ||
+      event.event_type === 'sources.discovered' ||
+      event.event_type === 'dedup.completed' ||
+      event.event_type === 'saturation.updated'
+    ) {
+      void refreshCollectionViews()
+    }
   })
 }
 
@@ -209,6 +245,11 @@ function subscribe(taskId: string, runId: string): void {
   for (const name of [
     'run.started',
     'collection.started',
+    'search.started',
+    'search.completed',
+    'sources.discovered',
+    'dedup.completed',
+    'saturation.updated',
     'tool.started',
     'tool.completed',
     'tool.failed',
@@ -317,13 +358,31 @@ onBeforeUnmount(() => eventStream.value?.close())
         <div class="rule" />
         <div class="panel-heading collection-heading">
           <p class="eyebrow">03 / COLLECTION SPEC</p>
-          <h2>Specified sources</h2>
+          <h2>Discovery & collection</h2>
         </div>
         <template v-if="!collectionSpec">
+          <label class="field-label" for="collection-mode">Mode</label>
+          <select id="collection-mode" v-model="collectionMode">
+            <option value="SPECIFIED_SOURCE">Specified sources</option>
+            <option value="EXPLORATORY">Exploratory discovery</option>
+            <option value="HYBRID">Hybrid · seeds + scoped discovery</option>
+          </select>
           <label class="field-label" for="collection-goal">Goal</label>
           <textarea id="collection-goal" v-model="collectionGoal" rows="3" placeholder="Collect one title per source…" />
-          <label class="field-label" for="collection-seeds">Seed URLs · one per line</label>
-          <textarea id="collection-seeds" v-model="collectionSeedUrls" rows="4" placeholder="https://example.com/page" />
+          <template v-if="collectionMode !== 'EXPLORATORY'">
+            <label class="field-label" for="collection-seeds">Seed URLs · one per line</label>
+            <textarea id="collection-seeds" v-model="collectionSeedUrls" rows="4" placeholder="https://example.com/page" />
+          </template>
+          <template v-if="collectionMode !== 'SPECIFIED_SOURCE'">
+            <label class="field-label" for="collection-target">Target passed records</label>
+            <input id="collection-target" v-model="collectionTargetCount" type="number" min="1" max="100" />
+            <label class="field-label" for="collection-domains">Scope domains · optional for exploratory, one per line</label>
+            <textarea id="collection-domains" v-model="collectionScopeDomains" rows="2" placeholder="example.org" />
+            <p class="helper-copy">
+              Search provider: {{ searchProvider?.display_name || 'configured on backend' }} ·
+              {{ searchProvider?.configured ? 'ready' : 'credentials required before run' }}
+            </p>
+          </template>
           <div class="field-header">
             <label class="field-label">Fields</label>
             <button class="text-button" type="button" @click="addCollectionField">+ Add field</button>
@@ -347,7 +406,11 @@ onBeforeUnmount(() => eventStream.value?.close())
         <div v-else class="spec-lock">
           <span class="status-badge status-completed">v{{ collectionSpec.version }} · LOCKED</span>
           <p>{{ collectionSpec.goal }}</p>
-          <p class="helper-copy">{{ collectionSpec.seed_urls.length }} seed sources · {{ collectionSpec.fields.length }} fields</p>
+          <p class="helper-copy">
+            {{ collectionSpec.mode }} · {{ collectionSpec.seed_urls.length }} seed sources · {{ collectionSpec.fields.length }} fields
+            <span v-if="collectionSpec.target_count"> · target {{ collectionSpec.target_count }}</span>
+          </p>
+          <p v-if="collectionSpec.scope_domains.length" class="helper-copy">Scope: {{ collectionSpec.scope_domains.join(', ') }}</p>
         </div>
       </aside>
 
@@ -399,15 +462,31 @@ onBeforeUnmount(() => eventStream.value?.close())
           <h2>Data & evidence</h2>
         </div>
         <span v-if="collectionProgress" class="source-count">
-          {{ collectionProgress.processed_sources }} / {{ collectionProgress.total_sources }} processed
+          {{ collectionProgress.sources_discovered }} discovered · {{ collectionProgress.processed_sources }} processed
         </span>
       </div>
       <div v-if="collectionProgress" class="metric-grid">
         <div class="metric"><span>Records</span><strong>{{ collectionProgress.total_records }}</strong></div>
-        <div class="metric"><span>Passed</span><strong>{{ collectionProgress.passed_records }}</strong></div>
+        <div class="metric"><span>Passed canonical</span><strong>{{ collectionProgress.passed_canonical_records }}</strong></div>
         <div class="metric"><span>Needs review</span><strong>{{ collectionProgress.needs_review_records }}</strong></div>
         <div class="metric"><span>Rejected</span><strong>{{ collectionProgress.rejected_records }}</strong></div>
-        <div class="metric"><span>Remaining</span><strong>{{ collectionProgress.remaining_sources }}</strong></div>
+        <div class="metric"><span>To target</span><strong>{{ collectionProgress.remaining_to_target ?? '—' }}</strong></div>
+        <div class="metric"><span>Search rounds</span><strong>{{ collectionProgress.search_rounds_completed }} / {{ collectionProgress.max_search_rounds || '—' }}</strong></div>
+        <div class="metric"><span>Saturation</span><strong>{{ collectionProgress.saturation_state }}</strong></div>
+      </div>
+      <div v-if="collectionSpec.mode !== 'SPECIFIED_SOURCE'" class="rounds-strip">
+        <div class="panel-heading">
+          <p class="eyebrow">SEARCH FRONTIER</p>
+          <h3>{{ collectionProgress?.saturation_state === 'SATURATED' ? 'Search saturated' : 'Discovery rounds' }}</h3>
+        </div>
+        <p v-if="!collectionSearchRounds.length" class="helper-copy">No search rounds committed yet.</p>
+        <ol v-else class="round-list">
+          <li v-for="round in collectionSearchRounds" :key="round.search_round_id">
+            <span>#{{ round.round_number }}</span>
+            <strong>{{ round.query }}</strong>
+            <small>{{ round.new_sources }} new · {{ round.new_passed_records }} new passed · {{ round.status }}</small>
+          </li>
+        </ol>
       </div>
       <div class="results-grid">
         <div class="table-wrap">
