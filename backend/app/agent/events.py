@@ -4,6 +4,7 @@ from collections.abc import AsyncIterable
 from typing import Any
 
 from pydantic_ai import AgentStreamEvent, FunctionToolCallEvent, FunctionToolResultEvent, RunContext
+from pydantic_ai.messages import RetryPromptPart
 
 from app.domain import EventEnvelope, bounded_payload
 from app.repositories import insert_agent_event
@@ -31,8 +32,12 @@ def envelope_from_pydantic_event(ctx: RunContext[Any], event: AgentStreamEvent) 
         )
     if isinstance(event, FunctionToolResultEvent):
         tool_name = event.part.tool_name
-        failed = getattr(event.part, "outcome", None) == "failed"
-        result_text = event.part.model_response_str(wrap_if_error=False)
+        if isinstance(event.part, RetryPromptPart):
+            failed = True
+            result_text = event.part.model_response()
+        else:
+            failed = getattr(event.part, "outcome", None) == "failed"
+            result_text = event.part.model_response_str(wrap_if_error=False)
         return EventEnvelope(
             **common,
             event_type="tool.failed" if failed else "tool.completed",

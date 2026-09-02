@@ -41,8 +41,8 @@ async def main() -> int:
                 f"/api/tasks/{task['task_id']}/runs",
                 json={
                     "prompt": (
-                        "检查当前工作区，创建 kairos-agent-test.md，写入固定测试文本，"
-                        "然后重新读取并确认写入成功。"
+                        "检查当前工作区，创建 kairos-agent-test.md，内容必须精确为："
+                        "Kairos durable workspace acceptance test. 然后重新读取并确认写入成功。"
                     )
                 },
             )

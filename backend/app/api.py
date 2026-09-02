@@ -148,7 +148,10 @@ async def list_workspaces(
     x_kairos_user_id: Annotated[str | None, Header()] = None,
 ) -> list[WorkspaceResponse]:
     owner_id = _owner_id(x_kairos_user_id)
-    return [WorkspaceResponse.model_validate(item) for item in await list_workspace_metadata(owner_id)]
+    return [
+        WorkspaceResponse.model_validate(item.model_dump())
+        for item in await list_workspace_metadata(owner_id)
+    ]
 
 
 @app.post("/api/workspaces", response_model=WorkspaceResponse, status_code=status.HTTP_201_CREATED)
@@ -171,7 +174,7 @@ async def create_workspace(
         permission_mode=body.permission_mode,
     )
     await insert_workspace(metadata)
-    return WorkspaceResponse.model_validate(metadata)
+    return WorkspaceResponse.model_validate(metadata.model_dump())
 
 
 @app.post("/api/local/pick-folder")
