@@ -96,7 +96,7 @@ async def _run() -> dict[str, Any]:
             json={
                 "mode": "EXPLORATORY",
                 "goal": (
-                    "Find five current Python web frameworks and collect their name, official website, "
+                    "Find 5 well-established Python web frameworks and collect their name, official website, "
                     "and concise description."
                 ),
                 "fields": [
