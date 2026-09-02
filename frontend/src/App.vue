@@ -1,7 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { api, eventSource, type AgentEvent, type Task, type Workspace, type WorkspacePermission } from './api'
+import {
+  api,
+  eventSource,
+  type AgentEvent,
+  type CollectionField,
+  type CollectionProgress,
+  type CollectionRecord,
+  type CollectionSpec,
+  type FieldEvidence,
+  type Task,
+  type Workspace,
+  type WorkspacePermission,
+} from './api'
+
+type CollectionFieldDraft = CollectionField
 
 const task = ref<Task | null>(null)
 const workspaces = ref<Workspace[]>([])
@@ -14,6 +28,17 @@ const events = ref<AgentEvent[]>([])
 const busy = ref(false)
 const errorMessage = ref('')
 const eventStream = ref<EventSource | null>(null)
+const collectionSpec = ref<CollectionSpec | null>(null)
+const collectionGoal = ref('')
+const collectionSeedUrls = ref('')
+const collectionFields = ref<CollectionFieldDraft[]>([
+  { name: 'title', type: 'STRING', required: true, description: '' },
+])
+const collectionProgress = ref<CollectionProgress | null>(null)
+const collectionRecords = ref<CollectionRecord[]>([])
+const selectedRecord = ref<CollectionRecord | null>(null)
+const selectedEvidence = ref<FieldEvidence[]>([])
+const evidenceBusy = ref(false)
 
 const selectedWorkspace = computed(() => workspaces.value.find((item) => item.workspace_id === selectedWorkspaceId.value))
 const latestRun = computed(() => task.value?.latest_run ?? null)
@@ -26,12 +51,93 @@ async function bootstrap(): Promise<void> {
   try {
     workspaces.value = await api.listWorkspaces()
     task.value = await api.createTask()
+    try {
+      collectionSpec.value = await api.getCollectionSpec(task.value.task_id)
+    } catch {
+      // A new task has no spec yet; keep the setup form visible.
+    }
     if (workspaces.value.length > 0) {
       selectedWorkspaceId.value = workspaces.value[0].workspace_id
       await bindSelectedWorkspace()
     }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Unable to open Task'
+  }
+}
+
+async function refreshCollectionViews(): Promise<void> {
+  if (!task.value || !collectionSpec.value) return
+  try {
+    const [progress, records] = await Promise.all([
+      api.getCollectionProgress(task.value.task_id),
+      api.getRecords(task.value.task_id),
+    ])
+    collectionProgress.value = progress
+    collectionRecords.value = records
+    if (selectedRecord.value) {
+      selectedRecord.value = records.find((record) => record.record_id === selectedRecord.value?.record_id) ?? null
+    }
+  } catch {
+    // The run may not have created its first TaskRun yet.
+  }
+}
+
+async function confirmCollectionSpec(): Promise<void> {
+  if (!task.value || collectionSpec.value) return
+  const seedUrls = collectionSeedUrls.value
+    .split(/\r?\n/)
+    .map((url) => url.trim())
+    .filter(Boolean)
+  if (!collectionGoal.value.trim() || !seedUrls.length || !collectionFields.value.length) {
+    errorMessage.value = 'Goal, at least one seed URL, and one field are required.'
+    return
+  }
+  busy.value = true
+  errorMessage.value = ''
+  try {
+    collectionSpec.value = await api.confirmCollectionSpec(task.value.task_id, {
+      goal: collectionGoal.value.trim(),
+      seed_urls: seedUrls,
+      fields: collectionFields.value.map((field) => ({
+        ...field,
+        name: field.name.trim(),
+        description: field.description?.trim() || null,
+      })),
+    })
+    await refreshCollectionViews()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Collection spec could not be confirmed.'
+  } finally {
+    busy.value = false
+  }
+}
+
+function addCollectionField(): void {
+  const index = collectionFields.value.length + 1
+  collectionFields.value.push({ name: `field_${index}`, type: 'STRING', required: false, description: '' })
+}
+
+function removeCollectionField(index: number): void {
+  if (collectionFields.value.length <= 1 || collectionSpec.value) return
+  collectionFields.value.splice(index, 1)
+}
+
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+async function selectCollectionRecord(record: CollectionRecord): Promise<void> {
+  selectedRecord.value = record
+  evidenceBusy.value = true
+  try {
+    selectedEvidence.value = task.value ? await api.getRecordEvidence(task.value.task_id, record.record_id) : []
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Evidence could not be loaded.'
+    selectedEvidence.value = []
+  } finally {
+    evidenceBusy.value = false
   }
 }
 
@@ -93,13 +199,27 @@ function attachEvent(name: string): void {
     if (!events.value.some((item) => item.event_id === event.event_id)) {
       events.value.push(event)
     }
+    if (event.event_type.startsWith('collection.')) void refreshCollectionViews()
   })
 }
 
 function subscribe(taskId: string, runId: string): void {
   eventStream.value?.close()
   eventStream.value = eventSource(taskId, runId)
-  for (const name of ['run.started', 'tool.started', 'tool.completed', 'tool.failed', 'run.completed', 'run.failed']) {
+  for (const name of [
+    'run.started',
+    'collection.started',
+    'tool.started',
+    'tool.completed',
+    'tool.failed',
+    'snapshot.created',
+    'extraction.committed',
+    'collection.progress',
+    'collection.completed',
+    'collection.partially_completed',
+    'run.completed',
+    'run.failed',
+  ]) {
     attachEvent(name)
   }
   eventStream.value.onerror = () => {
@@ -133,6 +253,7 @@ async function refreshAfterRun(taskId: string, runId: string): Promise<void> {
     try {
       const freshTask = await api.getTask(taskId)
       task.value = freshTask
+      await refreshCollectionViews()
       if (freshTask.latest_run?.task_run_id === runId && freshTask.latest_run.status !== 'RUNNING') {
         eventStream.value?.close()
         return
@@ -192,6 +313,42 @@ onBeforeUnmount(() => eventStream.value?.close())
         </select>
         <button class="button secondary" type="button" :disabled="busy" @click="createWorkspace">Add & bind</button>
         <p class="helper-copy">Folder selection is local-development only. Use an absolute backend path; browser directory upload is not equivalent.</p>
+
+        <div class="rule" />
+        <div class="panel-heading collection-heading">
+          <p class="eyebrow">03 / COLLECTION SPEC</p>
+          <h2>Specified sources</h2>
+        </div>
+        <template v-if="!collectionSpec">
+          <label class="field-label" for="collection-goal">Goal</label>
+          <textarea id="collection-goal" v-model="collectionGoal" rows="3" placeholder="Collect one title per source…" />
+          <label class="field-label" for="collection-seeds">Seed URLs · one per line</label>
+          <textarea id="collection-seeds" v-model="collectionSeedUrls" rows="4" placeholder="https://example.com/page" />
+          <div class="field-header">
+            <label class="field-label">Fields</label>
+            <button class="text-button" type="button" @click="addCollectionField">+ Add field</button>
+          </div>
+          <div v-for="(field, index) in collectionFields" :key="index" class="collection-field">
+            <input v-model="field.name" aria-label="Field name" placeholder="field_name" />
+            <select v-model="field.type" aria-label="Field type">
+              <option value="STRING">STRING</option>
+              <option value="INTEGER">INTEGER</option>
+              <option value="NUMBER">NUMBER</option>
+              <option value="BOOLEAN">BOOLEAN</option>
+              <option value="DATE">DATE</option>
+              <option value="URL">URL</option>
+            </select>
+            <label class="checkbox-label"><input v-model="field.required" type="checkbox" /> required</label>
+            <input v-model="field.description" aria-label="Field description" placeholder="Description" />
+            <button class="text-button remove-field" type="button" @click="removeCollectionField(index)">Remove</button>
+          </div>
+          <button class="button secondary" type="button" :disabled="busy" @click="confirmCollectionSpec">Confirm Collection Spec</button>
+        </template>
+        <div v-else class="spec-lock">
+          <span class="status-badge status-completed">v{{ collectionSpec.version }} · LOCKED</span>
+          <p>{{ collectionSpec.goal }}</p>
+          <p class="helper-copy">{{ collectionSpec.seed_urls.length }} seed sources · {{ collectionSpec.fields.length }} fields</p>
+        </div>
       </aside>
 
       <section class="chat-panel">
@@ -235,8 +392,65 @@ onBeforeUnmount(() => eventStream.value?.close())
       </section>
     </section>
 
+    <section v-if="collectionSpec" class="collection-dashboard" aria-label="Collection results">
+      <div class="dashboard-heading">
+        <div>
+          <p class="eyebrow">04 / COLLECTION OUTPUT</p>
+          <h2>Data & evidence</h2>
+        </div>
+        <span v-if="collectionProgress" class="source-count">
+          {{ collectionProgress.processed_sources }} / {{ collectionProgress.total_sources }} processed
+        </span>
+      </div>
+      <div v-if="collectionProgress" class="metric-grid">
+        <div class="metric"><span>Records</span><strong>{{ collectionProgress.total_records }}</strong></div>
+        <div class="metric"><span>Passed</span><strong>{{ collectionProgress.passed_records }}</strong></div>
+        <div class="metric"><span>Needs review</span><strong>{{ collectionProgress.needs_review_records }}</strong></div>
+        <div class="metric"><span>Rejected</span><strong>{{ collectionProgress.rejected_records }}</strong></div>
+        <div class="metric"><span>Remaining</span><strong>{{ collectionProgress.remaining_sources }}</strong></div>
+      </div>
+      <div class="results-grid">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th v-for="field in collectionSpec.fields" :key="field.name">{{ field.name }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="record in collectionRecords" :key="record.record_id" :class="{ selected: selectedRecord?.record_id === record.record_id }" @click="selectCollectionRecord(record)">
+                <td><span class="record-status" :class="`record-${record.status.toLowerCase()}`">{{ record.status }}</span></td>
+                <td v-for="field in collectionSpec.fields" :key="field.name">{{ formatValue(record.fields[field.name]) }}</td>
+              </tr>
+              <tr v-if="!collectionRecords.length"><td class="empty-cell" :colspan="collectionSpec.fields.length + 1">No records committed yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <aside class="evidence-panel">
+          <div class="panel-heading">
+            <p class="eyebrow">FIELD EVIDENCE</p>
+            <h3>{{ selectedRecord ? `Record ${selectedRecord.ordinal + 1}` : 'Select a record' }}</h3>
+          </div>
+          <p v-if="evidenceBusy" class="helper-copy">Loading evidence…</p>
+          <p v-else-if="!selectedRecord" class="helper-copy">Click a row to inspect its provenance.</p>
+          <div v-else-if="!selectedEvidence.length" class="helper-copy">No evidence was committed for this record.</div>
+          <dl v-else class="evidence-list">
+            <template v-for="item in selectedEvidence" :key="item.evidence_id">
+              <dt>{{ item.field_name }} · {{ item.verified ? 'verified' : 'unverified' }}</dt>
+              <dd>
+                <span class="evidence-value">{{ formatValue(item.value) }}</span>
+                <q>{{ item.quote }}</q>
+                <a :href="item.source_url" target="_blank" rel="noreferrer">{{ item.source_url }}</a>
+                <small>confidence {{ item.confidence === null ? '—' : item.confidence }}</small>
+              </dd>
+            </template>
+          </dl>
+        </aside>
+      </div>
+    </section>
+
     <p v-if="errorMessage" class="error-banner" role="alert">{{ errorMessage }}</p>
     <footer class="footer-line"><span>kairos-agent-v1</span><span>web · workspace · durable activity</span><span>local development</span></footer>
   </main>
 </template>
-

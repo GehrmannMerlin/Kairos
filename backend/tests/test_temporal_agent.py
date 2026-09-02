@@ -49,6 +49,16 @@ def test_kairos_uses_one_named_pydantic_agent_with_durable_toolset_ids() -> None
     toolset_ids = {toolset.id for toolset in kairos_agent.toolsets if toolset.id is not None}
     assert "kairos-web-v1" in toolset_ids
     assert "kairos-workspace-v1" in toolset_ids
+    assert "kairos-collection-v1" in toolset_ids
+    collection_toolset = next(
+        toolset for toolset in kairos_agent.toolsets if toolset.id == "kairos-collection-v1"
+    )
+    assert {tool.name for tool in collection_toolset.tools.values()} == {
+        "fetch_source",
+        "inspect_snapshot",
+        "commit_extraction",
+        "get_collection_progress",
+    }
 
 
 @pytest.mark.integration

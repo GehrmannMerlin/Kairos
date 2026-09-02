@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
@@ -19,16 +19,35 @@ from temporalio.client import Client
 from app.agent.deps import KairosAgentDeps
 from app.config import get_settings
 from app.db import session_scope
-from app.domain import TaskRunStatus, TaskStatus, WorkspaceMetadata, WorkspacePermission
+from app.domain import (
+    CollectionError,
+    CollectionProgress,
+    CollectionSourceSummary,
+    CollectionSpecConfirm,
+    CollectionSpecVersion,
+    RecordStatus,
+    TaskRunStatus,
+    TaskStatus,
+    WorkspaceMetadata,
+    WorkspacePermission,
+)
 from app.repositories import (
     bind_task_workspace,
+    confirm_collection_spec,
     create_task_run,
+    get_collection_progress,
+    get_collection_record,
+    get_collection_spec,
     get_latest_task_run,
+    get_snapshot_metadata,
     get_task,
     get_workspace_metadata,
     insert_task,
     insert_workspace,
     list_agent_events,
+    list_collection_records,
+    list_collection_sources,
+    list_record_evidence,
     list_workspace_metadata,
     update_task_run,
 )
@@ -52,6 +71,7 @@ class TaskResponse(BaseModel):
     task_id: str
     owner_id: str
     workspace_id: str | None
+    spec_version_id: str | None
     status: TaskStatus
 
 
@@ -72,6 +92,43 @@ class TaskDetailResponse(TaskResponse):
     latest_run: RunResponse | None = None
     final_answer: str | None = None
     error_message: str | None = None
+
+
+class CollectionSpecResponse(CollectionSpecVersion):
+    sources: list[CollectionSourceSummary]
+
+
+class RecordResponse(BaseModel):
+    record_id: str
+    snapshot_id: str
+    ordinal: int
+    fields: dict[str, Any]
+    status: RecordStatus
+    validation_issues: list[str]
+
+
+class EvidenceResponse(BaseModel):
+    evidence_id: str
+    field_name: str
+    value: Any = None
+    source_url: str
+    quote: str
+    verified: bool
+    confidence: float | None
+
+
+class SnapshotMetadataResponse(BaseModel):
+    snapshot_id: str
+    url: str
+    canonical_url: str
+    status_code: int
+    content_type: str
+    title: str | None
+    content_hash: str
+    bytes_read: int
+    text_chars: int
+    text_preview: str
+    captured_at: datetime
 
 
 class LocalFolderRequest(BaseModel):
@@ -97,7 +154,39 @@ def _task_response(row: object) -> TaskResponse:
         task_id=task.task_id,  # type: ignore[attr-defined]
         owner_id=task.owner_id,  # type: ignore[attr-defined]
         workspace_id=task.workspace_id,  # type: ignore[attr-defined]
+        spec_version_id=task.spec_version_id,  # type: ignore[attr-defined]
         status=TaskStatus(task.status),  # type: ignore[attr-defined]
+    )
+
+
+def _collection_http_error(exc: CollectionError) -> HTTPException:
+    if exc.code.endswith("NOT_FOUND") or exc.code in {"SOURCE_OUT_OF_SCOPE", "SNAPSHOT_NOT_FOUND"}:
+        code = status.HTTP_404_NOT_FOUND
+    elif exc.code in {"ALREADY_COMMITTED_DIFFERENT_PAYLOAD", "TASK_NOT_CONFIGURABLE"}:
+        code = status.HTTP_409_CONFLICT
+    else:
+        code = status.HTTP_400_BAD_REQUEST
+    return HTTPException(status_code=code, detail={"code": exc.code, "message": exc.message})
+
+
+async def _collection_spec_response(
+    spec: CollectionSpecVersion,
+) -> CollectionSpecResponse:
+    rows = await list_collection_sources(spec.task_id, spec.owner_id, spec.spec_version_id)
+    return CollectionSpecResponse(
+        **spec.model_dump(),
+        sources=[
+            CollectionSourceSummary(
+                source_id=row.source_id,
+                url=row.url,
+                canonical_url=row.canonical_url,
+                origin=row.origin,
+                status=row.status,
+                snapshot_id=row.snapshot_id,
+                failure_code=row.failure_code,
+            )
+            for row in rows
+        ],
     )
 
 
@@ -197,6 +286,32 @@ async def create_task(x_kairos_user_id: Annotated[str | None, Header()] = None) 
     return _task_response(row)
 
 
+@app.post("/api/tasks/{task_id}/collection/spec", response_model=CollectionSpecResponse)
+async def confirm_collection_spec_api(
+    task_id: str,
+    body: CollectionSpecConfirm,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> CollectionSpecResponse:
+    owner_id = _owner_id(x_kairos_user_id)
+    try:
+        spec = await confirm_collection_spec(task_id, owner_id, body)
+    except CollectionError as exc:
+        raise _collection_http_error(exc) from exc
+    return await _collection_spec_response(spec)
+
+
+@app.get("/api/tasks/{task_id}/collection/spec", response_model=CollectionSpecResponse)
+async def get_collection_spec_api(
+    task_id: str,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> CollectionSpecResponse:
+    owner_id = _owner_id(x_kairos_user_id)
+    spec = await get_collection_spec(task_id, owner_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="collection spec not found")
+    return await _collection_spec_response(spec)
+
+
 @app.post("/api/tasks/{task_id}/workspace", response_model=TaskResponse)
 async def bind_workspace(
     task_id: str,
@@ -267,6 +382,7 @@ async def start_run(
         user_id=owner_id,
         task_id=task_id,
         task_run_id=task_run_id,
+        spec_version_id=task.spec_version_id,
         workspace_id=workspace_id,
         workspace_permission=workspace_permission,
         model_config_id=model_config_id,
@@ -286,6 +402,110 @@ async def start_run(
         await update_task_run(task_run_id, TaskRunStatus.FAILED, error_message=type(exc).__name__)
         raise HTTPException(status_code=503, detail="Temporal workflow could not be started") from exc
     return RunResponse(task_run_id=task_run_id, workflow_id=workflow_id, status=TaskRunStatus.RUNNING)
+
+
+@app.get("/api/tasks/{task_id}/collection/progress", response_model=CollectionProgress)
+async def collection_progress_api(
+    task_id: str,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> CollectionProgress:
+    owner_id = _owner_id(x_kairos_user_id)
+    task = await get_task(task_id, owner_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    if task.spec_version_id is None:
+        raise HTTPException(status_code=404, detail="collection spec not found")
+    run = await get_latest_task_run(task_id, owner_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="collection run not found")
+    try:
+        return await get_collection_progress(task_id, run.task_run_id, owner_id, task.spec_version_id)
+    except CollectionError as exc:
+        raise _collection_http_error(exc) from exc
+
+
+@app.get("/api/tasks/{task_id}/records", response_model=list[RecordResponse])
+async def collection_records_api(
+    task_id: str,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> list[RecordResponse]:
+    owner_id = _owner_id(x_kairos_user_id)
+    task = await get_task(task_id, owner_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    if task.spec_version_id is None:
+        return []
+    run = await get_latest_task_run(task_id, owner_id)
+    if run is None:
+        return []
+    rows = await list_collection_records(task_id, run.task_run_id, owner_id, task.spec_version_id)
+    return [
+        RecordResponse(
+            record_id=row.record_id,
+            snapshot_id=row.snapshot_id,
+            ordinal=row.ordinal,
+            fields=row.data_json,
+            status=RecordStatus(row.status),
+            validation_issues=row.validation_issues,
+        )
+        for row in rows
+    ]
+
+
+@app.get("/api/tasks/{task_id}/records/{record_id}/evidence", response_model=list[EvidenceResponse])
+async def record_evidence_api(
+    task_id: str,
+    record_id: str,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> list[EvidenceResponse]:
+    owner_id = _owner_id(x_kairos_user_id)
+    task = await get_task(task_id, owner_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    record = await get_collection_record(record_id, task_id, owner_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="record not found")
+    evidence = await list_record_evidence(record_id, task_id, owner_id)
+    return [
+        EvidenceResponse(
+            evidence_id=row.evidence_id,
+            field_name=row.field_name,
+            value=record.data_json.get(row.field_name),
+            source_url=row.source_url,
+            quote=row.quote,
+            verified=row.verified,
+            confidence=row.confidence,
+        )
+        for row in evidence
+    ]
+
+
+@app.get("/api/tasks/{task_id}/snapshots/{snapshot_id}", response_model=SnapshotMetadataResponse)
+async def snapshot_metadata_api(
+    task_id: str,
+    snapshot_id: str,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> SnapshotMetadataResponse:
+    owner_id = _owner_id(x_kairos_user_id)
+    task = await get_task(task_id, owner_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    snapshot = await get_snapshot_metadata(snapshot_id, task_id, owner_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    return SnapshotMetadataResponse(
+        snapshot_id=snapshot.snapshot_id,
+        url=snapshot.url,
+        canonical_url=snapshot.canonical_url,
+        status_code=snapshot.status_code,
+        content_type=snapshot.content_type,
+        title=snapshot.title,
+        content_hash=snapshot.content_hash,
+        bytes_read=snapshot.bytes_read,
+        text_chars=snapshot.text_chars,
+        text_preview=snapshot.text_preview[:2000],
+        captured_at=snapshot.captured_at,
+    )
 
 
 @app.get("/api/tasks/{task_id}/events")

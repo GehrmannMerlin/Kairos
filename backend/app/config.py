@@ -29,8 +29,10 @@ class Settings(BaseSettings):
     collection_http_max_bytes: int = 5_242_880
     robots_timeout_seconds: float = 10.0
     minio_endpoint: str = "http://127.0.0.1:9000"
-    minio_access_key: str | None = None
-    minio_secret_key: SecretStr | None = None
+    # Matches the credentials in the local-only compose file; production deployments must
+    # override both values through the process environment.
+    minio_access_key: str | None = "kairos"
+    minio_secret_key: SecretStr | None = SecretStr("kairos-local-minio")
     minio_bucket: str = "kairos-snapshots"
     event_poll_seconds: float = 0.5
     native_folder_picker_enabled: bool = False

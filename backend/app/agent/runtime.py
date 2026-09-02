@@ -8,7 +8,15 @@ from temporalio.common import RetryPolicy
 
 from app.agent.deps import KairosAgentDeps
 from app.agent.events import agent_event_stream_handler
-from app.agent.tools import WEB_TOOL_ACTIVITY_CONFIG, fetch_url
+from app.agent.tools import (
+    COLLECTION_TOOL_ACTIVITY_CONFIG,
+    WEB_TOOL_ACTIVITY_CONFIG,
+    commit_extraction,
+    fetch_source,
+    fetch_url,
+    get_collection_progress,
+    inspect_snapshot,
+)
 from app.config import get_settings
 from app.provider import model_resolver_capability
 from app.workspace import workspace_dynamic_toolset
@@ -20,6 +28,19 @@ _web_toolset = FunctionToolset(
     [fetch_url],
     id="kairos-web-v1",
     metadata={"temporal": WEB_TOOL_ACTIVITY_CONFIG},
+)
+_collection_toolset = FunctionToolset(
+    [fetch_source, inspect_snapshot, commit_extraction, get_collection_progress],
+    id="kairos-collection-v1",
+    instructions=(
+        "For SPECIFIED_SOURCE collection runs, treat the confirmed CollectionSpec as immutable. "
+        "Only process its listed seed sources: fetch_source, then inspect_snapshot in bounded chunks, "
+        "then commit_extraction with typed fields and verbatim evidence quotes from the snapshot. "
+        "Never fabricate missing values or evidence, never use fetch_url for collection work, and use "
+        "records=[] with source_complete=true when a source has no matching record. Check "
+        "get_collection_progress before claiming collection completion."
+    ),
+    metadata={"temporal": COLLECTION_TOOL_ACTIVITY_CONFIG},
 )
 
 _durability = TemporalDurability(
@@ -33,6 +54,7 @@ _durability = TemporalDurability(
     event_stream_handler_activity_config={"start_to_close_timeout": timedelta(seconds=30)},
     toolset_activity_config={
         "kairos-web-v1": WEB_TOOL_ACTIVITY_CONFIG,
+        "kairos-collection-v1": COLLECTION_TOOL_ACTIVITY_CONFIG,
         "kairos-workspace-v1": {
             "start_to_close_timeout": timedelta(seconds=60),
             "retry_policy": RetryPolicy(maximum_attempts=2),
@@ -50,7 +72,7 @@ kairos_agent = Agent(
         "facts. Never claim a file or URL operation succeeded unless the tool returned success. "
         "The current workspace, when present, is authorized by the run context; use its tools to inspect it."
     ),
-    toolsets=[_web_toolset, workspace_dynamic_toolset],
+    toolsets=[_web_toolset, _collection_toolset, workspace_dynamic_toolset],
     capabilities=[model_resolver_capability, _durability],
     defer_model_check=True,
 )

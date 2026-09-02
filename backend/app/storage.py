@@ -60,7 +60,24 @@ class MinioS3ObjectStore:
         self._client = client
         self._bucket = settings.minio_bucket
 
+    def _ensure_bucket_sync(self) -> None:
+        try:
+            self._client.head_bucket(Bucket=self._bucket)
+        except Exception as exc:
+            error = getattr(exc, "response", {})
+            status_code = getattr(error.get("ResponseMetadata", {}), "get", lambda *_: None)("HTTPStatusCode")
+            if status_code not in {403, 404}:
+                raise
+            try:
+                self._client.create_bucket(Bucket=self._bucket)
+            except Exception as create_exc:
+                create_error = getattr(create_exc, "response", {})
+                error_code = getattr(create_error.get("Error", {}), "get", lambda *_: None)("Code")
+                if error_code not in {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}:
+                    raise
+
     async def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
+        await asyncio.to_thread(self._ensure_bucket_sync)
         await asyncio.to_thread(
             self._client.put_object,
             Bucket=self._bucket,

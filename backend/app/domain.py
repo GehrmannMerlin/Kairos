@@ -68,6 +68,46 @@ class CollectionError(RuntimeError):
         super().__init__(f"{code}: {self.message}")
 
 
+_TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
+    TaskStatus.DRAFT: {TaskStatus.DRAFT, TaskStatus.RUNNING},
+    TaskStatus.RUNNING: {
+        TaskStatus.RUNNING,
+        TaskStatus.COMPLETED,
+        TaskStatus.PARTIALLY_COMPLETED,
+        TaskStatus.FAILED,
+    },
+    TaskStatus.COMPLETED: {TaskStatus.COMPLETED},
+    TaskStatus.PARTIALLY_COMPLETED: {TaskStatus.PARTIALLY_COMPLETED},
+    TaskStatus.FAILED: {TaskStatus.FAILED},
+}
+
+_TASK_RUN_TRANSITIONS: dict[TaskRunStatus, set[TaskRunStatus]] = {
+    TaskRunStatus.RUNNING: {
+        TaskRunStatus.RUNNING,
+        TaskRunStatus.COMPLETED,
+        TaskRunStatus.PARTIALLY_COMPLETED,
+        TaskRunStatus.FAILED,
+    },
+    TaskRunStatus.COMPLETED: {TaskRunStatus.COMPLETED},
+    TaskRunStatus.PARTIALLY_COMPLETED: {TaskRunStatus.PARTIALLY_COMPLETED},
+    TaskRunStatus.FAILED: {TaskRunStatus.FAILED},
+}
+
+
+def transition_task_status(current: TaskStatus, target: TaskStatus) -> TaskStatus:
+    if target not in _TASK_TRANSITIONS[current]:
+        raise CollectionError("INVALID_STATE_TRANSITION", f"cannot change task from {current} to {target}")
+    return target
+
+
+def transition_task_run_status(current: TaskRunStatus, target: TaskRunStatus) -> TaskRunStatus:
+    if target not in _TASK_RUN_TRANSITIONS[current]:
+        raise CollectionError(
+            "INVALID_STATE_TRANSITION", f"cannot change task run from {current} to {target}"
+        )
+    return target
+
+
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 

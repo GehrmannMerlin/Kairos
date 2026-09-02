@@ -6,7 +6,12 @@ from pydantic_ai.durable_exec.temporal import PydanticAIPlugin
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from app.activities import persist_agent_event_activity, update_task_run_activity
+from app.activities import (
+    finalize_collection_run_activity,
+    load_collection_context_activity,
+    persist_agent_event_activity,
+    update_task_run_activity,
+)
 from app.config import get_settings
 from app.workflows import KairosAgentWorkflow
 
@@ -22,7 +27,12 @@ async def run_worker() -> None:
         client,
         task_queue=settings.temporal_task_queue,
         workflows=[KairosAgentWorkflow],
-        activities=[persist_agent_event_activity, update_task_run_activity],
+        activities=[
+            persist_agent_event_activity,
+            update_task_run_activity,
+            load_collection_context_activity,
+            finalize_collection_run_activity,
+        ],
     ):
         await asyncio.Event().wait()
 
