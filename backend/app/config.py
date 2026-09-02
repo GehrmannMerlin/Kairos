@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     api_port: int = 8000
     frontend_origin: str = "http://127.0.0.1:5173"
     model_config_id: str = "local-model"
-    model_id: str = "openai:gpt-4o-mini"
-    model_credential_env: str = "OPENAI_API_KEY"
+    model_id: str = "deepseek:deepseek-chat"
+    model_credential_env: str = "DEEPSEEK_API_KEY"
     model_api_key: SecretStr | None = None
     http_max_bytes: int = 1_000_000
     http_timeout_seconds: float = 20.0

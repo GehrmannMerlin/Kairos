@@ -23,6 +23,10 @@ def _provider_factory(provider_name: str) -> Any:
             "No credential is configured for model provider; set "
             f"{settings.model_credential_env} in the worker environment"
         )
+    if provider_name == "deepseek":
+        from pydantic_ai.providers.deepseek import DeepSeekProvider
+
+        return DeepSeekProvider(api_key=credential)
     if provider_name == "openai":
         from pydantic_ai.providers.openai import OpenAIProvider
 
