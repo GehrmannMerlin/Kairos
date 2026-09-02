@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from pydantic_ai import Agent, FunctionToolset
+from pydantic_ai import Agent, FunctionToolset, RunContext, Tool
 from pydantic_ai.durable_exec.temporal import TemporalDurability
+from pydantic_ai.tools import ToolDefinition
 from temporalio.common import RetryPolicy
 
 from app.agent.deps import KairosAgentDeps
@@ -19,19 +20,91 @@ from app.agent.tools import (
     search_sources,
 )
 from app.config import get_settings
+from app.domain import (
+    CollectionError,
+    CollectionSourceStatus,
+    CommitExtractionInput,
+    CommitExtractionResult,
+    FetchSourceResult,
+    SearchSourcesResult,
+)
 from app.provider import model_resolver_capability
 from app.workspace import workspace_dynamic_toolset
 
 KAIROS_AGENT_NAME = "kairos-agent-v1"
+MAX_AGENT_ACTIONABLE_SEARCH_SOURCES = 2
 
 _settings = get_settings()
+
+
+def _prepare_fetch_url(ctx: RunContext[KairosAgentDeps], tool_def: ToolDefinition) -> ToolDefinition | None:
+    """Hide generic web fetches once a collection scope has been confirmed."""
+    return None if ctx.deps.spec_version_id is not None else tool_def
+
+
+async def _agent_fetch_source(ctx: RunContext[KairosAgentDeps], url: str) -> FetchSourceResult:
+    """Turn an exploratory model's stale URL guess into a recoverable tool result."""
+    try:
+        return await fetch_source(ctx, url)
+    except CollectionError as exc:
+        if exc.code != "SOURCE_OUT_OF_SCOPE":
+            raise
+        return FetchSourceResult(
+            source_id="out-of-scope",
+            url=url,
+            status=CollectionSourceStatus.FAILED,
+            failure_code=exc.code,
+            failure_message=exc.message,
+        )
+
+
+async def _agent_search_sources(ctx: RunContext[KairosAgentDeps], query: str, max_results: int | None = None):
+    """Keep the durable model context bounded while persisting the full discovery round."""
+    try:
+        result = await search_sources(ctx, query, max_results=max_results)
+    except CollectionError as exc:
+        if exc.code != "SEARCH_ROUND_LIMIT":
+            raise
+        return SearchSourcesResult(
+            search_round_id="search-round-limit",
+            query=query,
+            returned_results=0,
+            new_sources_count=0,
+            sources=[],
+        )
+    return result.model_copy(update={"sources": result.sources[:MAX_AGENT_ACTIONABLE_SEARCH_SOURCES]})
+
+
+async def _agent_commit_extraction(
+    ctx: RunContext[KairosAgentDeps], input_data: CommitExtractionInput
+) -> CommitExtractionResult:
+    """Make duplicate model submissions recoverable without weakening commit validation."""
+    try:
+        return await commit_extraction(ctx, input_data)
+    except CollectionError as exc:
+        if exc.code not in {"ALREADY_COMMITTED_DIFFERENT_PAYLOAD", "SNAPSHOT_NOT_FOUND"}:
+            raise
+        return CommitExtractionResult(
+            extraction_commit_id="commit-not-created",
+            snapshot_id=input_data.snapshot_id,
+            record_ids=[],
+            record_count=0,
+            idempotent=False,
+        )
+
+
 _web_toolset = FunctionToolset(
-    [fetch_url],
+    [Tool(fetch_url, prepare=_prepare_fetch_url)],
     id="kairos-web-v1",
     metadata={"temporal": WEB_TOOL_ACTIVITY_CONFIG},
 )
 _collection_toolset = FunctionToolset(
-    [fetch_source, inspect_snapshot, commit_extraction, get_collection_progress],
+    [
+        Tool(_agent_fetch_source, name="fetch_source"),
+        inspect_snapshot,
+        Tool(_agent_commit_extraction, name="commit_extraction"),
+        get_collection_progress,
+    ],
     id="kairos-collection-v1",
     instructions=(
         "For SPECIFIED_SOURCE collection runs, treat the confirmed CollectionSpec as immutable. "
@@ -44,7 +117,7 @@ _collection_toolset = FunctionToolset(
     metadata={"temporal": COLLECTION_TOOL_ACTIVITY_CONFIG},
 )
 _search_toolset = FunctionToolset(
-    [search_sources],
+    [Tool(_agent_search_sources, name="search_sources")],
     id="kairos-search-v1",
     instructions=(
         "For EXPLORATORY and HYBRID collection runs, use search_sources only to discover public source URLs. "

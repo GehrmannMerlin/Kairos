@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from openai import AsyncOpenAI
 from pydantic_ai.durable_exec.temporal import PydanticAIPlugin
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -18,8 +19,18 @@ from app.config import get_settings
 from app.workflows import KairosAgentWorkflow
 
 
+async def _preload_openai_sdk_resources() -> None:
+    """Load OpenAI's lazy resource tree before Temporal workflow sandboxes start."""
+    client = AsyncOpenAI(api_key="kairos-worker-module-preload")
+    try:
+        _ = client.chat.completions
+    finally:
+        await client.close()
+
+
 async def run_worker() -> None:
     settings = get_settings()
+    await _preload_openai_sdk_resources()
     client = await Client.connect(
         settings.temporal_target,
         namespace=settings.temporal_namespace,
