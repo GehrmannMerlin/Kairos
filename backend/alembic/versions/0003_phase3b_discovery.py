@@ -60,6 +60,7 @@ def upgrade() -> None:
         sa.Column("passed_records_before", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("passed_records_after", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("new_passed_records", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("result_source_ids_json", sa.JSON(), nullable=False, server_default="[]"),
         sa.Column("status", sa.String(length=32), nullable=False, server_default="RUNNING"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
@@ -80,6 +81,7 @@ def upgrade() -> None:
     op.add_column("collection_sources", sa.Column("discovered_query", sa.Text(), nullable=True))
     op.add_column("collection_sources", sa.Column("provider_rank", sa.Integer(), nullable=True))
     op.add_column("collection_sources", sa.Column("provider_score", sa.Float(), nullable=True))
+    op.add_column("collection_sources", sa.Column("search_title", sa.String(length=1000), nullable=True))
     op.add_column("collection_sources", sa.Column("search_snippet", sa.Text(), nullable=True))
     op.add_column(
         "collection_sources",
@@ -126,6 +128,8 @@ def downgrade() -> None:
     op.drop_column("records", "record_fingerprint")
     op.drop_column("records", "normalized_data_json")
 
+    op.drop_column("collection_sources", "search_title")
+
     op.drop_index("ix_collection_sources_search_round_id", table_name="collection_sources")
     op.drop_column("collection_sources", "attempt_count")
     op.drop_column("collection_sources", "last_attempt_at")
@@ -138,6 +142,7 @@ def downgrade() -> None:
 
     for column in ("status", "query_hash", "spec_version_id", "task_run_id", "task_id", "owner_id"):
         op.drop_index(f"ix_search_rounds_{column}", table_name="search_rounds")
+    op.drop_column("search_rounds", "result_source_ids_json")
     op.drop_table("search_rounds")
     op.drop_column("collection_spec_versions", "search_limits")
     op.drop_column("collection_spec_versions", "scope_domains")
