@@ -18,6 +18,7 @@ from app.collection import validate_record_submission
 from app.config import get_settings
 from app.domain import (
     CollectionError,
+    CollectionMode,
     CollectionProgress,
     CollectionSourceStatus,
     CommitExtractionInput,
@@ -25,27 +26,38 @@ from app.domain import (
     EventEnvelope,
     FetchSourceResult,
     InspectSnapshotResult,
+    SearchSourcesResult,
     bounded_payload,
 )
 from app.models import PageSnapshot
 from app.repositories import (
-    get_collection_progress as get_collection_progress_record,
-)
-from app.repositories import (
+    create_search_round,
+    fail_search_round,
     get_collection_source_for_run,
     get_collection_spec_for_run,
+    get_completed_search_round_by_hash,
     get_extraction_commit_for_scope,
+    get_search_sources_result,
     get_snapshot_for_scope,
+    has_agent_event,
     insert_agent_event,
+    list_search_rounds,
+    mark_collection_source_attempt,
     mark_collection_source_failure,
     persist_extraction_commit,
     persist_page_snapshot,
+    persist_search_round_results,
 )
+from app.repositories import (
+    get_collection_progress as get_collection_progress_record,
+)
+from app.search import SearchProviderError, resolve_search_provider
 from app.storage import MinioS3ObjectStore, ObjectStore, snapshot_object_keys
 from app.url_policy import (
     KAIROS_USER_AGENT,
     RetryableFetchError,
     RobotsPolicy,
+    canonicalize_url,
     request_with_safe_redirects,
     validate_public_http_url,
 )
@@ -177,6 +189,179 @@ def _fetch_source_result(snapshot: PageSnapshot, source_id: str) -> FetchSourceR
     )
 
 
+def _scope_matches(hostname: str, scope_domains: list[str]) -> bool:
+    return any(hostname == domain or hostname.endswith(f".{domain}") for domain in scope_domains)
+
+
+def _effective_scope_domains(spec: object) -> list[str]:
+    explicit = list(getattr(spec, "scope_domains", []) or [])
+    if explicit:
+        return sorted(set(explicit))
+    if getattr(spec, "mode", None) is not CollectionMode.HYBRID:
+        return []
+    inferred = {
+        hostname.lower()
+        for seed in getattr(spec, "seed_urls", [])
+        if (hostname := (urlparse(seed).hostname or ""))
+    }
+    return sorted(inferred)
+
+
+def _search_query_hash(
+    task_run_id: str,
+    query: str,
+    max_results: int,
+    scope_domains: list[str],
+) -> str:
+    payload = json.dumps(
+        {
+            "task_run_id": task_run_id,
+            "query": query,
+            "max_results": max_results,
+            "scope_domains": sorted(scope_domains),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def search_sources(
+    ctx: RunContext[KairosAgentDeps], query: str, max_results: int | None = None
+) -> SearchSourcesResult:
+    deps = ctx.deps  # type: ignore[attr-defined]
+    if deps.spec_version_id is None:
+        raise CollectionError("COLLECTION_SPEC_REQUIRED", "collection spec is required")
+    spec = await get_collection_spec_for_run(
+        deps.task_id,
+        deps.task_run_id,
+        deps.user_id,
+        deps.spec_version_id,
+    )
+    if spec is None:
+        raise CollectionError("COLLECTION_SCOPE_NOT_FOUND", "collection run scope not found")
+    if spec.mode is CollectionMode.SPECIFIED_SOURCE:
+        raise CollectionError("SEARCH_NOT_ALLOWED", "search is not allowed for specified-source collections")
+    normalized_query = " ".join(query.split())
+    if not normalized_query:
+        raise CollectionError("SEARCH_QUERY_INVALID", "search query must not be empty")
+    requested_results = min(
+        max_results if max_results is not None else spec.search_limits.max_results_per_round,
+        spec.search_limits.max_results_per_round,
+    )
+    if requested_results < 1:
+        raise CollectionError("SEARCH_RESULT_LIMIT", "max_results must be positive")
+    effective_scope_domains = _effective_scope_domains(spec)
+    query_hash = _search_query_hash(
+        deps.task_run_id,
+        normalized_query,
+        requested_results,
+        effective_scope_domains,
+    )
+    completed = await get_completed_search_round_by_hash(
+        deps.task_id,
+        deps.task_run_id,
+        deps.user_id,
+        deps.spec_version_id,
+        query_hash,
+    )
+    if completed is not None:
+        result = await get_search_sources_result(
+            completed.search_round_id,
+            deps.task_id,
+            deps.task_run_id,
+            deps.user_id,
+            deps.spec_version_id,
+        )
+        if result is not None:
+            return result
+
+    rounds = await list_search_rounds(
+        deps.task_id,
+        deps.task_run_id,
+        deps.user_id,
+        deps.spec_version_id,
+    )
+    if len(rounds) >= spec.search_limits.max_search_rounds:
+        raise CollectionError("SEARCH_ROUND_LIMIT", "search round limit has been reached")
+    try:
+        provider = resolve_search_provider(deps.search_provider_config_id)
+    except SearchProviderError as exc:
+        raise CollectionError(exc.code, exc.message) from exc
+    round_row = await create_search_round(
+        task_id=deps.task_id,
+        task_run_id=deps.task_run_id,
+        owner_id=deps.user_id,
+        spec_version_id=deps.spec_version_id,
+        query=normalized_query,
+        query_hash=query_hash,
+        provider=getattr(provider, "provider_name", "configured"),
+        requested_results=requested_results,
+    )
+    await _persist_collection_event(
+        deps,
+        "search.started",
+        "Search round started",
+        {
+            "search_round_id": round_row.search_round_id,
+            "round_number": round_row.round_number,
+            "query": normalized_query,
+            "provider": getattr(provider, "provider_name", "configured"),
+        },
+    )
+    try:
+        response = await provider.search(query=normalized_query, max_results=requested_results)
+    except SearchProviderError as exc:
+        await fail_search_round(round_row.search_round_id, deps.task_id, deps.task_run_id, deps.user_id)
+        raise CollectionError(exc.code, exc.message) from exc
+
+    accepted: list = []
+    seen: set[str] = set()
+    for result in response.results[:requested_results]:
+        try:
+            canonical = canonicalize_url(result.url)
+            validate_public_http_url(canonical)
+        except CollectionError:
+            continue
+        if spec.mode is CollectionMode.HYBRID:
+            hostname = urlparse(canonical).hostname or ""
+            if not _scope_matches(hostname.lower(), effective_scope_domains):
+                continue
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        accepted.append(result.model_copy(update={"url": canonical, "snippet": result.snippet[:500]}))
+    result = await persist_search_round_results(
+        search_round_id=round_row.search_round_id,
+        task_id=deps.task_id,
+        task_run_id=deps.task_run_id,
+        owner_id=deps.user_id,
+        spec_version_id=deps.spec_version_id,
+        results=accepted,
+        returned_results=len(response.results),
+    )
+    await _persist_collection_event(
+        deps,
+        "search.completed",
+        "Search round completed",
+        {
+            "search_round_id": result.search_round_id,
+            "round_number": round_row.round_number,
+            "returned_results": result.returned_results,
+            "accepted_results": len(result.sources),
+            "new_sources": result.new_sources_count,
+        },
+    )
+    await _persist_collection_event(
+        deps,
+        "sources.discovered",
+        "Search sources discovered",
+        {"search_round_id": result.search_round_id, "new_sources": result.new_sources_count},
+    )
+    return result
+
+
 async def _persist_collection_event(
     deps: KairosAgentDeps, event_type: str, summary: str, payload: dict[str, object]
 ) -> None:
@@ -197,8 +382,6 @@ async def fetch_source(ctx: RunContext[KairosAgentDeps], url: str) -> FetchSourc
     deps = ctx.deps  # type: ignore[attr-defined]
     if deps.spec_version_id is None:
         raise CollectionError("COLLECTION_SPEC_REQUIRED", "collection spec is required")
-    from app.url_policy import canonicalize_url
-
     canonical = canonicalize_url(url)
     source = await get_collection_source_for_run(
         deps.task_id, deps.task_run_id, deps.user_id, deps.spec_version_id, canonical
@@ -224,6 +407,7 @@ async def fetch_source(ctx: RunContext[KairosAgentDeps], url: str) -> FetchSourc
         if snapshot is not None:
             return _fetch_source_result(snapshot, source.source_id)
 
+    await mark_collection_source_attempt(source.source_id, deps.task_id, deps.task_run_id, deps.user_id)
     settings = get_settings()
     try:
         policy = RobotsPolicy(
@@ -421,6 +605,21 @@ async def commit_extraction(
             "extraction_commit_id": result.extraction_commit_id,
             "record_count": result.record_count,
             "idempotent": result.idempotent,
+            "new_canonical_records": result.new_canonical_records,
+            "duplicates": result.duplicates,
+            "conflicts": result.conflicts,
+        },
+    )
+    await _persist_collection_event(
+        deps,
+        "dedup.completed",
+        "Deterministic record identity and deduplication completed",
+        {
+            "snapshot_id": result.snapshot_id,
+            "observations_committed": result.record_count,
+            "new_canonical_records": result.new_canonical_records,
+            "duplicates": result.duplicates,
+            "conflicts": result.conflicts,
         },
     )
     progress = await get_collection_progress_record(
@@ -454,6 +653,18 @@ async def get_collection_progress(ctx: RunContext[KairosAgentDeps]) -> Collectio
         "Collection progress read",
         progress.model_dump(mode="json"),
     )
+    if progress.saturation_state == "SATURATED" and not await has_agent_event(
+        deps.task_id,
+        deps.task_run_id,
+        deps.user_id,
+        "saturation.updated",
+    ):
+        await _persist_collection_event(
+            deps,
+            "saturation.updated",
+            "Search saturation state changed",
+            {"saturation_state": progress.saturation_state},
+        )
     return progress
 
 

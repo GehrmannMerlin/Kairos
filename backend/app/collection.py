@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
 from datetime import date
+from hashlib import sha256
 from typing import Any
+from unicodedata import normalize as unicode_normalize
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,7 +17,7 @@ from app.domain import (
     RecordStatus,
     RecordSubmission,
 )
-from app.url_policy import validate_public_http_url
+from app.url_policy import canonicalize_url, validate_public_http_url
 
 
 class ValidatedEvidence(BaseModel):
@@ -68,7 +71,63 @@ def _matches_type(value: Any, field_type: CollectionFieldType) -> bool:
 
 
 def _normalized_text(value: str) -> str:
-    return " ".join(value.split())
+    return " ".join(unicode_normalize("NFKC", value).split())
+
+
+def _stable_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def normalize_record_data(spec: CollectionSpecVersion, data_json: dict[str, Any]) -> dict[str, Any]:
+    """Create a typed, deterministic representation without changing the raw extraction payload."""
+    normalized: dict[str, Any] = {}
+    fields = {field.name: field for field in spec.fields}
+    for name, value in data_json.items():
+        field = fields.get(name)
+        if field is None or value is None:
+            normalized[name] = value
+        elif field.type in {CollectionFieldType.STRING, CollectionFieldType.URL} and isinstance(value, str):
+            text = _normalized_text(value)
+            if field.type is CollectionFieldType.URL:
+                try:
+                    text = canonicalize_url(text)
+                except CollectionError:
+                    pass
+            normalized[name] = text
+        elif field.type is CollectionFieldType.DATE and isinstance(value, str):
+            try:
+                normalized[name] = date.fromisoformat(value).isoformat()
+            except ValueError:
+                normalized[name] = _normalized_text(value)
+        else:
+            normalized[name] = value
+    return normalized
+
+
+def stable_record_fingerprint(normalized_data_json: dict[str, Any]) -> str:
+    return sha256(_stable_json(normalized_data_json).encode("utf-8")).hexdigest()
+
+
+def record_identity_key(spec: CollectionSpecVersion, normalized_data_json: dict[str, Any]) -> str:
+    url_fields = [field for field in spec.fields if field.type is CollectionFieldType.URL]
+    ordered_url_fields = sorted(url_fields, key=lambda field: (not field.required, spec.fields.index(field)))
+    for field in ordered_url_fields:
+        value = normalized_data_json.get(field.name)
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            canonicalize_url(value)
+        except CollectionError:
+            continue
+        return f"{field.name}:{value}"
+
+    required_fields = [field for field in spec.fields if field.required]
+    if required_fields and all(
+        _is_populated(normalized_data_json.get(field.name)) for field in required_fields
+    ):
+        values = [normalized_data_json[field.name] for field in required_fields]
+        return f"required:{_stable_json(values)}"
+    return f"fingerprint:{stable_record_fingerprint(normalized_data_json)}"
 
 
 def validate_record_submission(

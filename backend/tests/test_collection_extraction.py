@@ -197,6 +197,54 @@ async def _snapshot_context() -> tuple[RunContext[KairosAgentDeps], str, InMemor
 
 
 @pytest.mark.asyncio
+async def test_search_snippet_without_snapshot_cannot_create_record() -> None:
+    owner_id = f"owner-{uuid4().hex}"
+    task_id = f"task-{uuid4().hex}"
+    run_id = f"run-{uuid4().hex}"
+    await insert_task(task_id, owner_id)
+    await confirm_collection_spec(
+        task_id,
+        owner_id,
+        CollectionSpecConfirm(
+            goal="collect frameworks",
+            fields=[CollectionFieldSpec(name="name", type=CollectionFieldType.STRING, required=True)],
+            seed_urls=["https://example.com"],
+        ),
+    )
+    spec = await get_collection_spec(task_id, owner_id)
+    assert spec is not None
+    await create_task_run(task_id, owner_id, run_id, f"workflow-{uuid4().hex}", "collect")
+    context = RunContext(
+        deps=KairosAgentDeps(
+            user_id=owner_id,
+            task_id=task_id,
+            task_run_id=run_id,
+            spec_version_id=spec.spec_version_id,
+            model_config_id="test-model",
+        ),
+        model=None,
+        usage=None,
+        run_id=run_id,
+    )
+
+    with pytest.raises(CollectionError, match="SNAPSHOT_NOT_FOUND"):
+        await commit_extraction(
+            context,
+            CommitExtractionInput(
+                snapshot_id="search-result-without-snapshot",
+                records=[
+                    RecordSubmission(
+                        fields={"name": "FastAPI"},
+                        evidence={
+                            "name": EvidenceSubmission(quote="FastAPI is a modern high-performance framework")
+                        },
+                    )
+                ],
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_empty_extraction_commit_marks_source_processed_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

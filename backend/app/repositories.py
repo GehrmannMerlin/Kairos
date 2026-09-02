@@ -4,16 +4,23 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
-from app.collection import ValidatedRecord
+from app.collection import (
+    ValidatedRecord,
+    normalize_record_data,
+    record_identity_key,
+    stable_record_fingerprint,
+)
 from app.db import session_scope
 from app.domain import (
+    CollectionCompletionDecision,
     CollectionError,
     CollectionExecutionContext,
     CollectionFieldSpec,
     CollectionMode,
     CollectionProgress,
+    CollectionSourceOrigin,
     CollectionSourceStatus,
     CollectionSourceSummary,
     CollectionSpecConfirm,
@@ -21,6 +28,11 @@ from app.domain import (
     CompletionResult,
     EventEnvelope,
     RecordStatus,
+    SearchLimits,
+    SearchRoundStatus,
+    SearchRoundSummary,
+    SearchSourceResult,
+    SearchSourcesResult,
     TaskRunStatus,
     TaskStatus,
     WorkspaceMetadata,
@@ -37,10 +49,12 @@ from app.models import (
     FieldEvidence,
     PageSnapshot,
     Record,
+    SearchRound,
     Task,
     TaskRun,
     Workspace,
 )
+from app.search import NormalizedSearchResult
 from app.url_policy import canonicalize_url, validate_public_http_url
 
 
@@ -66,6 +80,8 @@ def collection_spec_from_model(row: CollectionSpecVersion) -> CollectionSpecVers
         fields=[CollectionFieldSpec.model_validate(value) for value in row.fields_json],
         seed_urls=list(row.seed_urls_json),
         target_count=row.target_count,
+        scope_domains=list(row.scope_domains_json or []),
+        search_limits=SearchLimits.model_validate(row.search_limits_json or {}),
         confirmed_at=row.confirmed_at,
         created_at=row.created_at,
     )
@@ -80,7 +96,50 @@ def collection_source_summary_from_model(row: CollectionSource) -> CollectionSou
         status=CollectionSourceStatus(row.status),
         snapshot_id=row.snapshot_id,
         failure_code=row.failure_code,
+        title=row.search_title,
+        snippet=(row.search_snippet or "")[:500],
     )
+
+
+def _search_round_summary_from_model(row: SearchRound) -> SearchRoundSummary:
+    return SearchRoundSummary(
+        search_round_id=row.search_round_id,
+        task_run_id=row.task_run_id,
+        round_number=row.round_number,
+        query=row.query,
+        query_hash=row.query_hash,
+        provider=row.provider,
+        requested_results=row.requested_results,
+        returned_results=row.returned_results,
+        accepted_results=row.accepted_results,
+        new_sources=row.new_sources,
+        passed_records_before=row.passed_records_before,
+        passed_records_after=row.passed_records_after,
+        new_passed_records=row.new_passed_records,
+        status=SearchRoundStatus(row.status),
+        created_at=row.created_at,
+        completed_at=row.completed_at,
+    )
+
+
+async def _count_canonical_passed(
+    session: object,
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+) -> int:
+    result = await session.scalar(  # type: ignore[attr-defined]
+        select(func.count(Record.record_id)).where(
+            Record.task_id == task_id,
+            Record.task_run_id == task_run_id,
+            Record.owner_id == owner_id,
+            Record.spec_version_id == spec_version_id,
+            Record.status == RecordStatus.PASSED.value,
+            Record.canonical_record_id.is_(None),
+        )
+    )
+    return int(result or 0)
 
 
 async def confirm_collection_spec(
@@ -124,6 +183,8 @@ async def confirm_collection_spec(
                 fields_json=[field.model_dump(mode="json") for field in confirm.fields],
                 seed_urls_json=canonical_urls,
                 target_count=confirm.target_count,
+                scope_domains_json=list(confirm.scope_domains),
+                search_limits_json=confirm.search_limits.model_dump(mode="json"),
                 confirmed_at=now,
                 created_at=now,
             )
@@ -138,7 +199,7 @@ async def confirm_collection_spec(
                         spec_version_id=spec_id,
                         url=url,
                         canonical_url=url,
-                        origin="SEED",
+                        origin=CollectionSourceOrigin.SEED.value,
                         status=CollectionSourceStatus.PENDING.value,
                     )
                 )
@@ -196,7 +257,349 @@ async def get_collection_context(
             goal=spec.goal,
             fields=[CollectionFieldSpec.model_validate(value) for value in spec.fields_json],
             sources=[collection_source_summary_from_model(row) for row in rows],
+            target_count=spec.target_count,
+            scope_domains=list(spec.scope_domains_json or []),
+            search_limits=SearchLimits.model_validate(spec.search_limits_json or {}),
         )
+
+
+async def get_completed_search_round_by_hash(
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+    query_hash: str,
+) -> SearchRound | None:
+    async with session_scope() as session:
+        return await session.scalar(
+            select(SearchRound).where(
+                SearchRound.task_id == task_id,
+                SearchRound.task_run_id == task_run_id,
+                SearchRound.owner_id == owner_id,
+                SearchRound.spec_version_id == spec_version_id,
+                SearchRound.query_hash == query_hash,
+                SearchRound.status == SearchRoundStatus.COMPLETED.value,
+            )
+        )
+
+
+async def create_search_round(
+    *,
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+    query: str,
+    query_hash: str,
+    provider: str,
+    requested_results: int,
+) -> SearchRound:
+    async with session_scope() as session:
+        async with session.begin():
+            run = await session.scalar(
+                select(TaskRun)
+                .where(
+                    TaskRun.task_run_id == task_run_id,
+                    TaskRun.task_id == task_id,
+                    TaskRun.owner_id == owner_id,
+                )
+                .with_for_update()
+            )
+            spec = await session.scalar(
+                select(CollectionSpecVersion).where(
+                    CollectionSpecVersion.spec_version_id == spec_version_id,
+                    CollectionSpecVersion.task_id == task_id,
+                    CollectionSpecVersion.owner_id == owner_id,
+                )
+            )
+            if run is None or spec is None:
+                raise CollectionError("COLLECTION_SCOPE_NOT_FOUND", "collection run scope not found")
+            previous_round = await session.scalar(
+                select(func.max(SearchRound.round_number)).where(SearchRound.task_run_id == task_run_id)
+            )
+            round_row = SearchRound(
+                search_round_id=f"search-round-{uuid4().hex}",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_run_id=task_run_id,
+                spec_version_id=spec_version_id,
+                round_number=int(previous_round or 0) + 1,
+                query=query,
+                query_hash=query_hash,
+                provider=provider,
+                requested_results=requested_results,
+                passed_records_before=await _count_canonical_passed(
+                    session, task_id, task_run_id, owner_id, spec_version_id
+                ),
+                status=SearchRoundStatus.RUNNING.value,
+            )
+            session.add(round_row)
+            await session.flush()
+        await session.refresh(round_row)
+        return round_row
+
+
+async def fail_search_round(search_round_id: str, task_id: str, task_run_id: str, owner_id: str) -> None:
+    async with session_scope() as session:
+        row = await session.scalar(
+            select(SearchRound).where(
+                SearchRound.search_round_id == search_round_id,
+                SearchRound.task_id == task_id,
+                SearchRound.task_run_id == task_run_id,
+                SearchRound.owner_id == owner_id,
+            )
+        )
+        if row is not None:
+            row.status = SearchRoundStatus.FAILED.value
+            row.completed_at = datetime.now(UTC)
+            await session.commit()
+
+
+async def persist_search_round_results(
+    *,
+    search_round_id: str,
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+    results: Sequence[NormalizedSearchResult],
+    returned_results: int,
+) -> SearchSourcesResult:
+    async with session_scope() as session:
+        async with session.begin():
+            round_row = await session.scalar(
+                select(SearchRound)
+                .where(
+                    SearchRound.search_round_id == search_round_id,
+                    SearchRound.task_id == task_id,
+                    SearchRound.task_run_id == task_run_id,
+                    SearchRound.owner_id == owner_id,
+                    SearchRound.spec_version_id == spec_version_id,
+                )
+                .with_for_update()
+            )
+            spec = await session.scalar(
+                select(CollectionSpecVersion).where(
+                    CollectionSpecVersion.spec_version_id == spec_version_id,
+                    CollectionSpecVersion.task_id == task_id,
+                    CollectionSpecVersion.owner_id == owner_id,
+                )
+            )
+            if round_row is None or spec is None:
+                raise CollectionError("SEARCH_ROUND_NOT_FOUND", "search round not found")
+            existing_rows = list(
+                await session.scalars(
+                    select(CollectionSource)
+                    .where(
+                        CollectionSource.task_id == task_id,
+                        CollectionSource.owner_id == owner_id,
+                        CollectionSource.spec_version_id == spec_version_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            by_canonical = {row.canonical_url: row for row in existing_rows}
+            source_results: list[SearchSourceResult] = []
+            result_source_ids: list[str] = []
+            new_sources = 0
+            discovered_sources = sum(
+                row.origin == CollectionSourceOrigin.SEARCH.value for row in existing_rows
+            )
+            max_new_sources = max(
+                spec.search_limits_json.get("max_discovered_sources", 50) - discovered_sources,
+                0,
+            )
+            seen: set[str] = set()
+            for result in results:
+                if result.url in seen:
+                    continue
+                seen.add(result.url)
+                source = by_canonical.get(result.url)
+                if source is None:
+                    if new_sources >= max_new_sources:
+                        continue
+                    source = CollectionSource(
+                        source_id=f"source-{uuid4().hex}",
+                        owner_id=owner_id,
+                        task_id=task_id,
+                        spec_version_id=spec_version_id,
+                        url=result.url,
+                        canonical_url=result.url,
+                        origin=CollectionSourceOrigin.SEARCH.value,
+                        search_round_id=search_round_id,
+                        discovered_query=round_row.query,
+                        provider_rank=result.rank,
+                        provider_score=result.provider_score,
+                        search_title=result.title[:1000],
+                        search_snippet=result.snippet[:500],
+                        status=CollectionSourceStatus.PENDING.value,
+                    )
+                    session.add(source)
+                    await session.flush()
+                    by_canonical[result.url] = source
+                    new_sources += 1
+                elif source.search_title is None and result.title:
+                    source.search_title = result.title[:1000]
+                    if not source.search_snippet and result.snippet:
+                        source.search_snippet = result.snippet[:500]
+                result_source_ids.append(source.source_id)
+                source_results.append(
+                    SearchSourceResult(
+                        source_id=source.source_id,
+                        url=source.url,
+                        title=result.title[:1000],
+                        snippet=result.snippet[:500],
+                        rank=result.rank,
+                    )
+                )
+            round_row.returned_results = returned_results
+            round_row.accepted_results = len(source_results)
+            round_row.new_sources = new_sources
+            round_row.result_source_ids_json = result_source_ids
+            if new_sources == 0:
+                round_row.status = SearchRoundStatus.COMPLETED.value
+                round_row.completed_at = datetime.now(UTC)
+                round_row.passed_records_after = round_row.passed_records_before
+                round_row.new_passed_records = 0
+            await session.flush()
+            return SearchSourcesResult(
+                search_round_id=round_row.search_round_id,
+                query=round_row.query,
+                returned_results=returned_results,
+                new_sources_count=new_sources,
+                sources=source_results[: round_row.requested_results],
+            )
+
+
+async def get_search_sources_result(
+    search_round_id: str,
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+) -> SearchSourcesResult | None:
+    async with session_scope() as session:
+        round_row = await session.scalar(
+            select(SearchRound).where(
+                SearchRound.search_round_id == search_round_id,
+                SearchRound.task_id == task_id,
+                SearchRound.task_run_id == task_run_id,
+                SearchRound.owner_id == owner_id,
+                SearchRound.spec_version_id == spec_version_id,
+            )
+        )
+        if round_row is None:
+            return None
+        result_source_ids = list(round_row.result_source_ids_json or [])
+        if not result_source_ids:
+            return SearchSourcesResult(
+                search_round_id=round_row.search_round_id,
+                query=round_row.query,
+                returned_results=round_row.returned_results,
+                new_sources_count=round_row.new_sources,
+                sources=[],
+            )
+        rows = await session.scalars(
+            select(CollectionSource).where(
+                CollectionSource.source_id.in_(result_source_ids),
+                CollectionSource.task_id == task_id,
+                CollectionSource.owner_id == owner_id,
+                CollectionSource.spec_version_id == spec_version_id,
+            )
+        )
+        sources_by_id = {row.source_id: row for row in rows}
+        return SearchSourcesResult(
+            search_round_id=round_row.search_round_id,
+            query=round_row.query,
+            returned_results=round_row.returned_results,
+            new_sources_count=round_row.new_sources,
+            sources=[
+                SearchSourceResult(
+                    source_id=sources_by_id[source_id].source_id,
+                    url=sources_by_id[source_id].url,
+                    title=(sources_by_id[source_id].search_title or "")[:1000],
+                    snippet=(sources_by_id[source_id].search_snippet or "")[:500],
+                    rank=max(sources_by_id[source_id].provider_rank or 1, 1),
+                )
+                for source_id in result_source_ids
+                if source_id in sources_by_id
+            ],
+        )
+
+
+async def list_search_rounds(
+    task_id: str, task_run_id: str, owner_id: str, spec_version_id: str
+) -> list[SearchRound]:
+    async with session_scope() as session:
+        rows = await session.scalars(
+            select(SearchRound)
+            .where(
+                SearchRound.task_id == task_id,
+                SearchRound.task_run_id == task_run_id,
+                SearchRound.owner_id == owner_id,
+                SearchRound.spec_version_id == spec_version_id,
+            )
+            .order_by(SearchRound.round_number)
+        )
+        return list(rows)
+
+
+async def complete_search_round_if_terminal(
+    search_round_id: str,
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+) -> None:
+    async with session_scope() as session:
+        async with session.begin():
+            await _complete_search_round_if_terminal_in_session(
+                session, search_round_id, task_id, task_run_id, owner_id, spec_version_id
+            )
+
+
+async def _complete_search_round_if_terminal_in_session(
+    session: object,
+    search_round_id: str,
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+) -> None:
+    round_row = await session.scalar(  # type: ignore[attr-defined]
+        select(SearchRound)
+        .where(
+            SearchRound.search_round_id == search_round_id,
+            SearchRound.task_id == task_id,
+            SearchRound.task_run_id == task_run_id,
+            SearchRound.owner_id == owner_id,
+            SearchRound.spec_version_id == spec_version_id,
+        )
+        .with_for_update()
+    )
+    if round_row is None or round_row.status != SearchRoundStatus.RUNNING.value:
+        return
+    sources = list(
+        await session.scalars(  # type: ignore[attr-defined]
+            select(CollectionSource).where(
+                CollectionSource.search_round_id == search_round_id,
+                CollectionSource.owner_id == owner_id,
+            )
+        )
+    )
+    terminal = {
+        CollectionSourceStatus.PROCESSED.value,
+        CollectionSourceStatus.FAILED.value,
+        CollectionSourceStatus.BLOCKED.value,
+        CollectionSourceStatus.SKIPPED.value,
+    }
+    if any(source.status not in terminal for source in sources):
+        return
+    passed_after = await _count_canonical_passed(session, task_id, task_run_id, owner_id, spec_version_id)
+    round_row.passed_records_after = passed_after
+    round_row.new_passed_records = max(passed_after - round_row.passed_records_before, 0)
+    round_row.status = SearchRoundStatus.COMPLETED.value
+    round_row.completed_at = datetime.now(UTC)
 
 
 async def get_collection_source_for_run(
@@ -322,6 +725,32 @@ async def persist_page_snapshot(
         return snapshot
 
 
+async def mark_collection_source_attempt(
+    source_id: str,
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+) -> None:
+    async with session_scope() as session:
+        source = await session.scalar(
+            select(CollectionSource)
+            .join(TaskRun, TaskRun.task_id == CollectionSource.task_id)
+            .where(
+                CollectionSource.source_id == source_id,
+                CollectionSource.task_id == task_id,
+                CollectionSource.owner_id == owner_id,
+                TaskRun.task_run_id == task_run_id,
+                TaskRun.owner_id == owner_id,
+            )
+            .with_for_update()
+        )
+        if source is None:
+            raise CollectionError("SOURCE_NOT_FOUND", "collection source not found")
+        source.last_attempt_at = datetime.now(UTC)
+        source.attempt_count = int(source.attempt_count or 0) + 1
+        await session.commit()
+
+
 async def mark_collection_source_failure(
     source_id: str,
     task_id: str,
@@ -348,6 +777,15 @@ async def mark_collection_source_failure(
         source.status = status.value
         source.failure_code = failure_code[:64]
         source.failure_message = failure_message[:500]
+        if source.search_round_id is not None:
+            await _complete_search_round_if_terminal_in_session(
+                session,
+                source.search_round_id,
+                task_id,
+                task_run_id,
+                owner_id,
+                source.spec_version_id,
+            )
         await session.commit()
 
 
@@ -428,6 +866,16 @@ async def persist_extraction_commit(
             )
             if source is None or snapshot is None:
                 raise CollectionError("SNAPSHOT_NOT_FOUND", "snapshot not found")
+            spec = await session.scalar(
+                select(CollectionSpecVersion).where(
+                    CollectionSpecVersion.spec_version_id == spec_version_id,
+                    CollectionSpecVersion.task_id == task_id,
+                    CollectionSpecVersion.owner_id == owner_id,
+                )
+            )
+            if spec is None:
+                raise CollectionError("COLLECTION_SPEC_NOT_FOUND", "collection spec not found")
+            spec_data = collection_spec_from_model(spec)
 
             existing = await session.scalar(
                 select(ExtractionCommit)
@@ -476,9 +924,62 @@ async def persist_extraction_commit(
             await session.flush()
 
             record_ids: list[str] = []
+            new_canonical_records = 0
+            duplicates = 0
+            conflicts = 0
             for ordinal, validated in enumerate(validated_records):
                 record_id = f"record-{uuid4().hex}"
                 record_ids.append(record_id)
+                normalized_data_json = normalize_record_data(spec_data, validated.data_json)
+                record_fingerprint = stable_record_fingerprint(normalized_data_json)
+                identity_key = record_identity_key(spec_data, normalized_data_json)
+                status = validated.status.value
+                validation_issues = list(validated.validation_issues)
+                canonical_record_id: str | None = None
+                existing_exact = await session.scalar(
+                    select(Record)
+                    .where(
+                        Record.task_id == task_id,
+                        Record.task_run_id == task_run_id,
+                        Record.owner_id == owner_id,
+                        Record.spec_version_id == spec_version_id,
+                        Record.record_fingerprint == record_fingerprint,
+                    )
+                    .order_by(Record.created_at, Record.record_id)
+                )
+                existing_identity = await session.scalars(
+                    select(Record)
+                    .where(
+                        Record.task_id == task_id,
+                        Record.task_run_id == task_run_id,
+                        Record.owner_id == owner_id,
+                        Record.spec_version_id == spec_version_id,
+                        Record.identity_key == identity_key,
+                    )
+                    .order_by(Record.created_at, Record.record_id)
+                )
+                identity_rows = list(existing_identity)
+                canonical = next(
+                    (row for row in identity_rows if row.canonical_record_id is None),
+                    existing_exact,
+                )
+                if existing_exact is not None:
+                    duplicates += 1
+                    canonical_record_id = existing_exact.canonical_record_id or existing_exact.record_id
+                elif canonical is not None:
+                    duplicates += 1
+                    canonical_record_id = canonical.canonical_record_id or canonical.record_id
+                    if canonical.normalized_data_json != normalized_data_json:
+                        conflicts += 1
+                        issue = "CONFLICTING_SOURCE_VALUE"
+                        if issue not in validation_issues:
+                            validation_issues.append(issue)
+                        status = RecordStatus.NEEDS_REVIEW.value
+                        if issue not in canonical.validation_issues:
+                            canonical.validation_issues = [*canonical.validation_issues, issue]
+                        canonical.status = RecordStatus.NEEDS_REVIEW.value
+                if canonical_record_id is None:
+                    new_canonical_records += 1
                 session.add(
                     Record(
                         record_id=record_id,
@@ -490,8 +991,12 @@ async def persist_extraction_commit(
                         extraction_commit_id=commit.extraction_commit_id,
                         ordinal=ordinal,
                         data_json=validated.data_json,
-                        status=validated.status.value,
-                        validation_issues=validated.validation_issues,
+                        normalized_data_json=normalized_data_json,
+                        record_fingerprint=record_fingerprint,
+                        identity_key=identity_key,
+                        canonical_record_id=canonical_record_id,
+                        status=status,
+                        validation_issues=validation_issues,
                     )
                 )
                 await session.flush()
@@ -514,6 +1019,15 @@ async def persist_extraction_commit(
             if source_complete:
                 source.status = CollectionSourceStatus.PROCESSED.value
                 source.processed_at = datetime.now(UTC)
+                if source.search_round_id is not None:
+                    await _complete_search_round_if_terminal_in_session(
+                        session,
+                        source.search_round_id,
+                        task_id,
+                        task_run_id,
+                        owner_id,
+                        spec_version_id,
+                    )
             await session.flush()
             return CommitExtractionResult(
                 extraction_commit_id=commit.extraction_commit_id,
@@ -521,6 +1035,9 @@ async def persist_extraction_commit(
                 record_ids=record_ids,
                 record_count=len(record_ids),
                 idempotent=False,
+                new_canonical_records=new_canonical_records,
+                duplicates=duplicates,
+                conflicts=conflicts,
             )
 
 
@@ -566,6 +1083,18 @@ async def get_collection_progress(
                 )
             )
         )
+        rounds = list(
+            await session.scalars(
+                select(SearchRound)
+                .where(
+                    SearchRound.task_id == task_id,
+                    SearchRound.task_run_id == task_run_id,
+                    SearchRound.owner_id == owner_id,
+                    SearchRound.spec_version_id == spec_version_id,
+                )
+                .order_by(SearchRound.round_number)
+            )
+        )
         source_counts = {status: 0 for status in CollectionSourceStatus}
         for source in sources:
             try:
@@ -578,9 +1107,20 @@ async def get_collection_progress(
                 record_counts[RecordStatus(record.status)] += 1
             except ValueError:
                 continue
+        passed_canonical = sum(
+            record.status == RecordStatus.PASSED.value and record.canonical_record_id is None
+            for record in records
+        )
+        completed_rounds = [row for row in rounds if row.status == SearchRoundStatus.COMPLETED.value]
+        discovered_sources = sum(source.origin == CollectionSourceOrigin.SEARCH.value for source in sources)
+        saturation = (
+            "SATURATED"
+            if len(completed_rounds) >= 2
+            and all(row.new_passed_records == 0 for row in completed_rounds[-2:])
+            else "NOT_REACHED"
+        )
         remaining = (
-            source_counts[CollectionSourceStatus.PENDING]
-            + source_counts[CollectionSourceStatus.FETCHED]
+            source_counts[CollectionSourceStatus.PENDING] + source_counts[CollectionSourceStatus.FETCHED]
         )
         return CollectionProgress(
             total_sources=len(sources),
@@ -589,11 +1129,32 @@ async def get_collection_progress(
             processed_sources=source_counts[CollectionSourceStatus.PROCESSED],
             failed_sources=source_counts[CollectionSourceStatus.FAILED],
             blocked_sources=source_counts[CollectionSourceStatus.BLOCKED],
+            skipped_sources=source_counts[CollectionSourceStatus.SKIPPED],
             total_records=len(records),
-            passed_records=record_counts[RecordStatus.PASSED],
+            passed_records=passed_canonical,
             needs_review_records=record_counts[RecordStatus.NEEDS_REVIEW],
             rejected_records=record_counts[RecordStatus.REJECTED],
             remaining_sources=remaining,
+            mode=CollectionMode(spec.mode),
+            target_count=spec.target_count,
+            passed_canonical_records=passed_canonical,
+            observations_total=len(records),
+            canonical_records_total=sum(record.canonical_record_id is None for record in records),
+            remaining_to_target=(
+                max(spec.target_count - passed_canonical, 0) if spec.target_count is not None else None
+            ),
+            search_rounds_completed=len(completed_rounds),
+            max_search_rounds=SearchLimits.model_validate(spec.search_limits_json or {}).max_search_rounds,
+            sources_discovered=discovered_sources,
+            new_sources_last_round=rounds[-1].new_sources if rounds else 0,
+            last_round_new_passed_records=rounds[-1].new_passed_records if rounds else 0,
+            saturation_state=saturation,
+            actionable_sources=[
+                collection_source_summary_from_model(source)
+                for source in sources
+                if source.status
+                in {CollectionSourceStatus.PENDING.value, CollectionSourceStatus.FETCHED.value}
+            ][:10],
         )
 
 
@@ -620,6 +1181,15 @@ async def set_collection_source_status(
             raise CollectionError("SOURCE_NOT_FOUND", "collection source not found")
         source.status = status.value
         source.processed_at = datetime.now(UTC) if status is CollectionSourceStatus.PROCESSED else None
+        if source.search_round_id is not None:
+            await _complete_search_round_if_terminal_in_session(
+                session,
+                source.search_round_id,
+                task_id,
+                task_run_id,
+                owner_id,
+                source.spec_version_id,
+            )
         await session.commit()
 
 
@@ -642,9 +1212,7 @@ async def finalize_collection_run(
                 .with_for_update()
             )
             task = await session.scalar(
-                select(Task)
-                .where(Task.task_id == task_id, Task.owner_id == owner_id)
-                .with_for_update()
+                select(Task).where(Task.task_id == task_id, Task.owner_id == owner_id).with_for_update()
             )
             sources = list(
                 await session.scalars(
@@ -669,8 +1237,7 @@ async def finalize_collection_run(
                 for source in sources
             )
             has_failures = any(
-                source.status
-                in {CollectionSourceStatus.FAILED.value, CollectionSourceStatus.BLOCKED.value}
+                source.status in {CollectionSourceStatus.FAILED.value, CollectionSourceStatus.BLOCKED.value}
                 for source in sources
             )
             if remaining:
@@ -697,6 +1264,103 @@ async def finalize_collection_run(
                 task_run_status=run_status,
                 remaining_sources=remaining,
                 summary=summary,
+                decision=run_status.value,
+                reason="SPECIFIED_SOURCE_TERMINAL_STATE",
+            )
+
+
+async def apply_collection_completion_decision(
+    task_id: str,
+    *,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+    decision: CollectionCompletionDecision,
+    final_answer: str | None = None,
+) -> CompletionResult:
+    decision_name = decision.decision
+    if decision_name == "CONTINUE":
+        raise CollectionError("COLLECTION_NOT_COMPLETE", "a CONTINUE decision cannot finalize a collection")
+    if decision_name not in {"COMPLETED", "PARTIALLY_COMPLETED", "FAILED"}:
+        raise CollectionError("INVALID_COMPLETION_DECISION", "unknown collection completion decision")
+    async with session_scope() as session:
+        async with session.begin():
+            run = await session.scalar(
+                select(TaskRun)
+                .where(
+                    TaskRun.task_run_id == task_run_id,
+                    TaskRun.task_id == task_id,
+                    TaskRun.owner_id == owner_id,
+                )
+                .with_for_update()
+            )
+            task = await session.scalar(
+                select(Task).where(Task.task_id == task_id, Task.owner_id == owner_id).with_for_update()
+            )
+            spec = await session.scalar(
+                select(CollectionSpecVersion).where(
+                    CollectionSpecVersion.spec_version_id == spec_version_id,
+                    CollectionSpecVersion.task_id == task_id,
+                    CollectionSpecVersion.owner_id == owner_id,
+                )
+            )
+            if run is None or task is None or spec is None:
+                raise CollectionError("COLLECTION_SCOPE_NOT_FOUND", "collection run scope not found")
+            sources = list(
+                await session.scalars(
+                    select(CollectionSource)
+                    .where(
+                        CollectionSource.task_id == task_id,
+                        CollectionSource.owner_id == owner_id,
+                        CollectionSource.spec_version_id == spec_version_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            if decision_name == "COMPLETED" and spec.mode in {
+                CollectionMode.EXPLORATORY.value,
+                CollectionMode.HYBRID.value,
+            }:
+                for source in sources:
+                    if source.origin == CollectionSourceOrigin.SEARCH.value and source.status in {
+                        CollectionSourceStatus.PENDING.value,
+                        CollectionSourceStatus.FETCHED.value,
+                    }:
+                        source.status = CollectionSourceStatus.SKIPPED.value
+                        source.failure_code = "TARGET_REACHED"
+                        source.failure_message = (
+                            "target count reached before this discovered source was processed"
+                        )
+                        source.processed_at = datetime.now(UTC)
+                        if source.search_round_id is not None:
+                            await _complete_search_round_if_terminal_in_session(
+                                session,
+                                source.search_round_id,
+                                task_id,
+                                task_run_id,
+                                owner_id,
+                                spec_version_id,
+                            )
+            remaining = sum(
+                source.status in {CollectionSourceStatus.PENDING.value, CollectionSourceStatus.FETCHED.value}
+                for source in sources
+            )
+            status = TaskRunStatus(decision_name)
+            run.status = transition_task_run_status(TaskRunStatus(run.status), status).value
+            task_status = TaskStatus(decision_name)
+            task.status = transition_task_status(TaskStatus(task.status), task_status).value
+            run.error_message = decision.reason if decision_name == "FAILED" else None
+            run.final_answer = final_answer[:20_000] if final_answer is not None else None
+            return CompletionResult(
+                task_run_id=task_run_id,
+                task_status=task_status,
+                task_run_status=status,
+                remaining_sources=remaining,
+                summary=f"collection finished with {decision.reason.lower()}",
+                decision=decision_name,
+                reason=decision.reason,
+                passed_records=decision.passed_records,
+                target_count=decision.target_count,
             )
 
 
@@ -717,19 +1381,23 @@ async def list_collection_sources(
 
 
 async def list_collection_records(
-    task_id: str, task_run_id: str, owner_id: str, spec_version_id: str
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    spec_version_id: str,
+    *,
+    include_duplicates: bool = False,
 ) -> list[Record]:
     async with session_scope() as session:
-        rows = await session.scalars(
-            select(Record)
-            .where(
-                Record.task_id == task_id,
-                Record.task_run_id == task_run_id,
-                Record.owner_id == owner_id,
-                Record.spec_version_id == spec_version_id,
-            )
-            .order_by(Record.created_at, Record.ordinal, Record.record_id)
+        query = select(Record).where(
+            Record.task_id == task_id,
+            Record.task_run_id == task_run_id,
+            Record.owner_id == owner_id,
+            Record.spec_version_id == spec_version_id,
         )
+        if not include_duplicates:
+            query = query.where(Record.canonical_record_id.is_(None))
+        rows = await session.scalars(query.order_by(Record.created_at, Record.ordinal, Record.record_id))
         return list(rows)
 
 
@@ -739,7 +1407,7 @@ async def list_record_evidence(record_id: str, task_id: str, owner_id: str) -> l
             select(FieldEvidence)
             .join(Record, Record.record_id == FieldEvidence.record_id)
             .where(
-                FieldEvidence.record_id == record_id,
+                or_(FieldEvidence.record_id == record_id, Record.canonical_record_id == record_id),
                 Record.task_id == task_id,
                 Record.owner_id == owner_id,
             )
@@ -900,6 +1568,24 @@ async def insert_agent_event(event: EventEnvelope) -> None:
             )
         )
         await session.commit()
+
+
+async def has_agent_event(
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    event_type: str,
+) -> bool:
+    async with session_scope() as session:
+        row = await session.scalar(
+            select(AgentEvent.event_id).where(
+                AgentEvent.task_id == task_id,
+                AgentEvent.task_run_id == task_run_id,
+                AgentEvent.owner_id == owner_id,
+                AgentEvent.event_type == event_type,
+            )
+        )
+        return row is not None
 
 
 async def list_agent_events(
