@@ -16,6 +16,7 @@ from app.agent.tools import (
     fetch_url,
     get_collection_progress,
     inspect_snapshot,
+    search_sources,
 )
 from app.config import get_settings
 from app.provider import model_resolver_capability
@@ -42,6 +43,16 @@ _collection_toolset = FunctionToolset(
     ),
     metadata={"temporal": COLLECTION_TOOL_ACTIVITY_CONFIG},
 )
+_search_toolset = FunctionToolset(
+    [search_sources],
+    id="kairos-search-v1",
+    instructions=(
+        "For EXPLORATORY and HYBRID collection runs, use search_sources only to discover public source URLs. "
+        "Search snippets are bounded discovery metadata and are never formal evidence or record content. "
+        "Process returned actionable sources with fetch_source, inspect_snapshot, and commit_extraction."
+    ),
+    metadata={"temporal": COLLECTION_TOOL_ACTIVITY_CONFIG},
+)
 
 _durability = TemporalDurability(
     event_stream_handler=agent_event_stream_handler,
@@ -55,6 +66,7 @@ _durability = TemporalDurability(
     toolset_activity_config={
         "kairos-web-v1": WEB_TOOL_ACTIVITY_CONFIG,
         "kairos-collection-v1": COLLECTION_TOOL_ACTIVITY_CONFIG,
+        "kairos-search-v1": COLLECTION_TOOL_ACTIVITY_CONFIG,
         "kairos-workspace-v1": {
             "start_to_close_timeout": timedelta(seconds=60),
             "retry_policy": RetryPolicy(maximum_attempts=2),
@@ -72,7 +84,7 @@ kairos_agent = Agent(
         "facts. Never claim a file or URL operation succeeded unless the tool returned success. "
         "The current workspace, when present, is authorized by the run context; use its tools to inspect it."
     ),
-    toolsets=[_web_toolset, _collection_toolset, workspace_dynamic_toolset],
+    toolsets=[_web_toolset, _collection_toolset, _search_toolset, workspace_dynamic_toolset],
     capabilities=[model_resolver_capability, _durability],
     defer_model_check=True,
 )

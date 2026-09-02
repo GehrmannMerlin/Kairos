@@ -4,15 +4,19 @@ from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
 from app.domain import (
+    CollectionCompletionDecision,
     CollectionExecutionContext,
     CompletionResult,
     EventEnvelope,
     TaskRunStatus,
     bounded_payload,
+    evaluate_collection_completion,
 )
 from app.repositories import (
+    apply_collection_completion_decision,
     finalize_collection_run,
     get_collection_context,
+    get_collection_progress,
     insert_agent_event,
     update_task_run,
 )
@@ -37,6 +41,17 @@ class CollectionContextInput(BaseModel):
 
 
 class FinalizeCollectionInput(CollectionContextInput):
+    final_answer: str | None = None
+
+
+class EvaluateCollectionCompletionInput(CollectionContextInput):
+    agent_continuations: int = 0
+    max_agent_continuations: int = 3
+    technical_failure: bool = False
+
+
+class ApplyCollectionCompletionDecisionInput(CollectionContextInput):
+    decision: CollectionCompletionDecision
     final_answer: str | None = None
 
 
@@ -78,5 +93,47 @@ async def finalize_collection_run_activity(input_data: FinalizeCollectionInput) 
         input_data.task_run_id,
         input_data.owner_id,
         input_data.spec_version_id,
+        final_answer=input_data.final_answer,
+    )
+
+
+@activity.defn(name="kairos.evaluate_collection_completion")
+async def evaluate_collection_completion_activity(
+    input_data: EvaluateCollectionCompletionInput,
+) -> CollectionCompletionDecision:
+    context = await get_collection_context(
+        input_data.task_id,
+        input_data.task_run_id,
+        input_data.owner_id,
+        input_data.spec_version_id,
+    )
+    progress = await get_collection_progress(
+        input_data.task_id,
+        input_data.task_run_id,
+        input_data.owner_id,
+        input_data.spec_version_id,
+    )
+    if context is None:
+        raise RuntimeError("COLLECTION_CONTEXT_NOT_FOUND")
+    return evaluate_collection_completion(
+        progress,
+        max_discovered_sources=context.search_limits.max_discovered_sources,
+        max_processed_sources=context.search_limits.max_processed_sources,
+        agent_continuations=input_data.agent_continuations,
+        max_agent_continuations=input_data.max_agent_continuations,
+        technical_failure=input_data.technical_failure,
+    )
+
+
+@activity.defn(name="kairos.apply_collection_completion_decision")
+async def apply_collection_completion_decision_activity(
+    input_data: ApplyCollectionCompletionDecisionInput,
+) -> CompletionResult:
+    return await apply_collection_completion_decision(
+        input_data.task_id,
+        task_run_id=input_data.task_run_id,
+        owner_id=input_data.owner_id,
+        spec_version_id=input_data.spec_version_id,
+        decision=input_data.decision,
         final_answer=input_data.final_answer,
     )

@@ -7,6 +7,8 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from app.activities import (
+    apply_collection_completion_decision_activity,
+    evaluate_collection_completion_activity,
     finalize_collection_run_activity,
     load_collection_context_activity,
     persist_agent_event_activity,
@@ -32,6 +34,8 @@ async def run_worker() -> None:
             update_task_run_activity,
             load_collection_context_activity,
             finalize_collection_run_activity,
+            evaluate_collection_completion_activity,
+            apply_collection_completion_decision_activity,
         ],
     ):
         await asyncio.Event().wait()

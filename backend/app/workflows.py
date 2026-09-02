@@ -10,9 +10,13 @@ with workflow.unsafe.imports_passed_through():
     from pydantic_ai.durable_exec.temporal import PydanticAIWorkflow
 
     from app.activities import (
+        ApplyCollectionCompletionDecisionInput,
         CollectionContextInput,
+        EvaluateCollectionCompletionInput,
         FinalizeCollectionInput,
         TaskRunUpdate,
+        apply_collection_completion_decision_activity,
+        evaluate_collection_completion_activity,
         finalize_collection_run_activity,
         load_collection_context_activity,
         persist_agent_event_activity,
@@ -40,6 +44,9 @@ class KairosAgentWorkflowResult(BaseModel):
 
     task_run_id: str
     answer: str = Field(max_length=20_000)
+
+
+MAX_AGENT_CONTINUATIONS = 3
 
 
 def _event(
@@ -75,23 +82,55 @@ def _collection_prompt(user_prompt: str, context: CollectionExecutionContext) ->
             {
                 "source_id": source.source_id,
                 "url": source.url,
+                "origin": source.origin.value,
                 "status": source.status.value,
                 "snapshot_id": source.snapshot_id,
+                "title": source.title,
+                "snippet": source.snippet,
             }
             for source in context.sources
         ],
+        "target_count": context.target_count,
+        "scope_domains": context.scope_domains,
+        "search_limits": context.search_limits.model_dump(mode="json"),
     }
+    if context.mode.value == "SPECIFIED_SOURCE":
+        instructions = (
+            "This is a Kairos SPECIFIED_SOURCE collection run. The confirmed CollectionSpec is an "
+            "immutable business contract and the listed seed URLs are the complete authorized scope. "
+            "For every unprocessed source, call fetch_source, inspect_snapshot in bounded chunks, extract "
+            "only values present in the snapshot, and call commit_extraction. Evidence quotes must be "
+            "verbatim text from the snapshot; never fabricate values or evidence. If there is no matching "
+            "record, commit_extraction(records=[], source_complete=true). Call get_collection_progress "
+            "before finishing; remaining_sources must be zero before you claim completion. Do not use "
+            "generic fetch_url for this collection."
+        )
+    else:
+        instructions = (
+            f"This is a Kairos {context.mode.value} collection run. The confirmed CollectionSpec is an "
+            "immutable business contract. Start by calling get_collection_progress. If the target is not "
+            "reached, use search_sources to design a query around the goal, required fields, missing "
+            "information, and existing results. Do not repeat an identical query. Process actionable "
+            "sources before adding more searches with fetch_source, inspect_snapshot in bounded chunks, "
+            "and commit_extraction. Search snippet is not evidence; only PageSnapshot content can produce "
+            "a Record or FieldEvidence. Call get_collection_progress after each batch. The deterministic "
+            "system decides completion and saturation; never claim completion based only on final prose."
+        )
     return (
-        "This is a Kairos SPECIFIED_SOURCE collection run. The confirmed CollectionSpec is an "
-        "immutable business contract and the listed seed URLs are the complete authorized scope. "
-        "For every unprocessed source, call fetch_source, inspect_snapshot in bounded chunks, extract "
-        "only values present in the snapshot, and call commit_extraction. Evidence quotes must be "
-        "verbatim text from the snapshot; never fabricate values or evidence. If there is no matching "
-        "record, commit_extraction(records=[], source_complete=true). Call get_collection_progress "
-        "before finishing; remaining_sources must be zero before you claim completion. Do not use "
-        "generic fetch_url for this collection.\n\n"
+        f"{instructions}\n\n"
         f"Collection context:\n{json.dumps(spec, ensure_ascii=False, sort_keys=True)}\n\n"
         f"User instruction:\n{user_prompt}"
+    )
+
+
+def _continuation_prompt(context: CollectionExecutionContext) -> str:
+    return (
+        f"Continue the {context.mode.value} Kairos collection using the same immutable CollectionSpec. "
+        "Read get_collection_progress now. Prioritize actionable_sources; for each unprocessed source "
+        "use fetch_source, inspect_snapshot in bounded chunks, and commit_extraction with only verified "
+        "PageSnapshot evidence. If the target is still missing and search budget remains, choose a new "
+        "search_sources query based on the missing fields. Search snippets are never evidence. Do not "
+        "claim completion from prose; the system evaluator decides it."
     )
 
 
@@ -127,7 +166,7 @@ class KairosAgentWorkflow(PydanticAIWorkflow):
                     _event(
                         input_data,
                         "collection.started",
-                        "Specified-source collection started",
+                        f"{collection_context.mode.value} collection started",
                         {
                             "spec_version_id": collection_context.spec_version_id,
                             "source_count": len(collection_context.sources),
@@ -144,9 +183,85 @@ class KairosAgentWorkflow(PydanticAIWorkflow):
                 "do not assume file contents.\n\nUser instruction:\n" + prompt
             )
         try:
+            continuation_count = 0
             result = await kairos_agent.run(prompt, deps=input_data.deps)
             answer = str(result.output)[:20_000]
-            if collection_context is not None:
+            completion = None
+            if collection_context is not None and collection_context.mode.value != "SPECIFIED_SOURCE":
+                decision = await workflow.execute_activity(
+                    evaluate_collection_completion_activity,
+                    args=[
+                        EvaluateCollectionCompletionInput(
+                            task_id=input_data.deps.task_id,
+                            task_run_id=input_data.deps.task_run_id,
+                            owner_id=input_data.deps.user_id,
+                            spec_version_id=collection_context.spec_version_id,
+                            agent_continuations=continuation_count,
+                            max_agent_continuations=MAX_AGENT_CONTINUATIONS,
+                        )
+                    ],
+                    start_to_close_timeout=timedelta(seconds=15),
+                )
+                while decision.decision == "CONTINUE":
+                    continuation_count += 1
+                    prompt = _continuation_prompt(collection_context)
+                    result = await kairos_agent.run(prompt, deps=input_data.deps)
+                    answer = str(result.output)[:20_000]
+                    decision = await workflow.execute_activity(
+                        evaluate_collection_completion_activity,
+                        args=[
+                            EvaluateCollectionCompletionInput(
+                                task_id=input_data.deps.task_id,
+                                task_run_id=input_data.deps.task_run_id,
+                                owner_id=input_data.deps.user_id,
+                                spec_version_id=collection_context.spec_version_id,
+                                agent_continuations=continuation_count,
+                                max_agent_continuations=MAX_AGENT_CONTINUATIONS,
+                            )
+                        ],
+                        start_to_close_timeout=timedelta(seconds=15),
+                    )
+                completion = await workflow.execute_activity(
+                    apply_collection_completion_decision_activity,
+                    args=[
+                        ApplyCollectionCompletionDecisionInput(
+                            task_id=input_data.deps.task_id,
+                            task_run_id=input_data.deps.task_run_id,
+                            owner_id=input_data.deps.user_id,
+                            spec_version_id=collection_context.spec_version_id,
+                            decision=decision,
+                            final_answer=answer,
+                        )
+                    ],
+                    start_to_close_timeout=timedelta(seconds=15),
+                )
+                completion_event_type = (
+                    "collection.completed"
+                    if decision.decision == "COMPLETED"
+                    else "collection.partially_completed"
+                    if decision.decision == "PARTIALLY_COMPLETED"
+                    else "run.failed"
+                )
+                await workflow.execute_activity(
+                    persist_agent_event_activity,
+                    args=[
+                        _event(
+                            input_data,
+                            completion_event_type,
+                            completion.summary,
+                            {
+                                "decision": decision.decision,
+                                "reason": decision.reason,
+                                "remaining_sources": completion.remaining_sources,
+                                "task_status": completion.task_status.value,
+                                "task_run_status": completion.task_run_status.value,
+                                "agent_continuations": continuation_count,
+                            },
+                        )
+                    ],
+                    start_to_close_timeout=timedelta(seconds=15),
+                )
+            elif collection_context is not None:
                 completion = await workflow.execute_activity(
                     finalize_collection_run_activity,
                     args=[
@@ -183,7 +298,9 @@ class KairosAgentWorkflow(PydanticAIWorkflow):
                     ],
                     start_to_close_timeout=timedelta(seconds=15),
                 )
-            if collection_context is None or completion.task_run_status is not TaskRunStatus.FAILED:
+            if collection_context is None or (
+                completion is not None and completion.task_run_status is not TaskRunStatus.FAILED
+            ):
                 await workflow.execute_activity(
                     persist_agent_event_activity,
                     args=[
