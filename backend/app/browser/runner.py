@@ -138,7 +138,11 @@ async def run_browser_task_for_source(
     become BLOCKED; transient Chromium/navigation failures become FAILED so
     Temporal may retry with a fresh session; cancellation closes the browser.
     """
-    ctx = activity.info() if activity.in_activity() else None
+    _in_activity = activity.in_activity()
+
+    def _heartbeat(detail: str) -> None:
+        if _in_activity:
+            activity.heartbeat(detail)
 
     spec = await get_collection_spec_for_run(task_id, task_run_id, owner_id, spec_version_id)
     if spec is None:
@@ -234,8 +238,7 @@ async def run_browser_task_for_source(
         # The session's page is guarded by the egress policy and private-address
         # block; the entire Chromium lifecycle lives inside this Activity.
         async with PlaywrightBrowserSession(policy=policy, headless=True) as session:
-            if ctx is not None:
-                ctx.heartbeat(f"attempt={claimed.attempt_count} launched")
+            _heartbeat(f"attempt={claimed.attempt_count} launched")
             await emit_browser_event(
                 task_id=task_id,
                 task_run_id=task_run_id,
@@ -247,8 +250,7 @@ async def run_browser_task_for_source(
             page = await session.ensure_page()
             await page.goto(source_url, timeout=min(task_timeout_seconds * 1000, 90_000))
             await page.wait_for_load_state("domcontentloaded")
-            if ctx is not None:
-                ctx.heartbeat(f"attempt={claimed.attempt_count} step=1 navigated")
+            _heartbeat(f"attempt={claimed.attempt_count} step=1 navigated")
             await emit_browser_event(
                 task_id=task_id,
                 task_run_id=task_run_id,
@@ -299,8 +301,7 @@ async def run_browser_task_for_source(
                 task_run_id=task_run_id,
                 model_config_id=model_config_id,
             )
-            if ctx is not None:
-                ctx.heartbeat(f"attempt={claimed.attempt_count} agent-ready")
+            _heartbeat(f"attempt={claimed.attempt_count} agent-ready")
             await browser_agent.run(
                 instructions,
                 deps=child_deps,
@@ -318,8 +319,7 @@ async def run_browser_task_for_source(
                 raise BrowserBlockedError(blocked2.value, blocked2.value)
 
             state = await capture_page_state(page)
-            if ctx is not None:
-                ctx.heartbeat(f"attempt={claimed.attempt_count} captured")
+            _heartbeat(f"attempt={claimed.attempt_count} captured")
             snap = await persist_browser_snapshot(
                 source_id=source_id,
                 owner_id=owner_id,
