@@ -24,6 +24,28 @@ from app.domain import (
 from app.models import BrowserTask, CollectionSource, TaskRun
 
 
+async def get_source_by_id_for_run(
+    *,
+    task_id: str,
+    task_run_id: str,
+    owner_id: str,
+    source_id: str,
+) -> CollectionSource | None:
+    """Owner-scoped CollectionSource lookup by id for a run (used by the Browser runner)."""
+    async with session_scope() as session:
+        return await session.scalar(
+            select(CollectionSource)
+            .join(TaskRun, TaskRun.task_id == CollectionSource.task_id)
+            .where(
+                CollectionSource.source_id == source_id,
+                CollectionSource.task_id == task_id,
+                CollectionSource.owner_id == owner_id,
+                TaskRun.task_run_id == task_run_id,
+                TaskRun.owner_id == owner_id,
+            )
+        )
+
+
 def _browser_task_from_model(row: BrowserTask) -> BrowserTaskData:
     return BrowserTaskData(
         browser_task_id=row.browser_task_id,
