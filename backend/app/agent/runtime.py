@@ -7,6 +7,7 @@ from pydantic_ai.durable_exec.temporal import TemporalDurability
 from pydantic_ai.tools import ToolDefinition
 from temporalio.common import RetryPolicy
 
+from app.agent.browser_tool import BROWSER_TOOL_ACTIVITY_CONFIG, browser_toolset
 from app.agent.deps import KairosAgentDeps
 from app.agent.events import agent_event_stream_handler
 from app.agent.tools import (
@@ -140,6 +141,7 @@ _durability = TemporalDurability(
         "kairos-web-v1": WEB_TOOL_ACTIVITY_CONFIG,
         "kairos-collection-v1": COLLECTION_TOOL_ACTIVITY_CONFIG,
         "kairos-search-v1": COLLECTION_TOOL_ACTIVITY_CONFIG,
+        "kairos-browser-v1": BROWSER_TOOL_ACTIVITY_CONFIG,
         "kairos-workspace-v1": {
             "start_to_close_timeout": timedelta(seconds=60),
             "retry_policy": RetryPolicy(maximum_attempts=2),
@@ -157,7 +159,13 @@ kairos_agent = Agent(
         "facts. Never claim a file or URL operation succeeded unless the tool returned success. "
         "The current workspace, when present, is authorized by the run context; use its tools to inspect it."
     ),
-    toolsets=[_web_toolset, _collection_toolset, _search_toolset, workspace_dynamic_toolset],
+    toolsets=[
+        _web_toolset,
+        _collection_toolset,
+        _search_toolset,
+        browser_toolset,
+        workspace_dynamic_toolset,
+    ],
     capabilities=[model_resolver_capability, _durability],
     defer_model_check=True,
 )
