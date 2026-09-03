@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import ResolveModelId
