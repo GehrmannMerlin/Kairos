@@ -13,6 +13,7 @@ import {
   type FieldEvidence,
   type SearchProviderAvailability,
   type SearchRound,
+  type SnapshotMetadata,
   type Task,
   type Workspace,
   type WorkspacePermission,
@@ -46,6 +47,7 @@ const collectionSearchRounds = ref<SearchRound[]>([])
 const searchProvider = ref<SearchProviderAvailability | null>(null)
 const selectedRecord = ref<CollectionRecord | null>(null)
 const selectedEvidence = ref<FieldEvidence[]>([])
+const selectedSnapshot = ref<SnapshotMetadata | null>(null)
 const evidenceBusy = ref(false)
 
 const selectedWorkspace = computed(() => workspaces.value.find((item) => item.workspace_id === selectedWorkspaceId.value))
@@ -161,6 +163,15 @@ async function selectCollectionRecord(record: CollectionRecord): Promise<void> {
   evidenceBusy.value = true
   try {
     selectedEvidence.value = task.value ? await api.getRecordEvidence(task.value.task_id, record.record_id) : []
+    // Best-effort snapshot metadata (capture method / screenshot availability).
+    selectedSnapshot.value = null
+    if (task.value && record.snapshot_id) {
+      try {
+        selectedSnapshot.value = await api.getSnapshotMetadata(task.value.task_id, record.snapshot_id)
+      } catch {
+        selectedSnapshot.value = null
+      }
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Evidence could not be loaded.'
     selectedEvidence.value = []
@@ -511,6 +522,20 @@ onBeforeUnmount(() => eventStream.value?.close())
             <p class="eyebrow">FIELD EVIDENCE</p>
             <h3>{{ selectedRecord ? `Record ${selectedRecord.ordinal + 1}` : 'Select a record' }}</h3>
           </div>
+          <p v-if="selectedSnapshot" class="snapshot-meta">
+            <span class="capture-badge" :class="`capture-${selectedSnapshot.capture_method.toLowerCase()}`">
+              Capture: {{ selectedSnapshot.capture_method }}
+            </span>
+            <span v-if="selectedSnapshot.capture_method === 'BROWSER'">
+              <a
+                v-if="selectedSnapshot.has_screenshot"
+                :href="task ? api.snapshotScreenshotUrl(task.task_id, selectedSnapshot.snapshot_id) : '#'"
+                target="_blank"
+                rel="noreferrer"
+              >Screenshot: View</a>
+              <span v-else>Screenshot: none</span>
+            </span>
+          </p>
           <p v-if="evidenceBusy" class="helper-copy">Loading evidence…</p>
           <p v-else-if="!selectedRecord" class="helper-copy">Click a row to inspect its provenance.</p>
           <div v-else-if="!selectedEvidence.length" class="helper-copy">No evidence was committed for this record.</div>

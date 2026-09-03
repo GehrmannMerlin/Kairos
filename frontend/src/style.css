@@ -132,6 +132,11 @@ tbody tr:hover, tbody tr.selected { background: rgba(125, 231, 228, 0.06); }
 .evidence-list a { color: var(--cyan); overflow-wrap: anywhere; }
 .evidence-list small { color: var(--muted); font: 10px var(--mono); }
 .evidence-value { color: var(--ink); font-weight: 700; }
+.snapshot-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 4px; color: var(--muted); font: 10px var(--mono); }
+.capture-badge { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
+.capture-badge.capture-http { color: var(--cyan); }
+.capture-badge.capture-browser { color: #f1c36a; border-color: rgba(241, 195, 106, 0.4); }
+.snapshot-meta a { color: var(--cyan); }
 
 @media (max-width: 760px) {
   .app-shell { padding: 18px 12px; }

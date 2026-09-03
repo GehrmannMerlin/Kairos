@@ -3,8 +3,9 @@ export type TaskStatus = 'DRAFT' | 'RUNNING' | 'COMPLETED' | 'PARTIALLY_COMPLETE
 export type TaskRunStatus = 'RUNNING' | 'COMPLETED' | 'PARTIALLY_COMPLETED' | 'FAILED'
 export type CollectionFieldType = 'STRING' | 'INTEGER' | 'NUMBER' | 'BOOLEAN' | 'DATE' | 'URL'
 export type CollectionMode = 'SPECIFIED_SOURCE' | 'EXPLORATORY' | 'HYBRID'
-export type CollectionSourceStatus = 'PENDING' | 'FETCHED' | 'PROCESSED' | 'FAILED' | 'BLOCKED' | 'SKIPPED'
+export type CollectionSourceStatus = 'PENDING' | 'FETCHED' | 'BROWSER_REQUIRED' | 'PROCESSED' | 'FAILED' | 'BLOCKED' | 'SKIPPED'
 export type RecordStatus = 'PASSED' | 'NEEDS_REVIEW' | 'REJECTED'
+export type BrowserTaskStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'BLOCKED'
 
 export interface Workspace {
   workspace_id: string
@@ -111,6 +112,13 @@ export interface CollectionProgress {
   last_round_new_passed_records: number
   saturation_state: string
   actionable_sources: CollectionSource[]
+  browser_required_sources?: number
+  browser_tasks_used?: number
+  browser_tasks_remaining?: number
+  browser_completed?: number
+  browser_blocked?: number
+  browser_failed?: number
+  actionable_browser_sources?: CollectionSource[]
 }
 
 export interface CollectionRecord {
@@ -156,6 +164,37 @@ export interface FieldEvidence {
   quote: string
   verified: boolean
   confidence: number | null
+}
+
+export interface SnapshotMetadata {
+  snapshot_id: string
+  url: string
+  canonical_url: string
+  status_code: number
+  content_type: string
+  title: string | null
+  content_hash: string
+  bytes_read: number
+  text_chars: number
+  text_preview: string
+  captured_at: string
+  capture_method: 'HTTP' | 'BROWSER'
+  has_screenshot: boolean
+  parent_snapshot_id: string | null
+  rendered_at: string | null
+}
+
+export interface BrowserTask {
+  browser_task_id: string
+  source_id: string
+  source_url: string
+  status: BrowserTaskStatus
+  attempt_count: number
+  snapshot_id: string | null
+  failure_code: string | null
+  failure_message: string | null
+  started_at: string | null
+  completed_at: string | null
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -214,6 +253,11 @@ export const api = {
     request<SearchProviderAvailability>('/api/providers/search/availability'),
   getRecordEvidence: (taskId: string, recordId: string) =>
     request<FieldEvidence[]>(`/api/tasks/${taskId}/records/${recordId}/evidence`),
+  getSnapshotMetadata: (taskId: string, snapshotId: string) =>
+    request<SnapshotMetadata>(`/api/tasks/${taskId}/snapshots/${snapshotId}`),
+  getBrowserTasks: (taskId: string) => request<BrowserTask[]>(`/api/tasks/${taskId}/browser-tasks`),
+  snapshotScreenshotUrl: (taskId: string, snapshotId: string) =>
+    `/api/tasks/${encodeURIComponent(taskId)}/snapshots/${encodeURIComponent(snapshotId)}/screenshot`,
 }
 
 export function eventSource(taskId: string, runId: string): EventSource {
