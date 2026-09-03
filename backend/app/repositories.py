@@ -670,6 +670,10 @@ async def persist_page_snapshot(
     bytes_read: int,
     text_chars: int,
     text_preview: str,
+    capture_method: str = "HTTP",
+    parent_snapshot_id: str | None = None,
+    screenshot_storage_key: str | None = None,
+    rendered_at: datetime | None = None,
 ) -> PageSnapshot:
     async with session_scope() as session:
         async with session.begin():
@@ -723,6 +727,10 @@ async def persist_page_snapshot(
                 bytes_read=bytes_read,
                 text_chars=text_chars,
                 text_preview=text_preview[:2000],
+                capture_method=capture_method,
+                parent_snapshot_id=parent_snapshot_id,
+                screenshot_storage_key=screenshot_storage_key,
+                rendered_at=rendered_at,
             )
             session.add(snapshot)
             await session.flush()

@@ -20,11 +20,27 @@ class ObjectStore(Protocol):
 class SnapshotObjectKeys:
     raw: str
     text: str
+    screenshot: str | None = None
 
 
 def snapshot_object_keys(owner_id: str, task_id: str, content_hash: str) -> SnapshotObjectKeys:
     prefix = f"snapshots/{owner_id}/{task_id}/{content_hash}"
     return SnapshotObjectKeys(raw=f"{prefix}/raw.html", text=f"{prefix}/text.txt")
+
+
+def browser_snapshot_object_keys(owner_id: str, task_id: str, content_hash: str) -> SnapshotObjectKeys:
+    """Deterministic MinIO keys for a Browser-rendered snapshot (phase4).
+
+    Follows the existing snapshot convention but under a `browser/` namespace so
+    HTTP and Browser provenance stay distinct. Screenshot PNG is stored here too;
+    only the storage key (never the bytes) reaches PostgreSQL or Temporal.
+    """
+    prefix = f"browser/{owner_id}/{task_id}/{content_hash}"
+    return SnapshotObjectKeys(
+        raw=f"{prefix}/rendered.html",
+        text=f"{prefix}/text.txt",
+        screenshot=f"{prefix}/screenshot.png",
+    )
 
 
 class InMemoryObjectStore:
