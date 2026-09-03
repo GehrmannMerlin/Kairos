@@ -121,6 +121,8 @@ async def evaluate_collection_completion_activity(
         max_processed_sources=context.search_limits.max_processed_sources,
         agent_continuations=input_data.agent_continuations,
         max_agent_continuations=input_data.max_agent_continuations,
+        browser_required_sources=progress.browser_required_sources,
+        browser_tasks_remaining=progress.browser_tasks_remaining,
         technical_failure=input_data.technical_failure,
     )
 

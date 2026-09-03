@@ -15,6 +15,7 @@ from app.collection import (
 from app.db import session_scope
 from app.domain import (
     BrowserLimits,
+    BrowserTaskStatus,
     CollectionCompletionDecision,
     CollectionError,
     CollectionExecutionContext,
@@ -44,6 +45,7 @@ from app.domain import (
 from app.domain import CollectionSpecVersion as CollectionSpecVersionData
 from app.models import (
     AgentEvent,
+    BrowserTask,
     CollectionSource,
     CollectionSpecVersion,
     ExtractionCommit,
@@ -1110,6 +1112,16 @@ async def get_collection_progress(
                 .order_by(SearchRound.round_number)
             )
         )
+        browser_tasks = list(
+            await session.scalars(
+                select(BrowserTask).where(
+                    BrowserTask.task_id == task_id,
+                    BrowserTask.task_run_id == task_run_id,
+                    BrowserTask.owner_id == owner_id,
+                    BrowserTask.spec_version_id == spec_version_id,
+                )
+            )
+        )
         source_counts = {status: 0 for status in CollectionSourceStatus}
         for source in sources:
             try:
@@ -1137,6 +1149,31 @@ async def get_collection_progress(
         remaining = (
             source_counts[CollectionSourceStatus.PENDING] + source_counts[CollectionSourceStatus.FETCHED]
         )
+        browser_required = source_counts[CollectionSourceStatus.BROWSER_REQUIRED]
+        browser_tasks_used = sum(
+            task.status not in {BrowserTaskStatus.PENDING.value} for task in browser_tasks
+        )
+        browser_completed = sum(
+            task.status == BrowserTaskStatus.COMPLETED.value for task in browser_tasks
+        )
+        browser_blocked = sum(
+            task.status == BrowserTaskStatus.BLOCKED.value for task in browser_tasks
+        )
+        browser_failed = sum(task.status == BrowserTaskStatus.FAILED.value for task in browser_tasks)
+        spec_browser_limits = BrowserLimits.model_validate(spec.browser_limits_json or {})
+        browser_tasks_remaining = max(
+            spec_browser_limits.max_browser_tasks_per_run - browser_tasks_used, 0
+        )
+        actionable_browser_sources = [
+            collection_source_summary_from_model(source)
+            for source in sources
+            if source.status
+            in {
+                CollectionSourceStatus.BROWSER_REQUIRED.value,
+                CollectionSourceStatus.PENDING.value,
+                CollectionSourceStatus.FETCHED.value,
+            }
+        ][:5]
         return CollectionProgress(
             total_sources=len(sources),
             pending_sources=source_counts[CollectionSourceStatus.PENDING],
@@ -1170,6 +1207,13 @@ async def get_collection_progress(
                 if source.status
                 in {CollectionSourceStatus.PENDING.value, CollectionSourceStatus.FETCHED.value}
             ][:10],
+            browser_required_sources=browser_required,
+            browser_tasks_used=browser_tasks_used,
+            browser_tasks_remaining=browser_tasks_remaining,
+            browser_completed=browser_completed,
+            browser_blocked=browser_blocked,
+            browser_failed=browser_failed,
+            actionable_browser_sources=actionable_browser_sources,
         )
 
 

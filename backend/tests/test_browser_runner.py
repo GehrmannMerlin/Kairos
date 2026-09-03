@@ -145,3 +145,67 @@ async def test_runner_real_chromium_completes_snapshot() -> None:
     )
     screenshot = await store.get_bytes(keys.screenshot)
     assert screenshot and len(screenshot) > 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_runner_rejects_private_address_before_browser() -> None:
+    """P4-B §106: a source pointing at localhost/private is refused pre-launch.
+
+    The server-side eligibility check (validate_public_http_url) must fail the
+    request BEFORE any Chromium is launched — no browser should ever try to
+    reach a private/loopback address. We insert a source row directly (bypassing
+    confirm_collection_spec, which already refuses private seeds) so the runner's
+    own preflight is the exact path under test.
+    """
+    from app.browser.runner import run_browser_task_for_source
+    from app.db import SessionFactory
+    from app.domain import CollectionError, CollectionFieldSpec, CollectionFieldType, CollectionSpecConfirm
+    from app.models import CollectionSource
+    from app.repositories import confirm_collection_spec, create_task_run, insert_task
+
+    owner = f"owner-{uuid4().hex}"
+    task_id = f"task-{uuid4().hex}"
+    run_id = f"run-{uuid4().hex}"
+    await insert_task(task_id, owner)
+    spec = await confirm_collection_spec(
+        task_id,
+        owner,
+        CollectionSpecConfirm(
+            goal="collect",
+            fields=[CollectionFieldSpec(name="quote", type=CollectionFieldType.STRING, required=True)],
+            seed_urls=["https://quotes.toscrape.com/js/"],  # public seed so spec confirms
+        ),
+    )
+    created = await create_task_run(task_id, owner, run_id, f"wf-{uuid4().hex}", "go")
+    assert created is not None
+
+    # Insert a CollectionSource row pointing at a private address directly.
+    async with SessionFactory() as db:
+        src = CollectionSource(
+            source_id=f"source-{uuid4().hex}",
+            owner_id=owner,
+            task_id=task_id,
+            spec_version_id=spec.spec_version_id,
+            url="http://127.0.0.1:5434/",
+            canonical_url="http://127.0.0.1:5434/",
+            origin="SEED",
+            status="PENDING",
+        )
+        db.add(src)
+        await db.commit()
+        source_id = src.source_id
+
+    with pytest.raises(CollectionError) as excinfo:
+        await run_browser_task_for_source(
+            owner_id=owner,
+            task_id=task_id,
+            task_run_id=run_id,
+            spec_version_id=spec.spec_version_id,
+            source_id=source_id,
+            model_config_id="local-model",
+            max_steps=5,
+            task_timeout_seconds=30,
+        )
+    assert excinfo.value.code == "BROWSER_TARGET_UNSAFE"
+    assert "not a public http(s) URL" in excinfo.value.message

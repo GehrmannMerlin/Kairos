@@ -26,6 +26,7 @@ from temporalio import activity
 from temporalio.exceptions import CancelledError
 
 from app.agent.deps import KairosAgentDeps
+from app.browser.events import emit_browser_event
 from app.browser.policy import (
     ALLOWED_BROWSER_TOOLS,
     POLICY_VERSION,
@@ -149,6 +150,28 @@ async def run_browser_task_for_source(
         raise CollectionError("SOURCE_NOT_FOUND", "collection source not found")
     source_url = source.url
 
+    # Browser eligibility §79: the URL must be public and http(s) BEFORE any
+    # browser is launched. A private/loopback/internal URL is refused here, on
+    # the server side, not merely by the browser egress guard.
+    try:
+        from app.url_policy import validate_public_http_url
+
+        validate_public_http_url(source_url)
+    except CollectionError as exc:
+        raise CollectionError(
+            "BROWSER_TARGET_UNSAFE",
+            f"browser target is not a public http(s) URL: {exc.message}",
+        ) from exc
+
+    await emit_browser_event(
+        task_id=task_id,
+        task_run_id=task_run_id,
+        owner_id=owner_id,
+        event_type="browser.required",
+        summary="Browser escalation required for source",
+        payload={"source_id": source_id, "source_url": source_url},
+    )
+
     claimed = await claim_browser_task(
         task_id=task_id,
         task_run_id=task_run_id,
@@ -159,6 +182,14 @@ async def run_browser_task_for_source(
     )
     if claimed is None:
         # Concurrent duplicate claim: another Activity holds this source.
+        await emit_browser_event(
+            task_id=task_id,
+            task_run_id=task_run_id,
+            owner_id=owner_id,
+            event_type="browser.failed",
+            summary="Browser task is already running for this source",
+            payload={"source_id": source_id, "failure_code": "BROWSER_TASK_ALREADY_RUNNING"},
+        )
         return BrowserTaskResult(
             browser_task_id="",
             source_id=source_id,
@@ -205,11 +236,27 @@ async def run_browser_task_for_source(
         async with PlaywrightBrowserSession(policy=policy, headless=True) as session:
             if ctx is not None:
                 ctx.heartbeat(f"attempt={claimed.attempt_count} launched")
+            await emit_browser_event(
+                task_id=task_id,
+                task_run_id=task_run_id,
+                owner_id=owner_id,
+                event_type="browser.started",
+                summary="Browser session started",
+                payload={"source_id": source_id, "attempt": claimed.attempt_count},
+            )
             page = await session.ensure_page()
             await page.goto(source_url, timeout=min(task_timeout_seconds * 1000, 90_000))
             await page.wait_for_load_state("domcontentloaded")
             if ctx is not None:
                 ctx.heartbeat(f"attempt={claimed.attempt_count} step=1 navigated")
+            await emit_browser_event(
+                task_id=task_id,
+                task_run_id=task_run_id,
+                owner_id=owner_id,
+                event_type="browser.navigation",
+                summary="Navigated to authorized source",
+                payload={"source_id": source_id, "current_domain": domains[0] if domains else ""},
+            )
 
             initial_text = ""
             try:
@@ -281,6 +328,18 @@ async def run_browser_task_for_source(
                 state=state,
                 parent_snapshot_id=source.snapshot_id,
             )
+            await emit_browser_event(
+                task_id=task_id,
+                task_run_id=task_run_id,
+                owner_id=owner_id,
+                event_type="browser.snapshot.created",
+                summary="Browser-rendered snapshot captured",
+                payload={
+                    "source_id": source_id,
+                    "snapshot_id": snap.snapshot_id,
+                    "attempt": claimed.attempt_count,
+                },
+            )
             completed = await complete_browser_task(
                 browser_task_id=browser_task_id,
                 task_id=task_id,
@@ -288,6 +347,18 @@ async def run_browser_task_for_source(
                 owner_id=owner_id,
                 snapshot_id=snap.snapshot_id,
                 source_id=source_id,
+            )
+            await emit_browser_event(
+                task_id=task_id,
+                task_run_id=task_run_id,
+                owner_id=owner_id,
+                event_type="browser.completed",
+                summary="Browser task completed",
+                payload={
+                    "source_id": source_id,
+                    "snapshot_id": snap.snapshot_id,
+                    "attempt": completed.attempt_count if completed else claimed.attempt_count,
+                },
             )
             return BrowserTaskResult(
                 browser_task_id=browser_task_id,
@@ -298,6 +369,18 @@ async def run_browser_task_for_source(
                 attempt_count=completed.attempt_count if completed else claimed.attempt_count,
             )
     except BrowserBlockedError as exc:
+        await emit_browser_event(
+            task_id=task_id,
+            task_run_id=task_run_id,
+            owner_id=owner_id,
+            event_type="browser.blocked",
+            summary="Browser task blocked by business policy",
+            payload={
+                "source_id": source_id,
+                "attempt": claimed.attempt_count,
+                "failure_code": exc.code,
+            },
+        )
         await fail_browser_task(
             browser_task_id=browser_task_id,
             task_id=task_id,
@@ -326,6 +409,14 @@ async def run_browser_task_for_source(
         if isinstance(exc, PlaywrightTimeoutError) or isinstance(exc, UsageLimitExceeded):
             code = BrowserFailureCode.TIMEOUT.value
             message = "browser task exceeded its step/time budget"
+        await emit_browser_event(
+            task_id=task_id,
+            task_run_id=task_run_id,
+            owner_id=owner_id,
+            event_type="browser.failed",
+            summary="Browser task failed transiently",
+            payload={"source_id": source_id, "attempt": claimed.attempt_count, "failure_code": code},
+        )
         await fail_browser_task(
             browser_task_id=browser_task_id,
             task_id=task_id,
