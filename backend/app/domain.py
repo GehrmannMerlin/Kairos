@@ -49,10 +49,56 @@ class CollectionFieldType(StrEnum):
 class CollectionSourceStatus(StrEnum):
     PENDING = "PENDING"
     FETCHED = "FETCHED"
+    BROWSER_REQUIRED = "BROWSER_REQUIRED"
     PROCESSED = "PROCESSED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
     SKIPPED = "SKIPPED"
+
+
+class BrowserTaskStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    BLOCKED = "BLOCKED"
+
+
+class BrowserFailureCode(StrEnum):
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    CAPTCHA_REQUIRED = "CAPTCHA_REQUIRED"
+    ACCESS_DENIED = "ACCESS_DENIED"
+    ROBOTS_BLOCKED = "ROBOTS_BLOCKED"
+    OUT_OF_SCOPE = "OUT_OF_SCOPE"
+    UNSUPPORTED_INTERACTION = "UNSUPPORTED_INTERACTION"
+    READ_ONLY_POLICY_BLOCKED = "READ_ONLY_POLICY_BLOCKED"
+    BROWSER_UNAVAILABLE = "BROWSER_UNAVAILABLE"
+    TIMEOUT = "TIMEOUT"
+    TRANSIENT_RETRY = "TRANSIENT_RETRY"
+    INTERNAL = "INTERNAL"
+
+
+class BrowserTaskReason(StrEnum):
+    JS_RENDER_REQUIRED = "JS_RENDER_REQUIRED"
+    CONTENT_HIDDEN = "CONTENT_HIDDEN"
+    EXPAND_REQUIRED = "EXPAND_REQUIRED"
+
+
+class BrowserLimits(BaseModel):
+    """Fixed typed Browser limits; the same values freeze into the CollectionSpecVersion.
+
+    Phase 4 first version: 5 browser tasks per run, 20 steps per task, 120s timeout,
+    5 navigations, 30 action events. Every field has a hard maximum enforced here and
+    again by the server clamp so a changed server config cannot move mid-run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_browser_tasks_per_run: int = Field(default=5, ge=1, le=10)
+    max_steps_per_task: int = Field(default=20, ge=1, le=50)
+    task_timeout_seconds: int = Field(default=120, ge=30, le=300)
+    max_navigation_count: int = Field(default=5, ge=1, le=20)
+    max_action_events: int = Field(default=30, ge=5, le=100)
 
 
 class CollectionSourceOrigin(StrEnum):
@@ -166,6 +212,7 @@ class CollectionSpecConfirm(BaseModel):
     mode: CollectionMode = CollectionMode.SPECIFIED_SOURCE
     scope_domains: list[str] = Field(default_factory=list, max_length=50)
     search_limits: SearchLimits = Field(default_factory=SearchLimits)
+    browser_limits: BrowserLimits = Field(default_factory=BrowserLimits)
 
     @field_validator("goal")
     @classmethod
@@ -207,6 +254,8 @@ class CollectionSpecVersion(BaseModel):
     target_count: int | None = None
     scope_domains: list[str] = Field(default_factory=list)
     search_limits: SearchLimits = Field(default_factory=SearchLimits)
+    browser_limits: BrowserLimits = Field(default_factory=BrowserLimits)
+    browser_policy_version: str = "browser-policy-v1"
     confirmed_at: datetime
     created_at: datetime
 
@@ -236,6 +285,8 @@ class CollectionExecutionContext(BaseModel):
     target_count: int | None = None
     scope_domains: list[str] = Field(default_factory=list)
     search_limits: SearchLimits = Field(default_factory=SearchLimits)
+    browser_limits: BrowserLimits = Field(default_factory=BrowserLimits)
+    browser_policy_version: str = "browser-policy-v1"
 
 
 class SearchSourceResult(BaseModel):
@@ -277,6 +328,72 @@ class SearchRoundSummary(BaseModel):
     status: SearchRoundStatus
     created_at: datetime
     completed_at: datetime | None = None
+
+
+class RequestBrowserTaskInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(min_length=1, max_length=64)
+    reason: BrowserTaskReason | None = None
+
+
+class BrowserTask(BaseModel):
+    """Owner-scoped BrowserTask; one per (task_run_id, source_id) per run.
+
+    Never stores live browser state (page/context/CDP/tab/locator/pid) — the
+    Chromium session lives only inside the Browser Activity. On COMPLETED with a
+    snapshot, a repeat request for the same source returns the existing task.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    browser_task_id: str
+    owner_id: str
+    task_id: str
+    task_run_id: str
+    spec_version_id: str
+    source_id: str
+    status: BrowserTaskStatus = BrowserTaskStatus.PENDING
+    attempt_count: int = 0
+    snapshot_id: str | None = None
+    policy_version: str
+    failure_code: str | None = None
+    failure_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class BrowserTaskSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    browser_task_id: str
+    source_id: str
+    source_url: str
+    status: BrowserTaskStatus
+    attempt_count: int
+    snapshot_id: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class BrowserTaskResult(BaseModel):
+    """Bounded result returned by request_browser_task. No HTML/DOM/screenshot/trace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    browser_task_id: str
+    source_id: str
+    source_url: str
+    status: BrowserTaskStatus
+    snapshot_id: str | None = None
+    capture_method: str = "BROWSER"
+    attempt_count: int = 0
+    failure_code: str | None = None
+    failure_summary: str | None = None
 
 
 class EvidenceSubmission(BaseModel):
@@ -360,6 +477,13 @@ class CollectionProgress(BaseModel):
     last_round_new_passed_records: int = 0
     saturation_state: str = "NOT_REACHED"
     actionable_sources: list[CollectionSourceSummary] = Field(default_factory=list, max_length=10)
+    browser_required_sources: int = 0
+    browser_tasks_used: int = 0
+    browser_tasks_remaining: int = 0
+    browser_completed: int = 0
+    browser_blocked: int = 0
+    browser_failed: int = 0
+    actionable_browser_sources: list[CollectionSourceSummary] = Field(default_factory=list, max_length=5)
 
 
 class CollectionCompletionDecision(BaseModel):
@@ -388,6 +512,8 @@ def evaluate_collection_completion(
     max_processed_sources: int,
     agent_continuations: int,
     max_agent_continuations: int,
+    browser_required_sources: int = 0,
+    browser_tasks_remaining: int = 0,
     technical_failure: bool = False,
 ) -> CollectionCompletionDecision:
     """Evaluate collection completion using persisted facts, never Agent prose."""
@@ -405,6 +531,8 @@ def evaluate_collection_completion(
         decision, reason = "PARTIALLY_COMPLETED", "DISCOVERED_SOURCE_LIMIT"
     elif progress.processed_sources >= max_processed_sources:
         decision, reason = "PARTIALLY_COMPLETED", "PROCESSED_SOURCE_LIMIT"
+    elif browser_required_sources > 0 and browser_tasks_remaining <= 0:
+        decision, reason = "PARTIALLY_COMPLETED", "BROWSER_TASK_LIMIT"
     else:
         decision, reason = "CONTINUE", "SEARCH_BUDGET_REMAINS"
     return CollectionCompletionDecision(

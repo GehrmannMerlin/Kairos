@@ -14,6 +14,7 @@ from app.collection import (
 )
 from app.db import session_scope
 from app.domain import (
+    BrowserLimits,
     CollectionCompletionDecision,
     CollectionError,
     CollectionExecutionContext,
@@ -82,6 +83,8 @@ def collection_spec_from_model(row: CollectionSpecVersion) -> CollectionSpecVers
         target_count=row.target_count,
         scope_domains=list(row.scope_domains_json or []),
         search_limits=SearchLimits.model_validate(row.search_limits_json or {}),
+        browser_limits=BrowserLimits.model_validate(row.browser_limits_json or {}),
+        browser_policy_version=row.browser_policy_version or "browser-policy-v1",
         confirmed_at=row.confirmed_at,
         created_at=row.created_at,
     )
@@ -185,6 +188,8 @@ async def confirm_collection_spec(
                 target_count=confirm.target_count,
                 scope_domains_json=list(confirm.scope_domains),
                 search_limits_json=confirm.search_limits.model_dump(mode="json"),
+                browser_limits_json=confirm.browser_limits.model_dump(mode="json"),
+                browser_policy_version="browser-policy-v1",
                 confirmed_at=now,
                 created_at=now,
             )
@@ -260,6 +265,8 @@ async def get_collection_context(
             target_count=spec.target_count,
             scope_domains=list(spec.scope_domains_json or []),
             search_limits=SearchLimits.model_validate(spec.search_limits_json or {}),
+            browser_limits=BrowserLimits.model_validate(spec.browser_limits_json or {}),
+            browser_policy_version=spec.browser_policy_version or "browser-policy-v1",
         )
 
 

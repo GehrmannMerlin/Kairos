@@ -87,6 +87,10 @@ class CollectionSpecVersion(Base):
     target_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scope_domains_json: Mapped[list[str]] = mapped_column("scope_domains", JSON, default=list)
     search_limits_json: Mapped[dict] = mapped_column("search_limits", JSON, default=dict)
+    browser_limits_json: Mapped[dict] = mapped_column("browser_limits", JSON, default=dict)
+    browser_policy_version: Mapped[str] = mapped_column(
+        String(64), default="browser-policy-v1", server_default="browser-policy-v1"
+    )
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -118,6 +122,8 @@ class CollectionSource(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
     snapshot_id: Mapped[str | None] = mapped_column(nullable=True)
+    browser_required_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    browser_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -179,7 +185,45 @@ class PageSnapshot(Base):
     bytes_read: Mapped[int] = mapped_column(Integer)
     text_chars: Mapped[int] = mapped_column(Integer)
     text_preview: Mapped[str] = mapped_column(Text)
+    capture_method: Mapped[str] = mapped_column(String(16), default="HTTP")
+    parent_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    screenshot_storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rendered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BrowserTask(Base):
+    """Owner-scoped browser task; one per (task_run_id, source_id) per run.
+
+    Only durable metadata is stored here — never a live browser handle, CDP
+    pointer, tab object, locator, or browser process id. The Chromium session
+    exists solely inside the Browser Activity and is destroyed when it ends.
+    """
+
+    __tablename__ = "browser_tasks"
+
+    browser_task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(128), index=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), index=True)
+    task_run_id: Mapped[str] = mapped_column(ForeignKey("task_runs.task_run_id"), index=True)
+    spec_version_id: Mapped[str] = mapped_column(
+        ForeignKey("collection_spec_versions.spec_version_id"), index=True
+    )
+    source_id: Mapped[str] = mapped_column(ForeignKey("collection_sources.source_id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    policy_version: Mapped[str] = mapped_column(String(64), default="browser-policy-v1")
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (UniqueConstraint("task_run_id", "source_id", name="uq_browser_task_run_source"),)
 
 
 class ExtractionCommit(Base):
