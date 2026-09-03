@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.durable_exec.temporal import PydanticAIPlugin
@@ -17,9 +17,11 @@ from sse_starlette.sse import EventSourceResponse
 from temporalio.client import Client
 
 from app.agent.deps import KairosAgentDeps
+from app.browser.repository import list_browser_tasks_for_run
 from app.config import get_settings
 from app.db import session_scope
 from app.domain import (
+    BrowserTaskSummary,
     CollectionError,
     CollectionProgress,
     CollectionSourceSummary,
@@ -141,6 +143,10 @@ class SnapshotMetadataResponse(BaseModel):
     text_chars: int
     text_preview: str
     captured_at: datetime
+    capture_method: str = "HTTP"
+    has_screenshot: bool = False
+    parent_snapshot_id: str | None = None
+    rendered_at: datetime | None = None
 
 
 class LocalFolderRequest(BaseModel):
@@ -578,7 +584,58 @@ async def snapshot_metadata_api(
         text_chars=snapshot.text_chars,
         text_preview=snapshot.text_preview[:2000],
         captured_at=snapshot.captured_at,
+        capture_method=snapshot.capture_method,
+        has_screenshot=bool(snapshot.screenshot_storage_key),
+        parent_snapshot_id=snapshot.parent_snapshot_id,
+        rendered_at=snapshot.rendered_at,
     )
+
+
+@app.get("/api/tasks/{task_id}/snapshots/{snapshot_id}/screenshot")
+async def snapshot_screenshot_api(
+    task_id: str,
+    snapshot_id: str,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> Response:
+    """Owner-scoped PNG screenshot for a Browser snapshot (§91).
+
+    Streams the MinIO PNG bytes back; never exposes access keys, the raw object
+    key, the internal MinIO endpoint, or any storage secret.
+    """
+    owner_id = _owner_id(x_kairos_user_id)
+    task = await get_task(task_id, owner_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    snapshot = await get_snapshot_metadata(snapshot_id, task_id, owner_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    if snapshot.capture_method != "BROWSER" or not snapshot.screenshot_storage_key:
+        raise HTTPException(status_code=404, detail="screenshot not found")
+    from app.storage import MinioS3ObjectStore
+
+    try:
+        png = await MinioS3ObjectStore().get_bytes(snapshot.screenshot_storage_key)
+    except Exception:  # noqa: BLE001 - storage miss maps to 404
+        raise HTTPException(status_code=404, detail="screenshot not found") from None
+    if not png:
+        raise HTTPException(status_code=404, detail="screenshot not found")
+    return Response(content=png, media_type="image/png")
+
+
+@app.get("/api/tasks/{task_id}/browser-tasks")
+async def browser_tasks_api(
+    task_id: str,
+    x_kairos_user_id: Annotated[str | None, Header()] = None,
+) -> list[BrowserTaskSummary]:
+    """Owner-scoped BrowserTask list (status/snapshot/failure only, no HTML/DOM)."""
+    owner_id = _owner_id(x_kairos_user_id)
+    task = await get_task(task_id, owner_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    run = await get_latest_task_run(task_id, owner_id)
+    if run is None:
+        return []
+    return await list_browser_tasks_for_run(task_id, run.task_run_id, owner_id)
 
 
 @app.get("/api/tasks/{task_id}/events")
