@@ -1,0 +1,73 @@
+{
+  "browser_backed_evidence": 1,
+  "browser_child_history_in_main": "NO",
+  "browser_clean_text_passes_quote_match": true,
+  "browser_snapshot_id": "snapshot-b9e1cc14d33b4a31800618f8a3f144cd",
+  "browser_tasks": [
+    {
+      "attempt_count": 1,
+      "source_url": "https://quotes.toscrape.com/js/",
+      "status": "COMPLETED"
+    }
+  ],
+  "capture_method": "BROWSER",
+  "decision": null,
+  "evidence_verified": "1/1",
+  "full_html_in_history": "NO",
+  "observed_tool_sequence": [
+    "commit_extraction",
+    "fetch_source",
+    "get_collection_progress",
+    "inspect_snapshot",
+    "request_browser_task"
+  ],
+  "reason": null,
+  "records": [
+    {
+      "fields": {
+        "author": "Albert Einstein",
+        "quote": "The world as we have created it is a process of our thinking. It cannot be changed without changing our thinking."
+      },
+      "status": "NEEDS_REVIEW"
+    }
+  ],
+  "rendered_text_verified": true,
+  "screenshot_binary_in_history": "NO",
+  "screenshot_bytes": 100983,
+  "screenshot_verified": true,
+  "secrets_in_history": "NO",
+  "spec_id": "spec-6162514f56944076af9ea45400c9d763",
+  "sse_events": [
+    "run.started",
+    "collection.started",
+    "tool.started",
+    "snapshot.created",
+    "tool.completed",
+    "tool.started",
+    "tool.completed",
+    "tool.started",
+    "browser.required",
+    "browser.started",
+    "browser.navigation",
+    "browser.snapshot.created",
+    "browser.completed",
+    "tool.completed",
+    "tool.started",
+    "tool.completed",
+    "tool.started",
+    "extraction.committed",
+    "dedup.completed",
+    "collection.progress",
+    "tool.completed",
+    "tool.started",
+    "collection.progress",
+    "tool.completed",
+    "collection.completed",
+    "run.completed"
+  ],
+  "task_id": "task-f08e63924d3348ceb2cd971caf7728ca",
+  "task_run_status": "COMPLETED",
+  "task_status": "COMPLETED",
+  "temporal_history_bytes": 456219,
+  "workflow_id": "kairos-task-task-f08e63924d3348ceb2cd971caf7728ca-run-93cb41c44fa64e418a59ca0ca708ed0c"
+}

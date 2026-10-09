@@ -1,52 +1,18 @@
-# ---- Secrets / local config ----
 .env
-.env.production
 .env.*
 !.env.example
-!.env.production.example
-
-# ---- Python ----
+.venv/
 __pycache__/
 *.py[cod]
-*.egg-info/
-.venv/
-venv/
 .pytest_cache/
-.mypy_cache/
 .ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
-
-# ---- Node / frontend ----
-node_modules/
-dist/
-coverage/
-.vite/
-*.local
-test-results/
-playwright-report/
-blob-report/
-
-# ---- IDE / OS ----
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# ---- Logs / data ----
+backend/.cache/
+frontend/node_modules/
+frontend/dist/
+infra/compose/volumes/
+tests/fixtures/workspaces/
 *.log
-*.sql.gz
-*.sql
-*.dump
-/data/
-minio-data/
-playwright-data/
 
-# ---- M-17 backup / restore artifacts ----
-backups/
-restore-drill-data/
-*.tar.gz
-
-# ---- Runtime artifacts ----
-*.pid
-*.sock

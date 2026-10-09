@@ -1,84 +1,52 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "kairos-backend"
+name = "kairos-app-backend"
 version = "0.1.0"
-description = "Kairos web collection agent backend (FastAPI + Temporal)"
-requires-python = ">=3.11"
+description = "Kairos durable agent and workspace foundation"
+requires-python = ">=3.11,<3.14"
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
-    "pydantic>=2.9",
-    "pydantic-settings>=2.6",
-    "sqlalchemy>=2.0",
-    "psycopg[binary]>=3.2",
-    "alembic>=1.14",
-    "temporalio>=1.3",
-    "minio>=7.2",
-    "opentelemetry-sdk>=1.27",
-    "opentelemetry-api>=1.27",
-    # Pinned exact: the instrumentation line ships with a `b0` suffix in its
-    # version (e.g. 0.65b0) which older pip rejects as a pre-release under >=.
-    "opentelemetry-instrumentation-fastapi==0.65b0",
-    "opentelemetry-exporter-otlp>=1.27",
-    "httpx>=0.27",
-    "pwdlib[argon2]>=0.2",
-    "cryptography>=42",
-    # M-06 Goal Understanding. We only use pydantic-ai's typed Agent/FunctionModel
-    # orchestration; the actual model call routes through app.providers (M-03),
-    # never through pydantic-ai's own provider SDKs.
-    # pydantic-ai-slim（无 extras）：`pydantic-ai` 元包会拉入 mcp/fastmcp/py-key-value-aio，
-    # 后者在 import 时激活 beartype claw import hook，与 Temporal workflow sandbox 冲突
-    # （worker 无法执行任何 workflow）。本项目只用 Agent/FunctionModel/messages（slim 核心）。
-    "pydantic-ai-slim>=2.27",
-    # M-11 extraction（D-010）。Scrapy 的 selector 引擎：CSS + XPath 确定性提取与站点规则。
-    "parsel>=1.9",
+  "alembic>=1.16.0",
+  "asyncpg>=0.30.0",
+  "boto3>=1.35.0",
+  "fastapi>=0.115.0",
+  "httpx>=0.28.1",
+  "pydantic-settings>=2.8.0",
+  "pydantic-ai-slim[openai,temporal]",
+  "pydantic-ai-harness",
+  "sse-starlette>=2.3.0",
+  "sqlalchemy[asyncio]>=2.0.40",
+  "temporalio==1.32.0",
+  "uvicorn[standard]>=0.34.0",
 ]
 
-[project.optional-dependencies]
-browser = [
-    # M-10 BrowserRender（D-009 TIER2）。仅 browser worker 需要；API image 不安装，
-    # 避免把 ~48MB 的 playwright 大包拉进 API 镜像（api/worker 曾共用一份 backend
-    # requirements）。import 仅发生在 app/crawling/browser.py 的惰性 import 处，
-    # 无模块级 import，因此 API runtime 无需 playwright 也能正常运行。
-    # Chromium 二进制由 `playwright install chromium` 安装，不引入第二套 browser framework。
-    "playwright>=1.45",
-]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
 dev = [
-    "pytest>=8.3",
-    "pytest-asyncio>=0.24",
-    "ruff>=0.8",
-    "mypy>=1.13",
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.25.0",
+  "ruff>=0.11.0",
 ]
 
-[tool.setuptools.packages.find]
-include = ["app*"]
+[tool.uv.sources]
+pydantic-ai-slim = { path = "../../pydantic-ai/pydantic_ai_slim", editable = true }
+pydantic-ai-harness = { path = "../../pydantic-ai-harness", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "integration: requires live local services (postgres/temporal/minio)",
-    "browser: requires playwright chromium (real browser render verification)",
+  "integration: uses a real external service or local infrastructure",
 ]
 
 [tool.ruff]
-line-length = 100
+line-length = 110
 target-version = "py311"
 src = ["app", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "SIM", "C4"]
-ignore = ["B008"]
-
-[tool.mypy]
-python_version = "3.11"
-ignore_missing_imports = true
-check_untyped_defs = true
-warn_redundant_casts = true
-warn_unused_ignores = false
-disallow_untyped_defs = false
-no_implicit_optional = true
-files = ["app", "scripts", "tests"]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

@@ -1,0 +1,181 @@
+{
+  "accepted": 35,
+  "agent": "kairos-agent-v1",
+  "agent_continuation_count": 0,
+  "blocked": 0,
+  "canonical_records": 7,
+  "collection_progress": "PASS",
+  "collection_toolset": "kairos-collection-v1",
+  "completion_event": "PASS",
+  "conflicts": 0,
+  "credential_in_history": "NO",
+  "decision": "COMPLETED",
+  "discovered_sources": 35,
+  "duplicate_urls_filtered": 0,
+  "duplicates": 0,
+  "failed": 0,
+  "finalize_evaluate_activity": "PASS",
+  "full_html_in_history": "NO",
+  "history_health": "WARN",
+  "minio_objects": [
+    {
+      "raw": 39704,
+      "text": 6998
+    },
+    {
+      "raw": 289870,
+      "text": 4934
+    },
+    {
+      "raw": 153352,
+      "text": 19719
+    },
+    {
+      "raw": 19954,
+      "text": 3643
+    },
+    {
+      "raw": 313574,
+      "text": 5951
+    },
+    {
+      "raw": 53920,
+      "text": 10674
+    },
+    {
+      "raw": 65764,
+      "text": 12416
+    },
+    {
+      "raw": 282890,
+      "text": 5070
+    },
+    {
+      "raw": 30584,
+      "text": 6136
+    },
+    {
+      "raw": 310377,
+      "text": 4864
+    },
+    {
+      "raw": 33410,
+      "text": 8135
+    },
+    {
+      "raw": 8034,
+      "text": 2193
+    }
+  ],
+  "minio_raw_objects": 12,
+  "minio_text_objects": 12,
+  "mode": "EXPLORATORY",
+  "model": "deepseek:deepseek-chat",
+  "needs_review": 2,
+  "new_sources": 35,
+  "observations": 7,
+  "observed_tool_sequence": [
+    "get_collection_progress",
+    "search_sources",
+    "fetch_source",
+    "inspect_snapshot",
+    "commit_extraction"
+  ],
+  "passed_canonical_records": 5,
+  "payload_safety": "PASS",
+  "processed": 7,
+  "provider": "tavily",
+  "provider_raw_response_in_history": "NO",
+  "provider_returned": 35,
+  "queries": [
+    "Flask Python web framework official site",
+    "Django Python web framework official website documentation",
+    "FastAPI Python web framework official website",
+    "Pyramid Python web framework official website",
+    "Bottle Python web framework official website",
+    "Tornado Python web framework official website",
+    "Chalice CherryPy Python web framework official"
+  ],
+  "reason": "TARGET_REACHED",
+  "rejected": 0,
+  "run_completed": "PASS",
+  "saturation": "NOT_REACHED",
+  "search_events": "PASS",
+  "search_rounds": 7,
+  "search_rounds_used": 7,
+  "search_toolset": "kairos-search-v1",
+  "skipped": 28,
+  "snapshots": 12,
+  "spec_id": "spec-82d82115701945fb96071a994c60eaa6",
+  "sse_events": [
+    "run.started",
+    "collection.started",
+    "tool.started",
+    "collection.progress",
+    "tool.completed",
+    "tool.started",
+    "tool.started",
+    "tool.started",
+    "search.started",
+    "search.started",
+    "search.started",
+    "search.completed",
+    "sources.discovered",
+    "tool.completed",
+    "search.completed",
+    "sources.discovered",
+    "tool.completed",
+    "search.completed",
+    "sources.discovered",
+    "tool.completed",
+    "tool.started",
+    "tool.started",
+    "tool.started",
+    "tool.started",
+    "tool.started",
+    "tool.started",
+    "search.started",
+    "search.started",
+    "search.started",
+    "search.started",
+    "search.completed",
+    "sources.discovered",
+    "search.completed",
+    "sources.discovered",
+    "snapshot.created",
+    "snapshot.created",
+    "tool.completed",
+    "tool.completed",
+    "tool.completed",
+    "tool.completed",
+    "search.completed",
+    "sources.discovered",
+    "tool.completed",
+    "search.completed",
+    "sources.discovered",
+    "tool.completed",
+    "tool.started",
+    "tool.started",
+    "tool.started",
+    "tool.started",
+    "tool.started",
+    "snapshot.created",
+    "tool.completed",
+    "snapshot.created",
+    "tool.completed",
+    "snapshot.created",
+    "tool.completed",
+    "snapshot.created",
+    "snapshot.created",
+    "tool.completed"
+  ],
+  "target_count": 5,
+  "task_id": "task-5b3989456abb481c8491f2adb9fd01dc",
+  "task_run_status": "COMPLETED",
+  "task_status": "COMPLETED",
+  "temporal_history_bytes": 5654928,
+  "total_evidence": 21,
+  "unique_collection_sources": 35,
+  "verified_evidence": 19,
+  "workflow_id": "kairos-task-task-5b3989456abb481c8491f2adb9fd01dc-run-1b535db91b0e4f5cbe4c3687af1784ef"
+}
